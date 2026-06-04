@@ -1,0 +1,256 @@
+// Package sshx builds and runs duck's multiplexed SSH commands against the hub.
+//
+// Every duck SSH call uses duck's OWN connection multiplexing — it never reads
+// or mutates the user's ~/.ssh/config. The DUCKSSH option set is:
+//
+//	ssh -o BatchMode=yes -o ConnectTimeout=10 \
+//	    -o ControlMaster=auto \
+//	    -o ControlPath=<HOME>/.duck/cm/%r@%h:%p \
+//	    -o ControlPersist=10m
+//
+// The ControlPath uses the Go-expanded $HOME (never a literal "~"), and the
+// <HOME>/.duck/cm directory is MkdirAll 0700 at startup (design fix c2). The
+// warmed master socket is reused by every subsequent call — including the
+// ported internal/hub package, which carries the same Control* flags (gap#6) —
+// and by the interactive attach via ExecAttach.
+//
+// This package is NEW for duck (flok had no multiplexing layer).
+package sshx
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+)
+
+// sshBinary is the ssh executable. ExecAttach needs an absolute path for
+// syscall.Exec; run/output go through exec.Command which does its own lookup.
+const sshBinary = "ssh"
+
+// execAttachPath resolves the ssh binary to an absolute path for syscall.Exec,
+// which (unlike exec.Command) does not search $PATH. It prefers the same ssh
+// that run/exec.Command would pick via PATH, so the attach reuses the warmed
+// ControlMaster socket even on Homebrew-OpenSSH setups; falls back to the
+// conventional macOS location.
+func execAttachPath() string {
+	if p, err := exec.LookPath(sshBinary); err == nil {
+		return p
+	}
+	return "/usr/bin/ssh"
+}
+
+// runFunc is the seam tests swap to record argv / stdin and inject failures
+// without touching a real host. Production runs via exec.Command.
+type runFunc func(argv []string, stdin io.Reader) (string, error)
+
+// run is the package-level runner. Tests replace it; restore it with defer.
+var run runFunc = realRun
+
+func realRun(argv []string, stdin io.Reader) (string, error) {
+	// The multiplexed ssh flags reference ~/.duck/cm/<socket>; create that dir
+	// before the first ssh or it fails with "cannot bind to path … No such file
+	// or directory". Idempotent and cheap.
+	if err := EnsureControlDir(); err != nil {
+		return "", err
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = stdin
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
+// Client drives the hub over multiplexed SSH.
+type Client struct {
+	Addr string // user@host
+}
+
+// New returns a Client for the given hub address.
+func New(addr string) *Client { return &Client{Addr: addr} }
+
+// homeDir returns the Go-expanded $HOME (never a literal "~"). Split out so the
+// ControlPath and the cm-dir MkdirAll share one source of truth (c2).
+func homeDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if home == "" {
+		return "", fmt.Errorf("could not determine home directory")
+	}
+	return home, nil
+}
+
+// controlDir returns <HOME>/.duck/cm, the ssh control-master socket directory.
+func controlDir() (string, error) {
+	home, err := homeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".duck", "cm"), nil
+}
+
+// ControlPath returns the ssh ControlPath template using the Go-expanded $HOME.
+// The %r@%h:%p tokens are filled in by ssh per (remote-user, host, port).
+func ControlPath() (string, error) {
+	dir, err := controlDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "%r@%h:%p"), nil
+}
+
+// EnsureControlDir creates <HOME>/.duck/cm with mode 0700 (c2). Idempotent.
+// Call once at startup before any multiplexed SSH.
+func EnsureControlDir() error {
+	dir, err := controlDir()
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(dir, 0o700)
+}
+
+// Options returns the DUCKSSH option flags (without the leading "ssh" or the
+// trailing addr/command). Exported so the ported hub package can carry the same
+// Control* flags (gap#6) and tests can assert on them.
+func Options() ([]string, error) {
+	cp, err := ControlPath()
+	if err != nil {
+		return nil, err
+	}
+	return []string{
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath=" + cp,
+		"-o", "ControlPersist=10m",
+	}, nil
+}
+
+// commandArgv builds the full ssh argv for a non-interactive remote command:
+//
+//	ssh <DUCKSSH opts> <addr> <remoteCmd>
+func (c *Client) commandArgv(remoteCmd string) ([]string, error) {
+	opts, err := Options()
+	if err != nil {
+		return nil, err
+	}
+	argv := []string{sshBinary}
+	argv = append(argv, opts...)
+	argv = append(argv, c.Addr, LoginShellWrap(remoteCmd))
+	return argv, nil
+}
+
+// LoginShellWrap wraps a remote command so the hub runs it under a LOGIN shell,
+// making the user's full PATH available — notably Homebrew's /opt/homebrew/bin,
+// where tmux and mutagen live on a macOS hub. A plain `ssh host cmd` runs cmd in
+// a non-login, non-interactive shell whose PATH lacks those dirs (verified:
+// `ssh duck tmux` → "command not found", `ssh duck "zsh -lc 'tmux -V'"` → ok).
+// Mirrors the old duck scripts' `/bin/zsh -lc` pattern.
+func LoginShellWrap(remoteCmd string) string {
+	return "zsh -lc " + singleQuote(remoteCmd)
+}
+
+// singleQuote wraps s in single quotes for safe inclusion as one shell word,
+// escaping embedded single quotes as the standard '\” sequence.
+func singleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// Run executes a remote command over the multiplexed connection and returns its
+// stdout. No PTY is allocated.
+func (c *Client) Run(remoteCmd string) (string, error) {
+	return c.RunInput(remoteCmd, nil)
+}
+
+// RunInput executes a remote command, optionally feeding stdin, and returns
+// stdout. Streaming untrusted content via stdin keeps it out of the command
+// text entirely.
+func (c *Client) RunInput(remoteCmd string, stdin io.Reader) (string, error) {
+	argv, err := c.commandArgv(remoteCmd)
+	if err != nil {
+		return "", err
+	}
+	return run(argv, stdin)
+}
+
+// WarmUp issues a single serialized handshake (`ssh duck true`) to establish
+// the control-master socket before the laptop fans out parallel refresh calls,
+// so they reuse the master instead of racing to create it (design fix c1).
+// Safe to call repeatedly; ControlMaster=auto reuses an existing master.
+func (c *Client) WarmUp() error {
+	if err := EnsureControlDir(); err != nil {
+		return err
+	}
+	_, err := c.Run("true")
+	return err
+}
+
+// AttachArgv builds the argv for an interactive `tmux attach-session` over the
+// SAME multiplexed control path. Pure (no side effects) so it is unit-testable;
+// ExecAttach wraps it with the actual syscall.Exec.
+func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
+	opts, err := Options()
+	if err != nil {
+		return nil, err
+	}
+	// -t forces PTY allocation so tmux/ssh own a real TTY after the bubbletea
+	// teardown. The remote command is the literal tmux attach.
+	argv := []string{execAttachPath(), "-t"}
+	argv = append(argv, opts...)
+	// Wrap in a login shell so tmux resolves on the hub's Homebrew PATH; the
+	// -t PTY passes through ssh → zsh → tmux. tmuxSession is a tmux-legal slug.
+	argv = append(argv, c.Addr, LoginShellWrap("tmux attach-session -t "+tmuxSession))
+	return argv, nil
+}
+
+// ExecAttach replaces the current process with an interactive ssh -t attach to
+// the named tmux session, reusing the warmed control-master socket. It returns
+// only on failure to exec (on success the process image is replaced). Callers
+// must fully tear down bubbletea first so ssh/tmux own a clean TTY; TERM passes
+// through via the inherited environment.
+func (c *Client) ExecAttach(tmuxSession string) error {
+	if err := EnsureControlDir(); err != nil {
+		return err
+	}
+	argv, err := c.AttachArgv(tmuxSession)
+	if err != nil {
+		return err
+	}
+	return syscall.Exec(argv[0], argv, os.Environ())
+}
+
+// RunAttach is the SUBPROCESS variant of ExecAttach: it runs the same
+// interactive `ssh -t tmux attach-session` as a child process (inheriting this
+// process's TTY via os.Stdin/Stdout/Stderr) and BLOCKS until the user detaches
+// or exits, returning nil on a normal interactive exit. Unlike ExecAttach
+// (which replaces the process image and never returns) it hands control BACK to
+// the caller, so the fresh-untouched-session cleanup can run after the user
+// leaves. The argv — including the -t PTY and the multiplexing Control* flags —
+// is the same AttachArgv ExecAttach uses, so the interactive session/picker
+// works identically.
+func (c *Client) RunAttach(tmuxSession string) error {
+	if err := EnsureControlDir(); err != nil {
+		return err
+	}
+	argv, err := c.AttachArgv(tmuxSession)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}

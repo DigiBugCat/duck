@@ -1,0 +1,35 @@
+name: release
+
+# Push a semver tag to cut a release:
+#   git tag v0.1.0 && git push origin v0.1.0
+# GoReleaser builds the darwin binaries, publishes a GitHub Release, and updates
+# the Homebrew formula in DigiBugCat/homebrew-tap.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest # pure-Go cross-compile to darwin works fine on linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A PAT (repo scope) for DigiBugCat/homebrew-tap, added as a repo secret.
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}

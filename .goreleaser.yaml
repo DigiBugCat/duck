@@ -1,0 +1,70 @@
+# GoReleaser config for duck — https://goreleaser.com
+# Build: darwin arm64 + amd64, pure-Go (CGO_ENABLED=0). On a `vX.Y.Z` tag the
+# release Action (.github/workflows/release.yml) runs `goreleaser release`,
+# which publishes a GitHub Release and updates the Homebrew formula in
+# DigiBugCat/homebrew-tap so `brew install DigiBugCat/tap/duck` works.
+version: 2
+
+project_name: duck
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: duck
+    main: ./cmd/duck
+    binary: duck
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/DigiBugCat/duck/command.version={{ .Version }}
+
+archives:
+  - id: duck
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^style:"
+      - "^chore:"
+
+# Homebrew CASK (the current way to ship a prebuilt CLI binary; `brews`/formula
+# is deprecated). `brew install DigiBugCat/tap/duck` installs the binary; the
+# post-install hook clears the macOS quarantine flag so the unsigned binary runs.
+homebrew_casks:
+  - name: duck
+    repository:
+      owner: DigiBugCat
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/DigiBugCat/duck"
+    description: "Make a remote hub feel local: auto-sync cwd + remote tmux sessions over SSH"
+    # The laptop client drives mutagen locally; rsync + ssh are built into macOS.
+    dependencies:
+      - formula: mutagen-io/mutagen/mutagen
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/duck"]
+          end
+
+release:
+  github:
+    owner: DigiBugCat
+    name: duck
