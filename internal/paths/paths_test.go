@@ -25,12 +25,12 @@ func TestQuoteEscapesSingleQuotes(t *testing.T) {
 
 // TestClaudeProjectDir pins the cwd→slug mapping to Claude Code's actual rule,
 // verified empirically against ~/.claude/projects on disk: every "/" and "."
-// becomes "-", case preserved. The "." case (a username like andrew.sulistio)
+// becomes "-", case preserved. The "." case (a username like jane.doe)
 // is the one that bites — it must collapse to "-", not survive.
 func TestClaudeProjectDir(t *testing.T) {
 	cases := []struct{ abs, want string }{
-		{"/Users/andrew.sulistio/dev", "~/.claude/projects/-Users-andrew-sulistio-dev"},
-		{"/Users/andrew.sulistio/dev/foo", "~/.claude/projects/-Users-andrew-sulistio-dev-foo"},
+		{"/Users/jane.doe/dev", "~/.claude/projects/-Users-jane-doe-dev"},
+		{"/Users/jane.doe/dev/foo", "~/.claude/projects/-Users-jane-doe-dev-foo"},
 		{"/Users/me/Cassandra-Finance", "~/.claude/projects/-Users-me-Cassandra-Finance"},
 		{"/private/tmp", "~/.claude/projects/-private-tmp"},
 	}

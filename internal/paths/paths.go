@@ -66,8 +66,8 @@ func SessionName(bundle, tildePath string) string {
 
 // claudeSlugReplacer mirrors Claude Code's project-directory slug rule: an
 // absolute path becomes a single token with every "/" and "." turned into "-"
-// (case preserved). Verified empirically: /Users/andrew.sulistio/dev maps to
-// the on-disk slug -Users-andrew-sulistio-dev (note the "." in the username).
+// (case preserved). Verified empirically: /Users/jane.doe/dev maps to
+// the on-disk slug -Users-jane-doe-dev (note the "." in the username).
 var claudeSlugReplacer = strings.NewReplacer("/", "-", ".", "-")
 
 // ClaudeProjectDir returns the tilde-form path of the ~/.claude/projects/<slug>
