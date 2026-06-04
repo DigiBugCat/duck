@@ -769,3 +769,24 @@ func TestClaudeCoSyncSkippedWhenCorpusAbsent(t *testing.T) {
 		t.Fatalf("absent corpus must co-sync nothing even when enabled: addCalls=%d, paths=%v", s.addCalls, s.addPaths)
 	}
 }
+
+func TestClaudeCoSyncFiresFromGatedPath(t *testing.T) {
+	// `duck -c` / `--resume` go through EnsureSyncedGated, not Run; the corpus
+	// must seed there too so history follows the user regardless of entry point.
+	_, cwd := claudeCoSyncEnv(t, true)
+	r := &fakeRunner{out: map[string]string{listCmd(): ""}}
+	s := &fakeSyncer{synced: false}
+	// not-risky classifier + unknown policy → gated decideSync auto-syncs.
+	f := newFlowDeps(r, &fakeAttacher{}, s, newFakePolicy(nil), fakeClassifier{}, &fakePrompter{choice: ChoiceNo})
+	f.SetClaudeHistory(true)
+
+	if _, err := f.EnsureSyncedGated(cwd); err != nil {
+		t.Fatalf("EnsureSyncedGated: %v", err)
+	}
+	if s.addCalls != 2 {
+		t.Fatalf("gated path must co-sync the corpus too: addCalls=%d, paths=%v", s.addCalls, s.addPaths)
+	}
+	if s.addPaths[len(s.addPaths)-1] != paths.ClaudeProjectDir(cwd) {
+		t.Fatalf("gated co-sync target = %q, want corpus %q", s.addPaths[len(s.addPaths)-1], paths.ClaudeProjectDir(cwd))
+	}
+}

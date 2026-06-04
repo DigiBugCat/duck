@@ -328,7 +328,15 @@ func (f *Flow) EnsureSyncedGated(cwd string) (tildeDir string, err error) {
 	// gated path never forces a merge into a non-empty hub dir (force=false), so a
 	// hub conflict here surfaces as actions.ErrHubNonEmpty for the caller to
 	// resolve — it does not silently merge.
-	return f.EnsureSynced(cwd, false)
+	td, err := f.EnsureSynced(cwd, false)
+	if err != nil {
+		return "", err
+	}
+	// Co-sync the folder's Claude corpus here too (best-effort) so `duck -c` /
+	// `--resume` seed it as well, not just bare `duck` — the user's history follows
+	// them regardless of how they re-enter a folder. Idempotent once seeded.
+	f.coSyncClaude(cwd)
+	return td, nil
 }
 
 // EnsureSession returns a session for tildeDir, creating a new one when forceNew
