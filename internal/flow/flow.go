@@ -12,6 +12,7 @@ package flow
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/DigiBugCat/duck/internal/folder"
@@ -138,7 +139,15 @@ type Flow struct {
 	classifier Classifier
 	prompter   Prompter
 	attachInt  InteractiveAttach
+	syncClaude bool // global opt-in: co-sync this folder's ~/.claude/projects/<slug>
 }
+
+// SetClaudeHistory toggles the per-folder Claude history co-sync (OFF by
+// default). When on, a bare `duck` that mirrors a folder ALSO co-syncs that
+// folder's ~/.claude/projects/<slug> corpus (transcripts + memory) to the hub.
+// Wired from the command layer off config.SyncClaudeHistory so flow keeps no
+// config import.
+func (f *Flow) SetClaudeHistory(on bool) { f.syncClaude = on }
 
 // SetInteractiveAttach overrides the interactive-attach seam (the command layer
 // wires in its reconnect loop). A nil arg restores the default. Called by the
@@ -256,6 +265,45 @@ func (f *Flow) EnsureSynced(cwd string, force bool) (tildeDir string, err error)
 		return "", err
 	}
 	return tildeDir, nil
+}
+
+// coSyncClaude co-syncs the Claude history corpus for the folder at absCwd —
+// ~/.claude/projects/<slug> — when the global opt-in is on. It is best-effort
+// and returns no error: a failure to mirror history must never block or fail the
+// session the user came for (it is reported, not propagated).
+//
+// Gates, in order:
+//   - opt-in off → nothing (the default).
+//   - the corpus dir does not exist locally → nothing: Claude has never run in
+//     this folder yet, so there is nothing to seed (Mutagen will pick it up the
+//     next time duck runs here, once Claude has written it).
+//   - already syncing → nothing (idempotent; the long-lived mutagen session keeps
+//     it current).
+//
+// Otherwise it runs EnsureSynced with force=true: the corpus is a multi-machine
+// artifact (the same project's history may already exist on the hub from another
+// laptop), so the NEWEST-WINS reconcile-then-merge is the correct seed — newest
+// copy of each transcript wins, union of both sides, nothing deleted.
+func (f *Flow) coSyncClaude(absCwd string) {
+	if !f.syncClaude {
+		return
+	}
+	claudeTilde := paths.ClaudeProjectDir(absCwd)
+	local, err := paths.Expand(claudeTilde)
+	if err != nil {
+		return
+	}
+	if info, err := os.Stat(local); err != nil || !info.IsDir() {
+		return // Claude hasn't created this folder's corpus yet — nothing to seed.
+	}
+	if synced, err := f.sync.IsSynced(claudeTilde); err == nil && synced {
+		return // already maintained by a running mutagen session.
+	}
+	// force=true → newest-wins reconcile then merge (safe for a corpus that may
+	// already live on the hub). Best-effort: swallow errors so the session opens.
+	if _, err := f.EnsureSynced(local, true); err != nil {
+		fmt.Fprintf(os.Stderr, "duck: claude history co-sync skipped: %v\n", err)
+	}
 }
 
 // EnsureSyncedGated is EnsureSynced behind the same sync-awareness gate as bare
@@ -411,6 +459,10 @@ func (f *Flow) RunWithOverride(cwd string, override Override) error {
 		if err != nil {
 			return err
 		}
+		// We are mirroring this folder anyway: if the user opted in, ALSO co-sync
+		// this folder's Claude history corpus (transcripts + memory). Best-effort —
+		// it must never block or fail the session the user actually came for.
+		f.coSyncClaude(cwd)
 	} else {
 		// A no-sync session must still open in a valid hub dir: use D if it exists
 		// on the hub, otherwise fall back to home.

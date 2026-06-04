@@ -45,6 +45,11 @@ var configCmd = &cobra.Command{
 			model = "(default)"
 		}
 		fmt.Fprintf(tw, "codex model\t%s\n", model)
+		claudeSync := "off"
+		if cfg.SyncClaudeHistory {
+			claudeSync = "on"
+		}
+		fmt.Fprintf(tw, "claude history sync\t%s  (duck config claude-sync on|off)\n", claudeSync)
 		tw.Flush()
 
 		// Per-folder sync memory: what duck remembers about where it auto-mirrors.
@@ -107,8 +112,48 @@ var configEditCmd = &cobra.Command{
 	},
 }
 
+// configClaudeSyncCmd toggles the per-folder Claude history co-sync. It is a
+// global on/off (default off) — when on, a bare `duck` that mirrors a folder
+// ALSO co-syncs that folder's ~/.claude/projects/<slug> corpus (transcripts +
+// memory) to the hub. Off by default because it ships terminal transcripts off
+// your machine.
+var configClaudeSyncCmd = &cobra.Command{
+	Use:       "claude-sync <on|off>",
+	Short:     "Toggle per-folder Claude history sync (transcripts + memory) to the hub",
+	Args:      cobra.ExactArgs(1),
+	ValidArgs: []string{"on", "off"},
+	RunE: func(c *cobra.Command, args []string) error {
+		var on bool
+		switch args[0] {
+		case "on", "true", "yes":
+			on = true
+		case "off", "false", "no":
+			on = false
+		default:
+			return fmt.Errorf("expected on or off, got %q", args[0])
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		cfg.SyncClaudeHistory = on
+		if err := config.Save(cfg); err != nil {
+			return err
+		}
+		state := "off"
+		if on {
+			state = "on"
+		}
+		fmt.Fprintf(c.OutOrStdout(), "claude history sync: %s\n", state)
+		if on {
+			fmt.Fprintln(c.OutOrStdout(), "  duck will co-sync each ducked folder's ~/.claude/projects/<slug> (transcripts + memory) to the hub.")
+		}
+		return nil
+	},
+}
+
 func init() {
-	configCmd.AddCommand(configPathCmd, configEditCmd)
+	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd)
 }
 
 func sortedKeys(m map[string]string) []string {

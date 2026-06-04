@@ -64,6 +64,9 @@ func build() (*wiring, error) {
 	fl.SetInteractiveAttach(func(tmuxName string, _ bool) (bool, error) {
 		return runAttachLoop(sess, tmuxName) == CleanLeave, nil
 	})
+	// Per-folder Claude history co-sync (OFF by default): when on, a bare `duck`
+	// that mirrors a folder also co-syncs that folder's ~/.claude/projects/<slug>.
+	fl.SetClaudeHistory(cfg.SyncClaudeHistory)
 	ap := app.New(sess, store, nm)
 	// Gate lazy auto-naming on the per-dir toggle (OFF by default): Refresh only
 	// sends pane content to the model for dirs the user opted in (DESIGN §5).
