@@ -76,6 +76,33 @@ vault from several machines), duck offers a **newest-wins merge**: per file, the
 **newest version wins** and unique files from both sides are kept — **nothing is
 deleted** (`rsync -a -u`, no `--delete`; then Mutagen maintains it).
 
+## Claude history sync (opt-in)
+
+If you run `claude` on *both* your laptop and the hub, their session histories
+normally live on whichever machine ran them. Turn this on and duck makes each
+folder's Claude corpus follow you:
+
+```sh
+duck config claude-sync on
+```
+
+From then on, whenever `duck` mirrors a folder it **also co-syncs that folder's
+`~/.claude/projects/<slug>/`** — its transcripts *and* its auto-memory —
+bidirectionally, scoped to the folders you actually duck into (not your whole
+`~/.claude`). It works because duck guarantees the same `$HOME` on both machines,
+so Claude's path-encoded project slug lines up automatically.
+
+- **Off by default** — it ships terminal transcripts to the hub, a real data flow.
+- **Per-folder & lazy** — only folders you duck into are synced, and only once
+  Claude has actually written that folder's corpus.
+- **Newest-wins merge** — the same project's history from another machine is
+  merged per-file (newest wins, nothing deleted), then Mutagen maintains it.
+- **Why only `projects/`?** The rest of `~/.claude` (and `~/.codex`) holds live
+  SQLite DBs, credentials, and append-only logs that **corrupt or leak** under
+  bidirectional file-sync. `projects/` is the one conflict-safe, single-writer
+  slice — so that's the only thing duck touches. (`codex` history is *not* synced:
+  its resume picker is driven by an index/DB that can't be safely two-way synced.)
+
 ## Naming & privacy
 
 Session naming is **opt-in per folder** (toggle via `duck config`). When enabled,
@@ -96,6 +123,7 @@ laptop; codex is **not** required on the hub.
 | `duck rename <s> <name…>` | set a raw display name for a session |
 | `duck kill <name>` / `duck clean` | kill one / all detached-idle sessions |
 | `duck config` (`path`, `edit`) | show / locate / edit the config (hub, codex model, per-folder policy) |
+| `duck config claude-sync on\|off` | toggle per-folder Claude history sync (transcripts + memory) to the hub |
 | `duck hub set/setup/show` | set, provision, or print the hub |
 | `duck setup` | the interactive first-run wizard |
 | `duck sync …` | explicit Mutagen bundles: `new/add/get/ls/show/rm/drop/status/prune` |

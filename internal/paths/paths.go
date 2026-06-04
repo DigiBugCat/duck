@@ -64,6 +64,24 @@ func SessionName(bundle, tildePath string) string {
 	return fmt.Sprintf("duck-%s-%s", bundle, ID(tildePath))
 }
 
+// claudeSlugReplacer mirrors Claude Code's project-directory slug rule: an
+// absolute path becomes a single token with every "/" and "." turned into "-"
+// (case preserved). Verified empirically: /Users/jane.doe/dev maps to
+// the on-disk slug -Users-jane-doe-dev (note the "." in the username).
+var claudeSlugReplacer = strings.NewReplacer("/", "-", ".", "-")
+
+// ClaudeProjectDir returns the tilde-form path of the ~/.claude/projects/<slug>
+// directory Claude Code uses for sessions started in absCwd, deriving <slug>
+// with the same "/"→"-", "."→"-" rule Claude itself applies. Because duck
+// guarantees the same $HOME/username on both machines, the slug computed here is
+// byte-identical to the one Claude wrote and to the one the hub would compute —
+// so the per-folder transcript+memory corpus lines up across machines. absCwd
+// must be absolute (the caller passes the resolved cwd).
+func ClaudeProjectDir(absCwd string) string {
+	slug := claudeSlugReplacer.Replace(absCwd)
+	return "~/.claude/projects/" + slug
+}
+
 // Quote single-quotes s for safe interpolation into a remote /bin/sh command,
 // escaping any embedded single quotes. Shared by the session, namer, and hub
 // layers (all of which build remote tmux/shell command strings) so the quoting

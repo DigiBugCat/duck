@@ -26,6 +26,14 @@ type Config struct {
 	// key is OFF — auto-naming is opt-in because it is a real data flow.
 	AutoName map[string]bool `toml:"auto_name,omitempty"`
 
+	// SyncClaudeHistory is the global opt-in for per-folder Claude history sync:
+	// when true, bare `duck <folder>` ALSO co-syncs that folder's
+	// ~/.claude/projects/<slug> directory (its transcripts + auto-memory) to the
+	// hub, bidirectionally, scoped to the folders you actually duck into. OFF by
+	// default because it ships terminal transcripts to the hub — a real data flow,
+	// like auto-naming. See flow.Flow.coSyncClaude.
+	SyncClaudeHistory bool `toml:"sync_claude_history,omitempty"`
+
 	// Folders is the per-folder sync policy store: the key is a tilde-form dir,
 	// the value is "sync" or "never". It lets bare `duck` remember whether a
 	// folder should auto-mirror so it never re-prompts (and so a known-safe folder

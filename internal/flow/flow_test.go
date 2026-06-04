@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/DigiBugCat/duck/internal/names"
+	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/session"
 )
 
@@ -27,6 +28,7 @@ type fakeSyncer struct {
 	reconCalls int
 	lastForce  bool
 	calls      []string // "reconcile"/"addwait" in call order
+	addPaths   []string // tildeDir of every AddAndWait, in order (co-sync target asserts)
 }
 
 func (f *fakeSyncer) IsSynced(string) (bool, error) { return f.synced, nil }
@@ -35,10 +37,11 @@ func (f *fakeSyncer) Reconcile(string) error {
 	f.calls = append(f.calls, "reconcile")
 	return nil
 }
-func (f *fakeSyncer) AddAndWait(_ string, force bool) error {
+func (f *fakeSyncer) AddAndWait(tildeDir string, force bool) error {
 	f.addCalls++
 	f.lastForce = force
 	f.calls = append(f.calls, "addwait")
+	f.addPaths = append(f.addPaths, tildeDir)
 	return nil
 }
 
@@ -678,5 +681,112 @@ func TestRunCleansFreshSessionOnCleanLeave(t *testing.T) {
 	}
 	if !sawCmd(r, killCmdFor("foo")) {
 		t.Fatalf("a fresh untouched session left CLEANLY must be killed; cmds=%v", r.cmds)
+	}
+}
+
+// --- per-folder Claude history co-sync (SetClaudeHistory) ---------------------
+
+// claudeCoSyncEnv sets up a hermetic HOME with a real cwd under it and (when
+// makeCorpus) the matching ~/.claude/projects/<slug> corpus dir, so coSyncClaude
+// can exercise its os.Stat gate against a real filesystem the framework cleans.
+// It returns the absolute cwd. HOME is redirected for the whole test (paths
+// Contract/Expand and ClaudeProjectDir all key off os.UserHomeDir == $HOME).
+func claudeCoSyncEnv(t *testing.T, makeCorpus bool) (home, cwd string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	cwd = home + "/work/proj"
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatalf("mkdir cwd: %v", err)
+	}
+	if makeCorpus {
+		corpus, err := paths.Expand(paths.ClaudeProjectDir(cwd))
+		if err != nil {
+			t.Fatalf("expand corpus: %v", err)
+		}
+		if err := os.MkdirAll(corpus, 0o755); err != nil {
+			t.Fatalf("mkdir corpus: %v", err)
+		}
+		if err := os.WriteFile(corpus+"/session.jsonl", []byte("{}\n"), 0o644); err != nil {
+			t.Fatalf("seed corpus file: %v", err)
+		}
+	}
+	return home, cwd
+}
+
+func TestClaudeCoSyncOffByDefault(t *testing.T) {
+	_, cwd := claudeCoSyncEnv(t, true) // corpus EXISTS, so only the toggle gates it
+	r := &fakeRunner{out: map[string]string{listCmd(): ""}}
+	s := &fakeSyncer{synced: false}
+	f := newFlow(r, &fakeAttacher{}, s)
+	// SetClaudeHistory NOT called → default OFF.
+
+	if err := f.Run(cwd); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Exactly ONE AddAndWait (the folder). No second call for the corpus.
+	if s.addCalls != 1 {
+		t.Fatalf("off-by-default must co-sync nothing: addCalls=%d, paths=%v", s.addCalls, s.addPaths)
+	}
+}
+
+func TestClaudeCoSyncFiresWhenEnabled(t *testing.T) {
+	_, cwd := claudeCoSyncEnv(t, true)
+	r := &fakeRunner{out: map[string]string{listCmd(): ""}}
+	s := &fakeSyncer{synced: false}
+	f := newFlow(r, &fakeAttacher{}, s)
+	f.SetClaudeHistory(true)
+
+	if err := f.Run(cwd); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Two AddAndWait calls: the folder, then the corpus.
+	if s.addCalls != 2 {
+		t.Fatalf("enabled co-sync must AddAndWait twice (folder + corpus): addCalls=%d, paths=%v", s.addCalls, s.addPaths)
+	}
+	wantCorpus := paths.ClaudeProjectDir(cwd)
+	if s.addPaths[len(s.addPaths)-1] != wantCorpus {
+		t.Fatalf("co-sync target = %q, want the corpus %q", s.addPaths[len(s.addPaths)-1], wantCorpus)
+	}
+	// The corpus is a multi-machine artifact → it must merge NEWEST-WINS
+	// (force=true ⇒ Reconcile runs before its AddAndWait).
+	if !s.lastForce {
+		t.Fatalf("corpus co-sync must force the newest-wins merge (force=true)")
+	}
+}
+
+func TestClaudeCoSyncSkippedWhenCorpusAbsent(t *testing.T) {
+	_, cwd := claudeCoSyncEnv(t, false) // NO corpus dir: Claude never ran here
+	r := &fakeRunner{out: map[string]string{listCmd(): ""}}
+	s := &fakeSyncer{synced: false}
+	f := newFlow(r, &fakeAttacher{}, s)
+	f.SetClaudeHistory(true) // ON, but nothing to seed yet
+
+	if err := f.Run(cwd); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if s.addCalls != 1 {
+		t.Fatalf("absent corpus must co-sync nothing even when enabled: addCalls=%d, paths=%v", s.addCalls, s.addPaths)
+	}
+}
+
+func TestClaudeCoSyncFiresFromGatedPath(t *testing.T) {
+	// `duck -c` / `--resume` go through EnsureSyncedGated, not Run; the corpus
+	// must seed there too so history follows the user regardless of entry point.
+	_, cwd := claudeCoSyncEnv(t, true)
+	r := &fakeRunner{out: map[string]string{listCmd(): ""}}
+	s := &fakeSyncer{synced: false}
+	// not-risky classifier + unknown policy → gated decideSync auto-syncs.
+	f := newFlowDeps(r, &fakeAttacher{}, s, newFakePolicy(nil), fakeClassifier{}, &fakePrompter{choice: ChoiceNo})
+	f.SetClaudeHistory(true)
+
+	if _, err := f.EnsureSyncedGated(cwd); err != nil {
+		t.Fatalf("EnsureSyncedGated: %v", err)
+	}
+	if s.addCalls != 2 {
+		t.Fatalf("gated path must co-sync the corpus too: addCalls=%d, paths=%v", s.addCalls, s.addPaths)
+	}
+	if s.addPaths[len(s.addPaths)-1] != paths.ClaudeProjectDir(cwd) {
+		t.Fatalf("gated co-sync target = %q, want corpus %q", s.addPaths[len(s.addPaths)-1], paths.ClaudeProjectDir(cwd))
 	}
 }
