@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Sanitized demo stand-in for `duck`, used ONLY to render docs/demo/demo.tape
+# into the README GIF. It prints curated, generic frames (no real hub, IP,
+# username, or transcript content) that mirror duck's real visual style. It is
+# NOT the duck binary and is never installed — see the real CLI in cmd/duck.
+set -euo pipefail
+
+PINK=$'\e[38;5;212m'
+DIM=$'\e[2m'
+GREEN=$'\e[32m'
+BOLD=$'\e[1m'
+CYAN=$'\e[36m'
+R=$'\e[0m'
+SPIN='⠋⠙⠹⸱⠸⠼⠴⠦⠧⠇⠏'
+
+spin() { # $1 label  $2 cycles
+  local label="$1" n="${2:-12}" i=0
+  local frames='⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏'
+  while [ "$i" -lt "$n" ]; do
+    for f in $frames; do
+      printf "\r  ${PINK}%s${R} %s" "$f" "$label"
+      sleep 0.06
+    done
+    i=$((i+1))
+  done
+}
+
+case "${1:-}" in
+  "")
+    printf "${PINK}🦆 duck${R} ${DIM}~/dev/auth-refactor${R}\n\n"
+    spin "syncing ~/dev/auth-refactor → you@hub.local" 2
+    printf "\r  ${GREEN}✓${R} synced ${DIM}(142 files, both directions, kept live by mutagen)${R}        \n"
+    spin "opening remote session" 1
+    printf "\r  ${GREEN}✓${R} session ${BOLD}auth-refactor${R} on you@hub.local                     \n\n"
+    printf "${DIM}── attached ── (you're now on the hub) ──────────────────────${R}\n"
+    printf "${GREEN}you@hub${R}:${CYAN}~/dev/auth-refactor${R}❯ ${DIM}claude${R}\n"
+    sleep 1.2
+    ;;
+  --resume)
+    # A canned, self-animating picker: it "types" a filter and narrows.
+    draw() { # $1 filter  shift; rows...
+      printf "\e[H\e[2J"
+      printf "  ${PINK}🦆 duck${R} ${DIM}— resume a session${R}      ${DIM}filter:${R} ${BOLD}%s${R}▏\n\n" "$1"
+      shift
+      for row in "$@"; do printf "  %b\n" "$row"; done
+      printf "\n  ${DIM}↑↓ move · ⏎ attach · ^s this dir · ^k kill · type to filter${R}\n"
+    }
+    sel=$'\e[38;5;212m❯\e[0m'
+    a="${sel} ${BOLD}auth refactor${R}          ${DIM}~/dev/auth-refactor   2m ago${R}"
+    b="  ${BOLD}arm stock thesis${R}       ${DIM}~/research/arm        1h ago${R}"
+    c="  ${BOLD}docs site${R}              ${DIM}~/dev/docs-site       3h ago${R}"
+    d="  ${BOLD}invoice parser${R}         ${DIM}~/dev/invoices        1d ago${R}"
+    draw "" "$a" "$b" "$c" "$d"; sleep 1.0
+    draw "ar"  "${sel} ${BOLD}auth refactor${R}          ${DIM}~/dev/auth-refactor   2m ago${R}" \
+               "  ${BOLD}arm stock thesis${R}       ${DIM}~/research/arm        1h ago${R}"; sleep 0.8
+    draw "arm" "${sel} ${BOLD}arm stock thesis${R}       ${DIM}~/research/arm        1h ago${R}"; sleep 1.0
+    printf "\e[H\e[2J  ${GREEN}✓${R} attaching ${BOLD}arm stock thesis${R} …\n"
+    sleep 1.0
+    ;;
+esac

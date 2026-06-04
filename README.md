@@ -13,9 +13,9 @@ tmux session on the hub; sync is [Mutagen](https://mutagen.io); the laptop
 binary just drives the hub over SSH.
 
 <p align="center">
-  <img src="docs/img/picker.png" width="700" alt="duck --resume — the session picker">
+  <img src="docs/img/demo.gif" width="760" alt="duck — sync a folder, open a remote session, resume from a picker">
   <br>
-  <sub><code>duck --resume</code> — your remote sessions, clean names, type to filter</sub>
+  <sub><code>duck</code> syncs the folder and drops you into a remote session · <code>duck --resume</code> picks one back up</sub>
 </p>
 
 ## Install
