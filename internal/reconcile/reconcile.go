@@ -23,6 +23,7 @@
 package reconcile
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -34,9 +35,21 @@ import (
 
 // run is the seam tests swap to record the constructed rsync argv (and call
 // order) and to inject failures without invoking the real rsync binary.
-// Production runs via exec.Command. Mirrors internal/mutagen.runVar.
+// Production runs via exec.Command and FOLDS rsync's stderr into the returned
+// error so a partial transfer (e.g. exit status 23: a destination it could not
+// write, a vanished file, no space on the hub) names the actual cause instead
+// of failing silently. Mirrors internal/mutagen.runVar's stderr capture.
 var run = func(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+	cmd := exec.Command(name, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 // mkdirRemote is a SEPARATE seam from run: the pre-PUSH `mkdir -p` on the hub
