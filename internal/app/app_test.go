@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -43,7 +44,7 @@ type fakeAttacher struct{ attached string }
 func (f *fakeAttacher) ExecAttach(id string) error { f.attached = id; return nil }
 func (f *fakeAttacher) RunAttach(id string) error  { f.attached = id; return nil }
 
-const listCmd = "tmux list-sessions -F '#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}'"
+const listCmd = "tmux list-sessions -F '#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{pane_title}'"
 
 func newApp(r *fakeRunner, n namer.Namer) *App {
 	mgr := session.NewManager(r, &fakeAttacher{})
@@ -120,7 +121,7 @@ func (s *stubNamer) Name(context.Context, string) (string, error) {
 }
 func (s *stubNamer) CaptureHead(string) (string, error) { return s.head, nil }
 
-func TestNameNowCapturesNamesAndFreezesHash(t *testing.T) {
+func TestNameNowPinsGeneratedNameAsUserName(t *testing.T) {
 	r := &fakeRunner{out: map[string]string{
 		"tmux show-options -t 'auth' -v '@duck_dir'": "~/dev/auth\n",
 	}}
@@ -133,16 +134,22 @@ func TestNameNowCapturesNamesAndFreezesHash(t *testing.T) {
 	if title != "Codex Title" {
 		t.Fatalf("NameNow returned %q", title)
 	}
-	// It must freeze the codex name + a content hash of the captured head.
+	// It must PIN the generated name as the user name so it outranks the live pane
+	// title in Resolve (otherwise ^n would be a silent no-op on Claude sessions).
 	if len(r.inputs) == 0 {
 		t.Fatalf("NameNow must write names.json")
 	}
 	written := r.inputs[len(r.inputs)-1]
-	if !strings.Contains(written, "Codex Title") {
-		t.Fatalf("codex name not frozen: %s", written)
+	var got names.Names
+	if err := json.Unmarshal([]byte(written), &got); err != nil {
+		t.Fatalf("streamed JSON is invalid: %v", err)
 	}
-	if !strings.Contains(written, namer.Hash("pane head content")) {
-		t.Fatalf("content hash of the captured head must be stored: %s", written)
+	if got.Names["auth"].UserName != "Codex Title" {
+		t.Fatalf("generated name must be pinned as userName, got %+v", got.Names["auth"])
+	}
+	// And it must NOT land in the codex slot (which loses to the pane title).
+	if got.Names["auth"].CodexName != "" {
+		t.Fatalf("NameNow must not write codexName, got %q", got.Names["auth"].CodexName)
 	}
 }
 

@@ -101,7 +101,6 @@ type model struct {
 	killFor   string // tmux name pending kill in modeConfirm
 
 	busy      bool
-	naming    bool // background codex naming (phase 2) is in flight after the instant list
 	spinner   spinner.Model
 	status    string
 	statusErr bool
@@ -109,8 +108,7 @@ type model struct {
 	selected string // chosen tmux name on enter-attach; read by Run after quit
 
 	svc  app.Service    // operations; injectable for tests (flok's seam)
-	load func() tea.Msg // naming row loader (Refresh); injectable for tests (flok's seam)
-	list func() tea.Msg // instant row loader (List, no naming); the picker's first paint
+	load func() tea.Msg // row loader; injectable for tests (flok's seam)
 }
 
 // initialModel builds the picker model around an injected Service, wiring the
@@ -129,15 +127,10 @@ func initialModel(svc app.Service) model {
 		spinner: sp,
 		svc:     svc,
 		load:    loadCmd(svc),
-		list:    listCmd(svc),
 	}
 }
 
 // ---- Messages ----
-
-// listedMsg carries the instant (un-named) first paint from listCmd; loadedMsg
-// carries the named rows from the background loadCmd that follows it.
-type listedMsg struct{ rows []rowmodel.Row }
 
 type loadedMsg struct{ rows []rowmodel.Row }
 
@@ -164,21 +157,6 @@ func loadCmd(svc app.Service) func() tea.Msg {
 			return errMsg{err: err}
 		}
 		return loadedMsg{rows: rows}
-	}
-}
-
-// listCmd is the picker's instant first paint: it reads rows via List (no codex,
-// no pane capture) so the list appears immediately at the dir-derived floor. The
-// listedMsg handler then fires loadCmd to fill in AI titles in the background. On
-// a hub error it emits errMsg so the picker shows the failure rather than an
-// empty list.
-func listCmd(svc app.Service) func() tea.Msg {
-	return func() tea.Msg {
-		rows, err := svc.List()
-		if err != nil {
-			return errMsg{err: err}
-		}
-		return listedMsg{rows: rows}
 	}
 }
 
@@ -227,10 +205,7 @@ func (m model) runAction(cmd tea.Cmd) (model, tea.Cmd) {
 // ---- tea.Model ----
 
 func (m model) Init() tea.Cmd {
-	// Two-phase load: paint the list instantly (m.list / List, no naming), then the
-	// listedMsg handler kicks off m.load (Refresh) to fill AI titles in the
-	// background so codex never blocks the first paint.
-	return tea.Batch(m.list, textinput.Blink)
+	return tea.Batch(m.load, textinput.Blink)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -241,29 +216,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.busy || m.naming {
+		if m.busy {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
 		}
 		return m, nil
 
-	case listedMsg:
-		// Phase 1: instant paint at the dir-derived floor. Show the rows now and
-		// kick off the background naming pass (Refresh) to fill in AI titles. Rank
-		// is name-independent (attached + recency), so titles arriving later never
-		// reorder rows or move the cursor.
-		m.state = stateLoaded
-		m.rows = msg.rows
-		if m.cursor >= len(m.visibleRows()) {
-			m.cursor = max(0, len(m.visibleRows())-1)
-		}
-		m.naming = true
-		return m, tea.Batch(m.load, m.spinner.Tick)
-
 	case loadedMsg:
 		m.state = stateLoaded
-		m.naming = false
 		m.rows = msg.rows
 		if m.cursor >= len(m.visibleRows()) {
 			m.cursor = max(0, len(m.visibleRows())-1)
@@ -272,7 +233,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.state = stateError
-		m.naming = false
 		m.err = msg.err
 		return m, nil
 
@@ -609,14 +569,9 @@ func (m model) View() string {
 func (m model) headerView() string {
 	title := titleStyle.Render("duck")
 	var right string
-	switch {
-	case m.busy:
+	if m.busy {
 		right = m.spinner.View() + " " + hubLabelStyle.Render("working…")
-	case m.naming:
-		// Phase-2 background naming: the list is already shown, so report titling
-		// progress alongside the count instead of hiding the rows behind "loading".
-		right = m.spinner.View() + " " + hubLabelStyle.Render("naming "+plural2(len(m.rows), "session", "sessions")+"…")
-	default:
+	} else {
 		switch m.state {
 		case stateLoading:
 			right = hubLabelStyle.Render("loading…")

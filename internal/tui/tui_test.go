@@ -19,17 +19,12 @@ type fakeService struct {
 	nameNow   []string
 	kill      []string
 	refreshN  int
-	listN     int
 	nameTitle string
 }
 
 func (f *fakeService) Sessions() []rowmodel.Row { return f.rows }
 func (f *fakeService) Refresh() ([]rowmodel.Row, error) {
 	f.refreshN++
-	return f.rows, nil
-}
-func (f *fakeService) List() ([]rowmodel.Row, error) {
-	f.listN++
 	return f.rows, nil
 }
 func (f *fakeService) Attach(string) error { return nil }
@@ -142,54 +137,6 @@ func TestLoadCmdCallsRefresh(t *testing.T) {
 	}
 	if lm, ok := msgs[0].(loadedMsg); !ok || len(lm.rows) != 3 {
 		t.Fatalf("loadCmd should emit loadedMsg with the refreshed rows, got %T", msgs[0])
-	}
-}
-
-// TestListCmdCallsList pins the picker's instant first paint: listCmd reads rows
-// via List (no codex/naming), not Refresh, and emits a listedMsg.
-func TestListCmdCallsList(t *testing.T) {
-	f := &fakeService{rows: sampleRows()}
-	msgs := drain(listCmd(f))
-	if f.listN != 1 || f.refreshN != 0 {
-		t.Fatalf("listCmd must call List (not Refresh): listN=%d refreshN=%d", f.listN, f.refreshN)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("listCmd should emit one msg, got %d", len(msgs))
-	}
-	if lm, ok := msgs[0].(listedMsg); !ok || len(lm.rows) != 3 {
-		t.Fatalf("listCmd should emit listedMsg with the listed rows, got %T", msgs[0])
-	}
-}
-
-// TestListedMsgPaintsThenNamesInBackground pins the two-phase load: the instant
-// list paints (stateLoaded), the model enters the naming phase, and the emitted
-// command runs the background Refresh (draining to a loadedMsg) that fills titles.
-func TestListedMsgPaintsThenNamesInBackground(t *testing.T) {
-	f := &fakeService{rows: sampleRows()}
-	m := initialModel(f)
-	m, cmd := upd(m, listedMsg{rows: f.rows})
-	if m.state != stateLoaded {
-		t.Fatalf("listedMsg should paint instantly (stateLoaded), got %d", m.state)
-	}
-	if !m.naming {
-		t.Fatalf("listedMsg should enter the background naming phase")
-	}
-	var named bool
-	for _, msg := range drain(cmd) {
-		if _, ok := msg.(loadedMsg); ok {
-			named = true
-		}
-	}
-	if !named {
-		t.Fatalf("listedMsg must kick off the background Refresh (expected a loadedMsg)")
-	}
-	if f.refreshN != 1 {
-		t.Fatalf("background naming should call Refresh once, got %d", f.refreshN)
-	}
-	// Phase 2 completes: naming clears.
-	m, _ = upd(m, loadedMsg{rows: f.rows})
-	if m.naming {
-		t.Fatalf("loadedMsg should clear the naming phase")
 	}
 }
 

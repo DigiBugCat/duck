@@ -28,13 +28,8 @@ type Service interface {
 	// the picker renders these without blocking on the hub).
 	Sessions() []model.Row
 	// Refresh re-reads live sessions + names from the hub and rebuilds the rows,
-	// returning the fresh set. It MAY auto-name unnamed sessions (codex), so it can
-	// block; the picker runs it in the background after List paints the floor rows.
+	// returning the fresh set.
 	Refresh() ([]model.Row, error)
-	// List re-reads live sessions + names and rebuilds the rows WITHOUT the
-	// auto-naming side effect (no codex, no pane capture, no names.json write). The
-	// picker calls it for an instant first paint, then runs Refresh to fill titles.
-	List() ([]model.Row, error)
 	// Attach tears nothing down itself; the TUI quits first, then calls Attach,
 	// which hands the process off to ssh -t tmux attach for tmuxName. Returns
 	// only on a failure to exec.
@@ -138,7 +133,7 @@ func (a *App) refresh(autoName bool) ([]model.Row, error) {
 	rows := make([]model.Row, 0, len(live))
 	for _, s := range live {
 		rows = append(rows, model.Row{
-			Display:  names.Resolve(n, s.Name, s.Dir),
+			Display:  names.Resolve(n, s.Name, s.Dir, s.PaneTitle),
 			Dir:      s.Dir,
 			Age:      humanizeAge(now.Sub(s.LastActive)),
 			Attached: s.Attached,
@@ -172,6 +167,11 @@ func (a *App) autoNameOnFirstSight(live []session.Sess, n names.Names, now time.
 	for _, s := range live {
 		e := n.Names[s.Name]
 		if e.UserName != "" || !a.autoNameEnabled(s.Dir) {
+			continue
+		}
+		// The running program already wrote a name (Claude Code's pane title); it
+		// wins in Resolve, so spending a codex call here would be wasted — skip.
+		if names.CleanTitle(s.PaneTitle) != "" {
 			continue
 		}
 		head, err := a.capture.CaptureHead(s.Name)
@@ -220,10 +220,14 @@ func (a *App) Rename(tmuxName, display string) error {
 	return a.names.Save(n)
 }
 
-// NameNow forces a codex re-name now: capture the pane head, run the namer,
-// then freeze the result on a content hash in names.json (so a later refresh
-// reuses it until the head changes materially). Falls back to the dir-derived
-// floor on any capture/codex error so naming never blocks.
+// NameNow forces a generated name NOW and PINS it: capture the pane head, run
+// the namer, then store the result as the USER name in names.json. It writes
+// UserName (not CodexName) on purpose — Resolve ranks the live pane title above
+// CodexName, so a freshly-generated codex name in the CodexName slot would be
+// masked by the running program's pane title and ^n would look like a no-op.
+// Pinning it as the user name makes ^n the deliberate override of the live title.
+// Falls back to the dir-derived floor on any capture/codex error so naming never
+// blocks (and without writing, so the floor is never pinned and a later ^n retries).
 func (a *App) NameNow(tmuxName string) (string, error) {
 	dir, _, _ := a.sessions.Option(tmuxName, "@duck_dir")
 
@@ -234,11 +238,7 @@ func (a *App) NameNow(tmuxName string) (string, error) {
 	title, err := a.namer.Name(context.Background(), snapshot)
 	if err != nil || title == "" {
 		// Codex/capture failed: return the dir-derived floor for display WITHOUT
-		// touching the codex slots. Writing the floor into CodexName + a hash of
-		// the current head would make namer.CacheHit report a hit on the next
-		// Refresh, silently freezing the floor and disabling auto-naming until the
-		// head changed — mirror autoNameOnFirstSight's continue-and-write-nothing
-		// so a later refresh/NameNow retries naming.
+		// writing names.json, so the floor is never pinned and a later ^n retries.
 		return names.Derive(dir), nil
 	}
 
@@ -247,8 +247,7 @@ func (a *App) NameNow(tmuxName string) (string, error) {
 		return "", lerr
 	}
 	e := n.Names[tmuxName]
-	e.CodexName = title
-	e.CodexHash = namer.Hash(snapshot)
+	e.UserName = title
 	if dir != "" {
 		e.Dir = dir
 	}

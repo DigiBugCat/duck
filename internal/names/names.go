@@ -29,6 +29,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // remotePath is the hub-side location of the names file. Reads cat it; writes
@@ -121,34 +122,83 @@ func (s *Store) Save(n Names) error {
 	return err
 }
 
-// Resolve returns the raw display name for a session given its tmux name and
-// tilde-form dir, applying the precedence user-set ▸ codex-generated ▸
-// derive(dir). n is the loaded document; dir is the live @duck_dir (preferred
-// over a stale Entry.Dir). The result is never slugified.
-func Resolve(n Names, tmuxName, dir string) string {
-	if e, ok := n.Names[tmuxName]; ok {
-		if e.UserName != "" {
-			return e.UserName
-		}
-		if e.CodexName != "" {
-			return e.CodexName
-		}
-		// Prefer the live dir; fall back to the stored Entry.Dir.
-		if dir != "" {
-			return Derive(dir)
-		}
-		if e.Dir != "" {
-			return Derive(e.Dir)
-		}
-		return tmuxName
+// Resolve returns the raw display name for a session, applying the precedence
+// user-set ▸ live pane title ▸ codex-generated ▸ derive(dir) ▸ tmux name. n is
+// the loaded document; dir is the live @duck_dir (preferred over a stale
+// Entry.Dir); paneTitle is the session's live #{pane_title}. The pane title wins
+// over a (possibly stale, possibly low-quality) frozen CodexName because it is
+// the name the running program — Claude Code — set for the CURRENT task; only an
+// explicit user rename outranks it. The result is never slugified.
+func Resolve(n Names, tmuxName, dir, paneTitle string) string {
+	e, ok := n.Names[tmuxName]
+	if ok && e.UserName != "" {
+		return e.UserName
 	}
+	// Pull the already-made name the running program wrote (Claude Code's task
+	// summary), instead of spending a codex call to regenerate one.
+	if t := CleanTitle(paneTitle); t != "" {
+		return t
+	}
+	if ok && e.CodexName != "" {
+		return e.CodexName
+	}
+	// Prefer the live dir; fall back to the stored Entry.Dir.
 	if dir != "" {
 		return Derive(dir)
+	}
+	if ok && e.Dir != "" {
+		return Derive(e.Dir)
 	}
 	// Foreign/legacy session: not created by duck, so no names.json entry and no
 	// @duck_dir. The tmux session name is the only identifying info we have — show
 	// it rather than a meaningless "~", so old sessions read sensibly in the list.
 	return tmuxName
+}
+
+// CleanTitle extracts a session name from a raw tmux #{pane_title} IFF the title
+// was set by Claude Code, returning "" otherwise so Resolve falls through to the
+// codex/dir-derived floor. Claude Code prefixes its title with a status glyph
+// (the ✳/✶/✻ "sparkle" dingbats while idle, a braille spinner frame while
+// working); a bare shell leaves pane_title at the terminal default (the hostname,
+// the running command, the cwd) with NO such glyph. So we GATE on the glyph:
+//
+//   - no leading status glyph  → not Claude's title → "" (don't clobber the floor)
+//   - leading glyph(s)+spaces  → strip them; the remainder is the task summary
+//   - remainder empty or the placeholder "Claude Code" (Claude started, no
+//     summary yet) → "" (fall through to dir-derived)
+//
+// Gating on the glyph (rather than blocklisting known generic strings) means any
+// non-Claude pane_title degrades safely to the dir-derived name. This is coupled
+// to Claude Code's title format; if that format changes, sessions fall back to
+// the floor rather than showing garbage.
+func CleanTitle(raw string) string {
+	runes := []rune(raw)
+	if len(runes) == 0 || !isClaudeStatusGlyph(runes[0]) {
+		return ""
+	}
+	i := 0
+	for i < len(runes) && (isClaudeStatusGlyph(runes[i]) || unicode.IsSpace(runes[i])) {
+		i++
+	}
+	t := strings.TrimSpace(string(runes[i:]))
+	if t == "" || strings.EqualFold(t, "Claude Code") {
+		return ""
+	}
+	return t
+}
+
+// isClaudeStatusGlyph reports whether r is one of the leading status glyphs
+// Claude Code prepends to its terminal title: the dingbat "sparkle/asterisk"
+// family (U+2700–U+27BF, e.g. ✳ U+2733) it shows when idle, and the braille
+// pattern range (U+2800–U+28FF) it cycles as a spinner while working.
+func isClaudeStatusGlyph(r rune) bool {
+	switch {
+	case r >= 0x2700 && r <= 0x27BF: // dingbats incl. ✳ ✶ ✻ ✽ ✢
+		return true
+	case r >= 0x2800 && r <= 0x28FF: // braille spinner frames (⠂ …)
+		return true
+	}
+	return false
 }
 
 // Derive is the dir-derived floor: the base of a tilde-form dir (`~/dev/foo` →

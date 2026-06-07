@@ -54,6 +54,7 @@ type Sess struct {
 	Attached   bool      // a client is currently attached
 	LastActive time.Time // session_activity, for recency ranking
 	Windows    int       // window count
+	PaneTitle  string    // active pane's #{pane_title} — Claude Code writes a task summary here (with a ✳/⠂ status glyph), which names.Resolve prefers over codex
 }
 
 // dirOption is the tmux user option duck stamps on each session it creates so
@@ -77,8 +78,13 @@ func NewManager(run Runner, attach Attacher) *Manager {
 // so a display name (resolved elsewhere) never breaks parsing; @duck_dir may be
 // empty for non-duck sessions. The order is the contract with parseList.
 //
-//	name \t @duck_dir \t attached \t activity-epoch \t windows
-const listFormat = "#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}"
+//	name \t @duck_dir \t attached \t activity-epoch \t windows \t pane_title
+//
+// pane_title is last because it is free text (Claude Code's task summary) that
+// may itself contain odd characters; trailing it keeps the earlier fields
+// unambiguous. tmux resolves #{pane_title} to the active pane of the active
+// window for the session.
+const listFormat = "#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{pane_title}"
 
 // List returns every live tmux session on the hub, parsed from a single
 // `tmux list-sessions -F …` call (name, dir option, attached, activity,
@@ -132,6 +138,11 @@ func parseList(out string) []Sess {
 		}
 		if w, err := strconv.Atoi(strings.TrimSpace(fields[4])); err == nil {
 			s.Windows = w
+		}
+		// pane_title is optional (older list output / tests emit only 5 fields); a
+		// missing field just leaves PaneTitle empty so Resolve falls through.
+		if len(fields) >= 6 {
+			s.PaneTitle = fields[5]
 		}
 		sessions = append(sessions, s)
 	}
