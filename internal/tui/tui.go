@@ -606,8 +606,11 @@ func (m model) View() string {
 	if m.width > 0 {
 		out = lipgloss.NewStyle().MaxWidth(m.width).Render(out)
 	}
+	// Anchor the picker to the BOTTOM of the terminal (footer hints sit on the
+	// bottom edge, content rises from there, blank space fills the top) — the pad
+	// goes ABOVE the content rather than below it.
 	if pad := m.height - lipgloss.Height(out); pad > 0 {
-		out += strings.Repeat("\n", pad)
+		out = strings.Repeat("\n", pad) + out
 	}
 	return out
 }
