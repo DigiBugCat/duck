@@ -33,6 +33,14 @@ import (
 // name (the caller execs the attach AFTER the TUI has fully torn down, so ssh/
 // tmux own a clean TTY); on a plain quit it returns "".
 func Run(svc app.Service, cwdDir string) (tmuxName string, err error) {
+	// Detect (and PIN) the terminal background ONCE, before bubbletea takes over
+	// stdin — same as flock/internal/tui. Otherwise lipgloss's AdaptiveColor
+	// detection probes the terminal (OSC 11) lazily during the render loop while
+	// bubbletea owns the input stream; the reply never arrives, detection defaults
+	// to dark, and every adaptive color falls back to its Dark variant (the
+	// washed-out look on a light terminal). SetHasDarkBackground pins the result so
+	// no probe runs mid-loop.
+	lipgloss.SetHasDarkBackground(lipgloss.HasDarkBackground())
 	m := initialModel(svc)
 	m.cwdDir = cwdDir
 	p := tea.NewProgram(m, tea.WithAltScreen())
@@ -93,6 +101,7 @@ type model struct {
 	killFor   string // tmux name pending kill in modeConfirm
 
 	busy      bool
+	naming    bool // background codex naming (phase 2) is in flight after the instant list
 	spinner   spinner.Model
 	status    string
 	statusErr bool
@@ -100,7 +109,8 @@ type model struct {
 	selected string // chosen tmux name on enter-attach; read by Run after quit
 
 	svc  app.Service    // operations; injectable for tests (flok's seam)
-	load func() tea.Msg // row loader; injectable for tests (flok's seam)
+	load func() tea.Msg // naming row loader (Refresh); injectable for tests (flok's seam)
+	list func() tea.Msg // instant row loader (List, no naming); the picker's first paint
 }
 
 // initialModel builds the picker model around an injected Service, wiring the
@@ -119,10 +129,15 @@ func initialModel(svc app.Service) model {
 		spinner: sp,
 		svc:     svc,
 		load:    loadCmd(svc),
+		list:    listCmd(svc),
 	}
 }
 
 // ---- Messages ----
+
+// listedMsg carries the instant (un-named) first paint from listCmd; loadedMsg
+// carries the named rows from the background loadCmd that follows it.
+type listedMsg struct{ rows []rowmodel.Row }
 
 type loadedMsg struct{ rows []rowmodel.Row }
 
@@ -149,6 +164,21 @@ func loadCmd(svc app.Service) func() tea.Msg {
 			return errMsg{err: err}
 		}
 		return loadedMsg{rows: rows}
+	}
+}
+
+// listCmd is the picker's instant first paint: it reads rows via List (no codex,
+// no pane capture) so the list appears immediately at the dir-derived floor. The
+// listedMsg handler then fires loadCmd to fill in AI titles in the background. On
+// a hub error it emits errMsg so the picker shows the failure rather than an
+// empty list.
+func listCmd(svc app.Service) func() tea.Msg {
+	return func() tea.Msg {
+		rows, err := svc.List()
+		if err != nil {
+			return errMsg{err: err}
+		}
+		return listedMsg{rows: rows}
 	}
 }
 
@@ -197,7 +227,10 @@ func (m model) runAction(cmd tea.Cmd) (model, tea.Cmd) {
 // ---- tea.Model ----
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.load, textinput.Blink)
+	// Two-phase load: paint the list instantly (m.list / List, no naming), then the
+	// listedMsg handler kicks off m.load (Refresh) to fill AI titles in the
+	// background so codex never blocks the first paint.
+	return tea.Batch(m.list, textinput.Blink)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -208,15 +241,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinner.TickMsg:
-		if m.busy {
+		if m.busy || m.naming {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
 		}
 		return m, nil
 
+	case listedMsg:
+		// Phase 1: instant paint at the dir-derived floor. Show the rows now and
+		// kick off the background naming pass (Refresh) to fill in AI titles. Rank
+		// is name-independent (attached + recency), so titles arriving later never
+		// reorder rows or move the cursor.
+		m.state = stateLoaded
+		m.rows = msg.rows
+		if m.cursor >= len(m.visibleRows()) {
+			m.cursor = max(0, len(m.visibleRows())-1)
+		}
+		m.naming = true
+		return m, tea.Batch(m.load, m.spinner.Tick)
+
 	case loadedMsg:
 		m.state = stateLoaded
+		m.naming = false
 		m.rows = msg.rows
 		if m.cursor >= len(m.visibleRows()) {
 			m.cursor = max(0, len(m.visibleRows())-1)
@@ -225,6 +272,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.state = stateError
+		m.naming = false
 		m.err = msg.err
 		return m, nil
 
@@ -457,6 +505,16 @@ func (m model) cursorRow() (rowmodel.Row, bool) {
 
 // ---- Styles ----
 
+// The palette uses lipgloss.AdaptiveColor so the picker is readable on BOTH a
+// light- and a dark-background terminal: lipgloss detects the terminal
+// background once (the first AdaptiveColor it resolves is the attachedGlyph
+// below, at package init — before bubbletea grabs the TTY — so the answer is
+// cached before any frame renders) and picks the Light or Dark variant. The
+// previous fixed near-white foregrounds (#E5E7EB / #FAFAFA) washed out to
+// near-invisible on a light-background terminal. NOTE: if the terminal does not
+// answer the OSC-11 background query, lipgloss falls back to the Dark variant —
+// the readable-on-dark set — so a detection miss degrades to the old look, not
+// to unreadable.
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -464,19 +522,21 @@ var (
 			Background(lipgloss.Color("#7D56F4")).
 			Padding(0, 1)
 
-	hubLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
+	hubLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#4B5563", Dark: "#9CA3AF"})
 
-	filterLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Bold(true)
-	filterTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FAFAFA"))
-	filterCaretStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
+	filterLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}).Bold(true)
+	filterTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#111827", Dark: "#FAFAFA"})
+	filterCaretStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"})
 
-	displayStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB"))
-	displaySelStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#1F2937")).Background(lipgloss.Color("#E5E7EB"))
-	dirStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#7DD3FC"))
-	ageStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
+	displayStyle    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#1F2937", Dark: "#E5E7EB"})
+	displaySelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#F9FAFB", Dark: "#1F2937"}).
+			Background(lipgloss.AdaptiveColor{Light: "#374151", Dark: "#E5E7EB"})
+	dirStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0369A1", Dark: "#7DD3FC"})
+	ageStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
 
-	attachedGlyph = lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399")).Bold(true).Render("●")
-	liveGlyph     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FBBF24")).Render("◐")
+	attachedGlyph = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#059669", Dark: "#34D399"}).Bold(true).Render("●")
+	liveGlyph     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#D97706", Dark: "#FBBF24"}).Render("◐")
 	idleGlyph     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Render("○")
 )
 
@@ -503,11 +563,11 @@ func glyphFor(attached bool, age time.Duration) string {
 
 var (
 	mutedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Italic(true)
-	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")).Bold(true)
-	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399")).Bold(true)
+	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#DC2626", Dark: "#F87171"}).Bold(true)
+	successStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#059669", Dark: "#34D399"}).Bold(true)
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA")).Bold(true)
-	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#A78BFA"))
+	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}).Bold(true)
+	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"})
 
 	cardStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -549,9 +609,14 @@ func (m model) View() string {
 func (m model) headerView() string {
 	title := titleStyle.Render("duck")
 	var right string
-	if m.busy {
+	switch {
+	case m.busy:
 		right = m.spinner.View() + " " + hubLabelStyle.Render("working…")
-	} else {
+	case m.naming:
+		// Phase-2 background naming: the list is already shown, so report titling
+		// progress alongside the count instead of hiding the rows behind "loading".
+		right = m.spinner.View() + " " + hubLabelStyle.Render("naming "+plural2(len(m.rows), "session", "sessions")+"…")
+	default:
 		switch m.state {
 		case stateLoading:
 			right = hubLabelStyle.Render("loading…")

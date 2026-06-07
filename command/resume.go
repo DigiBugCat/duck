@@ -40,6 +40,15 @@ func runResume(name string) error {
 		return nil
 	}
 
+	// `duck --resume` auto-titles EVERY session by default, like `claude --resume`:
+	// the picker paints instantly at the dir-derived floor, then codex names each
+	// unnamed session in the background and freezes the title on a content hash (so
+	// later resumes reuse it and re-send nothing). This overrides the per-folder
+	// config gate (which still governs the non-picker paths) — the interactive
+	// picker, where the user is present, names all sessions it shows. This is a
+	// deliberate widening of the codex data flow beyond the opt-in folders.
+	w.app.SetAutoName(func(string) bool { return true })
+
 	chosen, err := tui.Run(w.app, cwdDir)
 	if err != nil {
 		return err

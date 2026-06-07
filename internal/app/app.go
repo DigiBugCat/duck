@@ -28,8 +28,13 @@ type Service interface {
 	// the picker renders these without blocking on the hub).
 	Sessions() []model.Row
 	// Refresh re-reads live sessions + names from the hub and rebuilds the rows,
-	// returning the fresh set.
+	// returning the fresh set. It MAY auto-name unnamed sessions (codex), so it can
+	// block; the picker runs it in the background after List paints the floor rows.
 	Refresh() ([]model.Row, error)
+	// List re-reads live sessions + names and rebuilds the rows WITHOUT the
+	// auto-naming side effect (no codex, no pane capture, no names.json write). The
+	// picker calls it for an instant first paint, then runs Refresh to fill titles.
+	List() ([]model.Row, error)
 	// Attach tears nothing down itself; the TUI quits first, then calls Attach,
 	// which hands the process off to ssh -t tmux attach for tmuxName. Returns
 	// only on a failure to exec.

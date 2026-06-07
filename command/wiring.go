@@ -68,8 +68,11 @@ func build() (*wiring, error) {
 	// that mirrors a folder also co-syncs that folder's ~/.claude/projects/<slug>.
 	fl.SetClaudeHistory(cfg.SyncClaudeHistory)
 	ap := app.New(sess, store, nm)
-	// Gate lazy auto-naming on the per-dir toggle (OFF by default): Refresh only
-	// sends pane content to the model for dirs the user opted in (DESIGN §5).
+	// Gate lazy auto-naming on the per-dir toggle (OFF by default) for non-picker
+	// paths: Refresh only sends pane content to the model for dirs the user opted
+	// in (DESIGN §5). The `duck --resume` picker OVERRIDES this with name-all (see
+	// runResume), so resuming auto-titles every session it shows; this config gate
+	// still governs any other Refresh caller.
 	ap.SetAutoName(cfg.AutoNameEnabled)
 
 	return &wiring{
@@ -88,8 +91,11 @@ func build() (*wiring, error) {
 // names.json stays single-writer.
 //
 // Privacy: the snapshot piped on stdin is up to ~8KB of the remote terminal's
-// pane content, which codex transmits to its configured model/provider. This is
-// why auto-naming is opt-in per folder via `duck config` (the AutoName toggle).
+// pane content, which codex transmits to its configured model/provider. Outside
+// the picker this is opt-in per folder via `duck config` (the AutoName toggle);
+// `duck --resume` auto-names EVERY session it shows by default (runResume), so
+// opening the picker sends each unnamed session's pane content to codex once
+// (then frozen) — a deliberate widening of the opt-in for the interactive picker.
 type codexLocal struct{}
 
 func (codexLocal) Run(ctx context.Context, args []string, stdin io.Reader) (string, error) {
