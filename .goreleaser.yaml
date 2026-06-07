@@ -1,8 +1,10 @@
 # GoReleaser config for duck — https://goreleaser.com
 # Build: darwin arm64 + amd64, pure-Go (CGO_ENABLED=0). On a `vX.Y.Z` tag the
-# release Action (.github/workflows/release.yml) runs `goreleaser release`,
-# which publishes a GitHub Release and updates the Homebrew formula in
-# DigiBugCat/homebrew-tap so `brew install DigiBugCat/tap/duck` works.
+# release Action (.github/workflows/release.yml) runs `goreleaser release`, which
+# publishes a GitHub Release carrying RAW per-arch binaries named
+# duck-<os>-<arch> (e.g. duck-darwin-arm64). duck installs to ~/.local/bin via
+# install.sh and self-updates with `duck update`, which pulls those assets
+# straight from the release (mirroring the sibling `cass` tool) — no Homebrew.
 version: 2
 
 project_name: duck
@@ -26,10 +28,13 @@ builds:
       - -s -w -X github.com/DigiBugCat/duck/command.version={{ .Version }}
 
 archives:
+  # Ship RAW binaries (not tarballs) named duck-<os>-<arch>, with NO version in
+  # the name, so `duck update` / install.sh can fetch a stable asset name across
+  # releases (mirrors cass-<os>-<arch>).
   - id: duck
     formats:
-      - tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+      - binary
+    name_template: "duck-{{ .Os }}-{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"
@@ -42,27 +47,6 @@ changelog:
       - "^test:"
       - "^style:"
       - "^chore:"
-
-# Homebrew CASK (the current way to ship a prebuilt CLI binary; `brews`/formula
-# is deprecated). `brew install DigiBugCat/tap/duck` installs the binary; the
-# post-install hook clears the macOS quarantine flag so the unsigned binary runs.
-homebrew_casks:
-  - name: duck
-    repository:
-      owner: DigiBugCat
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/DigiBugCat/duck"
-    description: "Make a remote hub feel local: auto-sync cwd + remote tmux sessions over SSH"
-    # The laptop client drives mutagen locally; rsync + ssh are built into macOS.
-    dependencies:
-      - formula: mutagen-io/mutagen/mutagen
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/duck"]
-          end
 
 release:
   github:
