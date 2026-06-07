@@ -1,8 +1,11 @@
 // `duck update`: upgrade duck to the latest release. duck ships as a Homebrew
-// cask (digibugcat/tap), so update wraps `brew upgrade --cask duck` — brew's own
-// auto-update refreshes the tap first, so a freshly-released version is picked up
-// without a separate `brew update`. A non-Homebrew install gets a clear pointer
-// instead of a cryptic brew error.
+// cask (digibugcat/tap), so update wraps `brew upgrade --cask duck`. brew's
+// auto-update is THROTTLED (HOMEBREW_AUTO_UPDATE_SECS, ~24h by default), so a
+// plain upgrade run minutes after a release can refresh only the core API and
+// miss the freshly-pushed cask in the custom tap — reporting "already latest".
+// We force the throttle to 0 so the tap git clone is always pulled first and a
+// new release is picked up immediately. A non-Homebrew install gets a clear
+// pointer instead of a cryptic brew error.
 package command
 
 import (
@@ -35,6 +38,10 @@ func runUpdate() error {
 	}
 	fmt.Println("Updating duck via Homebrew…")
 	cmd := exec.Command(brew, "upgrade", "--cask", "duck")
+	// HOMEBREW_AUTO_UPDATE_SECS=0 forces brew to refresh taps before upgrading, so
+	// `duck update` reliably sees a release pushed moments ago (brew's default
+	// throttle would otherwise skip the tap pull and report "already latest").
+	cmd.Env = append(os.Environ(), "HOMEBREW_AUTO_UPDATE_SECS=0")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
