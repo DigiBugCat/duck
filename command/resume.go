@@ -7,8 +7,10 @@
 package command
 
 import (
+	"fmt"
 	"os"
 
+	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/tui"
 )
 
@@ -31,7 +33,14 @@ func runResume(name string) error {
 	// the picker sees the same dir as before.
 	cwdDir, err := w.flow.EnsureSyncedGated(cwd)
 	if err != nil {
-		return err
+		// A cwd sync conflict (e.g. the hub already has this folder and a merge
+		// would be needed → actions.ErrHubNonEmpty) — or any sync failure — must NOT
+		// block the picker. --resume's job is to browse/attach existing sessions;
+		// mirroring cwd is a best-effort side-effect. Warn and open the picker anyway,
+		// scoped to the contracted cwd. A genuinely dead hub still surfaces in the
+		// picker's own error screen when it reads the session list.
+		fmt.Fprintf(os.Stderr, "duck: skipping cwd sync: %v\n", err)
+		cwdDir = paths.Contract(cwd)
 	}
 	if name != "" {
 		// Direct attach by internal tmux name, through the reconnect loop so a
