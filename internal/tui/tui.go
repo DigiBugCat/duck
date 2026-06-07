@@ -584,35 +584,43 @@ var (
 // ---- View ----
 
 func (m model) View() string {
-	var b strings.Builder
-	b.WriteString(m.headerView())
-	b.WriteString("\n\n")
+	// Claude-Code-style split: the content (header + list) sits at the TOP, while
+	// the input (search box) + status + footer hints are PINNED to the bottom edge,
+	// with blank space filling the middle when the list is short.
+	top := m.headerView() + "\n\n" + m.bodyView()
+
+	var bb strings.Builder
 	if sv := m.searchView(); sv != "" {
-		b.WriteString(sv)
-		b.WriteString("\n\n")
+		bb.WriteString(sv)
+		bb.WriteString("\n")
 	}
-	b.WriteString(m.bodyView())
-	b.WriteString("\n\n")
 	if s := m.statusView(); s != "" {
-		b.WriteString(s)
-		b.WriteString("\n\n")
+		bb.WriteString(s)
+		bb.WriteString("\n")
 	}
-	b.WriteString(m.footerView())
-	out := b.String()
+	bb.WriteString(m.footerView())
+	bottom := bb.String()
 
 	// Render hardening (ported from flok): bound every line to the width so
-	// nothing wraps into ghost rows, then pad to full height so each frame
-	// repaints the same region.
+	// nothing wraps into ghost rows.
 	if m.width > 0 {
-		out = lipgloss.NewStyle().MaxWidth(m.width).Render(out)
+		st := lipgloss.NewStyle().MaxWidth(m.width)
+		top = st.Render(top)
+		bottom = st.Render(bottom)
 	}
-	// Anchor the picker to the BOTTOM of the terminal (footer hints sit on the
-	// bottom edge, content rises from there, blank space fills the top) — the pad
-	// goes ABOVE the content rather than below it.
-	if pad := m.height - lipgloss.Height(out); pad > 0 {
-		out = strings.Repeat("\n", pad) + out
+	if m.height <= 0 {
+		return top + "\n\n" + bottom
 	}
-	return out
+	// Push the bottom block to the terminal's bottom edge: the gap between top and
+	// bottom absorbs all the slack. The +1 accounts for the newline that ends the
+	// top block's last line, so the footer lands flush on the bottom row (N blank
+	// lines between needs N+1 newlines). visibleWindow caps the list so both blocks
+	// fit; clamp to ≥1 (blocks adjacent) as a safety net against overflow.
+	gap := m.height - lipgloss.Height(top) - lipgloss.Height(bottom) + 1
+	if gap < 1 {
+		gap = 1
+	}
+	return top + strings.Repeat("\n", gap) + bottom
 }
 
 func (m model) headerView() string {
@@ -833,15 +841,16 @@ func (m model) statusView() string {
 // cursor in view and leaving room for chrome (ported from flok).
 func (m model) visibleWindow() (int, int) {
 	rows := m.visibleRows()
-	// chrome = header(2) + persistent search box(3) + its blank(1) + body's
-	// trailing blank(1) + footer(~4) + margin. The search box is always shown now
-	// (was a conditional filter line), so it folds into the base instead of a flag.
-	chrome := 12
+	// Split layout: list lives in the TOP block; the bottom block (search box +
+	// footer) is pinned to the bottom. chrome = header(2) + bottom block
+	// [search box(3) + footer(4)] + one blank gap = 10. status adds its line, the
+	// update banner adds one footer line. Caps the list so both blocks fit.
+	chrome := 10
 	if m.status != "" {
-		chrome += 2
+		chrome++
 	}
 	if m.updateLatest != "" {
-		chrome++ // the update banner line above the footer hints
+		chrome++
 	}
 	avail := m.height - chrome
 	if avail <= 0 || m.height == 0 {
