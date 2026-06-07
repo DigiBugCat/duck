@@ -32,7 +32,11 @@ import (
 // quits or chooses a session. On a choice it returns the chosen session's tmux
 // name (the caller execs the attach AFTER the TUI has fully torn down, so ssh/
 // tmux own a clean TTY); on a plain quit it returns "".
-func Run(svc app.Service, cwdDir string) (tmuxName string, err error) {
+// Run launches the picker. checkUpdate is an optional background command (nil to
+// disable) that reports a newer release via UpdateAvailableMsg; when one is
+// available the picker shows a banner and ^u sets doUpdate so the caller can
+// self-update after teardown. Returns the chosen tmux name (or ""), and doUpdate.
+func Run(svc app.Service, cwdDir string, checkUpdate func() tea.Msg) (tmuxName string, doUpdate bool, err error) {
 	// Detect (and PIN) the terminal background ONCE, before bubbletea takes over
 	// stdin — same as flock/internal/tui. Otherwise lipgloss's AdaptiveColor
 	// detection probes the terminal (OSC 11) lazily during the render loop while
@@ -43,6 +47,7 @@ func Run(svc app.Service, cwdDir string) (tmuxName string, err error) {
 	lipgloss.SetHasDarkBackground(lipgloss.HasDarkBackground())
 	m := initialModel(svc)
 	m.cwdDir = cwdDir
+	m.checkUpdate = checkUpdate
 	if cwdDir != "" {
 		// Default to THIS folder's sessions, like `claude --resume` (which opens on
 		// the current project). ^a widens to every folder; ^s narrows back. Starting
@@ -54,13 +59,13 @@ func Run(svc app.Service, cwdDir string) (tmuxName string, err error) {
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	fm, ok := final.(model)
 	if !ok {
-		return "", nil
+		return "", false, nil
 	}
-	return fm.selected, nil
+	return fm.selected, fm.doUpdate, nil
 }
 
 type loadState int
@@ -113,10 +118,13 @@ type model struct {
 	status    string
 	statusErr bool
 
-	selected string // chosen tmux name on enter-attach; read by Run after quit
+	selected     string // chosen tmux name on enter-attach; read by Run after quit
+	updateLatest string // newer release tag from the background check; "" = none/up-to-date
+	doUpdate     bool   // ^u pressed with an update available; read by Run after quit
 
-	svc  app.Service    // operations; injectable for tests (flok's seam)
-	load func() tea.Msg // row loader; injectable for tests (flok's seam)
+	svc         app.Service    // operations; injectable for tests (flok's seam)
+	load        func() tea.Msg // row loader; injectable for tests (flok's seam)
+	checkUpdate func() tea.Msg // optional background update check; nil disables it
 }
 
 // initialModel builds the picker model around an injected Service, wiring the
@@ -143,6 +151,11 @@ func initialModel(svc app.Service) model {
 type loadedMsg struct{ rows []rowmodel.Row }
 
 type errMsg struct{ err error }
+
+// UpdateAvailableMsg is emitted by the injected checkUpdate command when a newer
+// release exists; Latest is the release tag (e.g. "v0.2.7"). Exported so the
+// command layer (which knows the version + release API) can construct it.
+type UpdateAvailableMsg struct{ Latest string }
 
 // actionDoneMsg reports the outcome of an async mutating action (rename / name-
 // now / kill), optionally requesting a refresh so the rows update.
@@ -213,7 +226,11 @@ func (m model) runAction(cmd tea.Cmd) (model, tea.Cmd) {
 // ---- tea.Model ----
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.load, textinput.Blink)
+	cmds := []tea.Cmd{m.load, textinput.Blink}
+	if m.checkUpdate != nil {
+		cmds = append(cmds, m.checkUpdate) // background; posts UpdateAvailableMsg if newer
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -242,6 +259,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.state = stateError
 		m.err = msg.err
+		return m, nil
+
+	case UpdateAvailableMsg:
+		m.updateLatest = msg.Latest
 		return m, nil
 
 	case actionDoneMsg:
@@ -360,6 +381,14 @@ func (m model) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.killFor = r.TmuxName
 			m.status = ""
 			m.statusErr = false
+		}
+		return m, nil
+	case "ctrl+u":
+		// Only meaningful when the background check found a newer release; quit and
+		// let the caller (runResume) self-update after the TUI tears down.
+		if m.updateLatest != "" {
+			m.doUpdate = true
+			return m, tea.Quit
 		}
 		return m, nil
 	}
@@ -536,6 +565,7 @@ var (
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
 	keyStyle     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}).Bold(true)
 	spinnerStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"})
+	updateStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#FBBF24"}).Bold(true)
 
 	cardStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -767,6 +797,9 @@ func (m model) visibleWindow() (int, int) {
 	if m.filter != "" {
 		chrome += 2 // the filter line + its blank separator
 	}
+	if m.updateLatest != "" {
+		chrome++ // the update banner line above the footer hints
+	}
 	avail := m.height - chrome
 	if avail <= 0 || m.height == 0 {
 		return 0, len(rows)
@@ -822,7 +855,15 @@ func (m model) footerView() string {
 		} else {
 			filterHint = renderHints([]hint{{"type", "filter"}})
 		}
-		return sep + "\n" + nav + "\n" + act + "\n" + filterHint
+		body := sep + "\n" + nav + "\n" + act + "\n" + filterHint
+		// When the background check found a newer release, surface a one-line banner
+		// above the hints with the ^u affordance (handled in handleBrowseKey).
+		if m.updateLatest != "" {
+			banner := updateStyle.Render("↑ duck "+m.updateLatest+" available") +
+				helpStyle.Render(" — press ") + keyStyle.Render("^u") + helpStyle.Render(" to update")
+			return banner + "\n" + body
+		}
+		return body
 	default:
 		return sep + "\n" + renderHints([]hint{{"q", "quit"}})
 	}

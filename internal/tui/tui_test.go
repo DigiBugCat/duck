@@ -64,6 +64,8 @@ func ctrl(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlC}
 	case "s":
 		return tea.KeyMsg{Type: tea.KeyCtrlS}
+	case "u":
+		return tea.KeyMsg{Type: tea.KeyCtrlU}
 	}
 	panic("unknown ctrl key " + s)
 }
@@ -181,6 +183,41 @@ func TestScopedPickerViews(t *testing.T) {
 	m.cwdDir = "~/dev/empty"
 	if got := m.bodyView(); !strings.Contains(got, "^a") {
 		t.Fatalf("empty-folder body should point at ^a:\n%s", got)
+	}
+}
+
+// TestUpdateBannerAndCtrlU pins the in-picker updater: ^u is inert until the
+// background check reports a newer release, after which the banner shows and ^u
+// sets doUpdate and quits (the caller self-updates after teardown).
+func TestUpdateBannerAndCtrlU(t *testing.T) {
+	f := &fakeService{rows: sampleRows()}
+	m := loadedModel(f)
+	m.width = 100
+
+	if strings.Contains(m.footerView(), "available") {
+		t.Fatalf("no banner before an update msg:\n%s", m.footerView())
+	}
+	m2, cmd := upd(m, ctrl("u"))
+	if m2.doUpdate {
+		t.Fatalf("^u with no update available must not set doUpdate")
+	}
+	if drainHasQuit(cmd) {
+		t.Fatalf("^u with no update available must not quit")
+	}
+
+	m, _ = upd(m, UpdateAvailableMsg{Latest: "v0.9.9"})
+	if m.updateLatest != "v0.9.9" {
+		t.Fatalf("UpdateAvailableMsg should set updateLatest, got %q", m.updateLatest)
+	}
+	if !strings.Contains(m.footerView(), "v0.9.9") {
+		t.Fatalf("footer should show the update banner:\n%s", m.footerView())
+	}
+	m, cmd = upd(m, ctrl("u"))
+	if !m.doUpdate {
+		t.Fatalf("^u with an update available should set doUpdate")
+	}
+	if !drainHasQuit(cmd) {
+		t.Fatalf("^u with an update available should quit")
 	}
 }
 

@@ -88,6 +88,29 @@ func fetchLatestRelease() (*ghRelease, error) {
 	return &rel, nil
 }
 
+// updateAvailable reports the latest version (tag minus the leading "v") and
+// whether it is worth offering an update: never for a "dev" build, never when
+// already on it. Used by the picker's background check (resume.go) to decide
+// whether to show the ^u banner.
+func updateAvailable(rel *ghRelease) (latest string, newer bool) {
+	latest = strings.TrimPrefix(rel.TagName, "v")
+	if version == "dev" || latest == "" || latest == version {
+		return latest, false
+	}
+	return latest, true
+}
+
+// selfUpdateNow fetches the latest release and installs it. It is the body the
+// picker's ^u runs (after the TUI tears down) so a chosen update self-replaces
+// the binary just like `duck update`.
+func selfUpdateNow() error {
+	rel, err := fetchLatestRelease()
+	if err != nil {
+		return err
+	}
+	return installRelease(rel)
+}
+
 // detectTarget returns the os-arch asset suffix for this machine, matching the
 // goreleaser name_template (duck-{{.Os}}-{{.Arch}}).
 func detectTarget() (string, error) {

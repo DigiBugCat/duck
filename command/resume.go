@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"os"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/tui"
 )
@@ -54,14 +56,36 @@ func runResume(name string) error {
 	// NOT force codex auto-naming. Codex stays the opt-in per-folder fallback
 	// (build wires cfg.AutoNameEnabled) for sessions with no useful pane title;
 	// ^n in the picker still generates one on demand.
-	chosen, err := tui.Run(w.app, cwdDir)
+	chosen, doUpdate, err := tui.Run(w.app, cwdDir, updateCheck)
 	if err != nil {
 		return err
+	}
+	if doUpdate {
+		// ^u in the picker: self-update now that the TUI has torn down (brew-free,
+		// pulls the binary from the GitHub release). The user re-runs duck after.
+		return selfUpdateNow()
 	}
 	if chosen == "" {
 		return nil // user quit without choosing
 	}
 	// The TUI has fully torn down; hand the process off to the reconnect loop.
 	runAttachLoop(w.sessions, chosen)
+	return nil
+}
+
+// updateCheck is the picker's background update check (passed to tui.Run): hit
+// the GitHub releases API and, if a newer release exists, post an
+// UpdateAvailableMsg so the picker shows the ^u banner. Returns nil (no message)
+// on any error, a dev build, or when already current — the picker just shows
+// nothing. Network failure is silent by design: an update hint must never be a
+// blocker.
+func updateCheck() tea.Msg {
+	rel, err := fetchLatestRelease()
+	if err != nil {
+		return nil
+	}
+	if latest, newer := updateAvailable(rel); newer {
+		return tui.UpdateAvailableMsg{Latest: "v" + latest}
+	}
 	return nil
 }
