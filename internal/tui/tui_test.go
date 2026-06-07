@@ -349,20 +349,19 @@ func TestEscClearsActiveFilterElseQuits(t *testing.T) {
 // TestFilterLineRendersWhenNonEmpty pins gap #5: the active filter is shown in
 // the view when non-empty (so typing has a visible cause) and is absent when
 // empty (no chrome for a no-op filter).
-func TestFilterLineRendersWhenNonEmpty(t *testing.T) {
+func TestSearchBoxRendersFilter(t *testing.T) {
 	f := &fakeService{rows: sampleRows()}
 	m := loadedModel(f)
 	m.width = 100
 	m.height = 24
-	// Empty filter: the filter line is absent.
-	if got := m.View(); strings.Contains(got, "filter:") {
-		t.Fatalf("empty filter must not render a filter line\n%s", got)
+	// The search box is always shown while browsing: placeholder when empty.
+	if got := m.View(); !strings.Contains(got, "type to filter") {
+		t.Fatalf("empty filter should show the search-box placeholder\n%s", got)
 	}
-	// Non-empty filter: the filter text appears.
+	// Typing shows the query inside the box.
 	m, _ = upd(m, runeKey("bill"))
-	got := m.View()
-	if !strings.Contains(got, "filter:") || !strings.Contains(got, "bill") {
-		t.Fatalf("non-empty filter must render `filter: bill`\n%s", got)
+	if got := m.View(); !strings.Contains(got, "bill") {
+		t.Fatalf("non-empty filter must show the query in the search box\n%s", got)
 	}
 }
 
@@ -597,6 +596,18 @@ func TestRenderRowWiresAttachedGlyph(t *testing.T) {
 	out := m.renderRow(rowmodel.Row{Display: "x", Dir: "~/dev/x", Age: "9h", Attached: true}, false)
 	if !strings.Contains(out, "●") {
 		t.Fatalf("renderRow of an attached row must show the attached glyph ●, got %q", out)
+	}
+}
+
+// TestRenderRowSpansFullWidth pins the full-screen layout: even a row with short
+// content fills the terminal width (metadata right-aligned to the edge), so the
+// picker reads as a full-screen app rather than a narrow left column.
+func TestRenderRowSpansFullWidth(t *testing.T) {
+	m := loadedModel(&fakeService{rows: sampleRows()})
+	m.width = 120
+	out := m.renderRow(rowmodel.Row{Display: "x", Dir: "~/dev/x", Age: "1m"}, false)
+	if w := lineWidth(out); w != m.width {
+		t.Fatalf("short row should span the full width %d, got %d", m.width, w)
 	}
 }
 

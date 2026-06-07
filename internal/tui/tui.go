@@ -521,7 +521,6 @@ var (
 
 	hubLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#4B5563", Dark: "#9CA3AF"})
 
-	filterLabelStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}).Bold(true)
 	filterTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#111827", Dark: "#FAFAFA"})
 	filterCaretStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"})
 
@@ -571,6 +570,15 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#7D56F4")).
 			Padding(1, 2)
+
+	// searchBoxStyle is the persistent, full-width filter box at the top of the
+	// picker (Claude-Code-resume style). Width is set per-render to span the term.
+	searchBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.AdaptiveColor{Light: "#9CA3AF", Dark: "#4B5563"}).
+			Padding(0, 1)
+	searchIconStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"})
+	caretStyle      = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}).Bold(true)
 )
 
 // ---- View ----
@@ -579,8 +587,8 @@ func (m model) View() string {
 	var b strings.Builder
 	b.WriteString(m.headerView())
 	b.WriteString("\n\n")
-	if fv := m.filterView(); fv != "" {
-		b.WriteString(fv)
+	if sv := m.searchView(); sv != "" {
+		b.WriteString(sv)
 		b.WriteString("\n\n")
 	}
 	b.WriteString(m.bodyView())
@@ -629,15 +637,32 @@ func (m model) headerView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, "  ", right)
 }
 
-// filterView renders the active always-on browse filter when non-empty, so
-// typing visibly narrows the list instead of making rows vanish with no shown
-// cause (DESIGN §6's `▸ filter: <text>▏`). Empty filter renders nothing — the
-// list shows unfiltered and the footer hint advertises how to start.
-func (m model) filterView() string {
-	if m.filter == "" {
+// searchView is the persistent, full-width search box at the top of the picker
+// (Claude-Code-resume style): always visible while browsing so the always-on
+// fuzzy filter has an obvious home — a placeholder when empty, the live query
+// (with a caret) when typing. It spans the terminal width so the picker reads as
+// a full-screen app, not a top-left blob. Hidden during loading/overlays.
+func (m model) searchView() string {
+	if m.state != stateLoaded || m.mode != modeBrowse {
 		return ""
 	}
-	return filterLabelStyle.Render("▸ filter: ") + filterTextStyle.Render(m.filter) + filterCaretStyle.Render("▏")
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	// Border (2) + horizontal padding (2) sit outside the content width, so set
+	// the content width to w-4 to make the whole box span the terminal.
+	inner := w - 4
+	if inner < 10 {
+		inner = 10
+	}
+	var content string
+	if m.filter == "" {
+		content = searchIconStyle.Render("⌕ ") + mutedStyle.Render("type to filter…")
+	} else {
+		content = searchIconStyle.Render("⌕ ") + filterTextStyle.Render(m.filter) + filterCaretStyle.Render("▏")
+	}
+	return searchBoxStyle.Width(inner).Render(content)
 }
 
 func (m model) bodyView() string {
@@ -688,21 +713,43 @@ func (m model) bodyView() string {
 	return sb.String()
 }
 
-// renderRow renders a single session row in fixed columns: glyph
-// (attached ● / live ◐ / idle ○), raw display name, dir, age, and the window
-// count. Each text column is truncated to its budget with lipgloss.Width so a
-// long name/dir never wraps into a ghost row (flok render-hardening).
+// renderRow renders a single session row spanning the FULL terminal width: a
+// selection caret, the liveness glyph (attached ● / live ◐ / idle ○), the raw
+// display name and dir filling the left, and the age + window count right-
+// aligned to the terminal edge. Columns scale to the width so the row uses the
+// whole screen (Claude-Code-resume feel) instead of a narrow left blob; each
+// text column is truncated with lipgloss.Width so nothing wraps into a ghost row.
 func (m model) renderRow(r rowmodel.Row, selected bool) string {
-	glyph := glyphFor(r.Attached, time.Since(r.LastSeen))
-
-	// Column budgets scale to the terminal width; fall back to sane defaults
-	// before the first WindowSizeMsg arrives.
 	w := m.width
 	if w <= 0 {
 		w = 80
 	}
-	nameW := clamp(w*4/10, 12, 40)
-	dirW := clamp(w*4/10, 12, 48)
+	caret := "  "
+	if selected {
+		caret = caretStyle.Render("› ")
+	}
+	glyph := glyphFor(r.Attached, time.Since(r.LastSeen))
+
+	ageStr := r.Age
+	winStr := itoa(r.Windows) + "w"
+	rightW := lipgloss.Width(ageStr) + 2 + lipgloss.Width(winStr)
+
+	// Left area = full width minus the caret+glyph prefix (4), the "  " between
+	// name and dir (2), the right metadata block, and a 2-col gap before it. Split
+	// it name/dir so both grow with the terminal. Subtracting all of it here makes
+	// the assembled row exactly w wide (pad below lands at the 2-col gap).
+	avail := w - 8 - rightW
+	if avail < 20 {
+		avail = 20
+	}
+	nameW := avail * 9 / 20 // ~45% to the name, the rest to the dir
+	if nameW < 10 {
+		nameW = 10
+	}
+	dirW := avail - nameW
+	if dirW < 6 {
+		dirW = 6
+	}
 
 	name := padTrunc(r.Display, nameW)
 	if selected {
@@ -711,10 +758,14 @@ func (m model) renderRow(r rowmodel.Row, selected bool) string {
 		name = displayStyle.Render(name)
 	}
 	dir := dirStyle.Render(padTrunc(r.Dir, dirW))
-	age := ageStyle.Render(padTrunc(r.Age, 4))
-	wins := ageStyle.Render(itoa(r.Windows) + "w")
 
-	return glyph + " " + name + "  " + dir + "  " + age + "  " + wins
+	left := caret + glyph + " " + name + "  " + dir
+	leftW := 4 + nameW + 2 + dirW // caret(2)+glyph(1)+space(1) + name + "  " + dir
+	pad := w - leftW - rightW
+	if pad < 1 {
+		pad = 1
+	}
+	return left + strings.Repeat(" ", pad) + ageStyle.Render(ageStr) + "  " + ageStyle.Render(winStr)
 }
 
 // padTrunc fits s into exactly w display columns: truncating with an ellipsis
@@ -737,17 +788,6 @@ func padTrunc(s string, w int) string {
 		out += strings.Repeat(" ", pad)
 	}
 	return out
-}
-
-// clamp bounds v to [lo, hi].
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
 }
 
 func (m model) inputCardView() string {
@@ -790,12 +830,12 @@ func (m model) statusView() string {
 // cursor in view and leaving room for chrome (ported from flok).
 func (m model) visibleWindow() (int, int) {
 	rows := m.visibleRows()
-	chrome := 8
+	// chrome = header(2) + persistent search box(3) + its blank(1) + body's
+	// trailing blank(1) + footer(~4) + margin. The search box is always shown now
+	// (was a conditional filter line), so it folds into the base instead of a flag.
+	chrome := 12
 	if m.status != "" {
 		chrome += 2
-	}
-	if m.filter != "" {
-		chrome += 2 // the filter line + its blank separator
 	}
 	if m.updateLatest != "" {
 		chrome++ // the update banner line above the footer hints
