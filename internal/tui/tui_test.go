@@ -156,6 +156,47 @@ func TestVisibleRowsFiltersAndRanks(t *testing.T) {
 	}
 }
 
+// TestScopedPickerViews pins the current-folder default UX: the footer offers
+// the toggle that does something from the active scope, the header names the
+// folder when scoped, and an empty current folder points at ^a instead of
+// reading as an empty hub.
+func TestScopedPickerViews(t *testing.T) {
+	f := &fakeService{rows: sampleRows()} // auth(~/dev/auth), billing, web
+	m := loadedModel(f)                   // cwdDir=~/dev/auth, default scopeAll
+	m.width = 100
+
+	if got := m.footerView(); !strings.Contains(got, "this dir") {
+		t.Fatalf("all-scope footer should offer ^s this dir:\n%s", got)
+	}
+
+	m.scope = scopeThisDir
+	if got := m.footerView(); !strings.Contains(got, "all dirs") {
+		t.Fatalf("this-dir footer should offer ^a all dirs:\n%s", got)
+	}
+	if got := m.headerView(); !strings.Contains(got, "auth") {
+		t.Fatalf("scoped header should name the folder:\n%s", got)
+	}
+
+	// Current folder empty but other folders have sessions → guide to ^a.
+	m.cwdDir = "~/dev/empty"
+	if got := m.bodyView(); !strings.Contains(got, "^a") {
+		t.Fatalf("empty-folder body should point at ^a:\n%s", got)
+	}
+}
+
+func TestBaseName(t *testing.T) {
+	for in, want := range map[string]string{
+		"~/dev/foo":         "foo",
+		"~/cassandra-stack": "cassandra-stack",
+		"~":                 "~",
+		"~/":                "~",
+	} {
+		if got := baseName(in); got != want {
+			t.Errorf("baseName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestScopeThisDirAndAll(t *testing.T) {
 	f := &fakeService{rows: sampleRows()}
 	m := loadedModel(f) // cwdDir = ~/dev/auth

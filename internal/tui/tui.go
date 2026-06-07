@@ -43,6 +43,14 @@ func Run(svc app.Service, cwdDir string) (tmuxName string, err error) {
 	lipgloss.SetHasDarkBackground(lipgloss.HasDarkBackground())
 	m := initialModel(svc)
 	m.cwdDir = cwdDir
+	if cwdDir != "" {
+		// Default to THIS folder's sessions, like `claude --resume` (which opens on
+		// the current project). ^a widens to every folder; ^s narrows back. Starting
+		// scoped keeps the folder you ran --resume in from being buried under every
+		// other dir's sessions. The scope is per-run (not persisted), so each resume
+		// reopens on the current folder.
+		m.scope = scopeThisDir
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
@@ -578,7 +586,14 @@ func (m model) headerView() string {
 		case stateError:
 			right = errStyle.Render("error")
 		case stateLoaded:
-			right = hubLabelStyle.Render(plural2(len(m.rows), "session", "sessions"))
+			// Count the visible (scoped + filtered) rows so the header tracks what's
+			// shown; name the folder when scoped so the narrowing is never a mystery.
+			n := len(m.visibleRows())
+			label := plural2(n, "session", "sessions")
+			if m.scope == scopeThisDir && m.cwdDir != "" {
+				label += " in " + baseName(m.cwdDir)
+			}
+			right = hubLabelStyle.Render(label)
 		}
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Center, title, "  ", right)
@@ -613,6 +628,14 @@ func (m model) bodyView() string {
 
 	rows := m.visibleRows()
 	if len(rows) == 0 {
+		// Distinguish "nothing in this folder" (other folders have sessions — point
+		// at ^a) from "nothing on the hub at all", so the default scoping never reads
+		// as an empty hub.
+		if m.scope == scopeThisDir && m.cwdDir != "" && m.filter == "" && len(m.rows) > 0 {
+			msg := "No sessions in " + baseName(m.cwdDir) + " — press ^a to show all " +
+				plural2(len(m.rows), "session", "sessions") + "."
+			return cardStyle.Render(mutedStyle.Render(msg))
+		}
 		return cardStyle.Render(mutedStyle.Render("No sessions on the hub yet."))
 	}
 
@@ -783,7 +806,13 @@ func (m model) footerView() string {
 	case m.state == stateError:
 		return sep + "\n" + renderHints([]hint{{"r", "retry"}, {"q", "quit"}})
 	case m.state == stateLoaded:
-		nav := renderHints([]hint{{"↑↓", "move"}, {"⏎", "attach"}, {"^s/^a", "this/all"}, {"^c", "quit"}})
+		// Show the toggle that does something from HERE: scoped → offer ^a (all),
+		// all → offer ^s (this folder). Clearer than a static "this/all".
+		scopeHint := hint{"^s", "this dir"}
+		if m.scope == scopeThisDir {
+			scopeHint = hint{"^a", "all dirs"}
+		}
+		nav := renderHints([]hint{{"↑↓", "move"}, {"⏎", "attach"}, scopeHint, {"^c", "quit"}})
 		act := renderHints([]hint{{"^r", "rename"}, {"^n", "name-now"}, {"^k", "kill"}})
 		// The always-on filter is invisible without this hint; advertise how to
 		// type one and how to clear it (esc) so a narrowed list is never a dead end.
@@ -797,6 +826,19 @@ func (m model) footerView() string {
 	default:
 		return sep + "\n" + renderHints([]hint{{"q", "quit"}})
 	}
+}
+
+// baseName returns the last path segment of a tilde-form dir (~/dev/foo → foo)
+// for the header's folder label. Mirrors names.Derive without importing it.
+func baseName(dir string) string {
+	d := strings.TrimRight(dir, "/")
+	if i := strings.LastIndex(d, "/"); i >= 0 {
+		d = d[i+1:]
+	}
+	if d == "" {
+		return "~"
+	}
+	return d
 }
 
 // plural2 renders "N one" / "N many" for the header session count.
