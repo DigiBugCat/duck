@@ -584,16 +584,21 @@ var (
 // ---- View ----
 
 func (m model) View() string {
-	// Claude-Code-style split: the content (header + list) sits at the TOP, while
-	// the input (search box) + status + footer hints are PINNED to the bottom edge,
-	// with blank space filling the middle when the list is short.
-	top := m.headerView() + "\n\n" + m.bodyView()
+	// Split layout: header + search box + list sit at the TOP, while the status +
+	// footer hints are PINNED to the bottom edge, with blank space filling the
+	// middle when the list is short. The search box lives at the top (with the
+	// list it filters) so typing and results stay together.
+	var tb strings.Builder
+	tb.WriteString(m.headerView())
+	tb.WriteString("\n\n")
+	if sv := m.searchView(); sv != "" {
+		tb.WriteString(sv)
+		tb.WriteString("\n\n")
+	}
+	tb.WriteString(m.bodyView())
+	top := tb.String()
 
 	var bb strings.Builder
-	if sv := m.searchView(); sv != "" {
-		bb.WriteString(sv)
-		bb.WriteString("\n")
-	}
 	if s := m.statusView(); s != "" {
 		bb.WriteString(s)
 		bb.WriteString("\n")
@@ -841,10 +846,10 @@ func (m model) statusView() string {
 // cursor in view and leaving room for chrome (ported from flok).
 func (m model) visibleWindow() (int, int) {
 	rows := m.visibleRows()
-	// Split layout: list lives in the TOP block; the bottom block (search box +
-	// footer) is pinned to the bottom. chrome = header(2) + bottom block
-	// [search box(3) + footer(4)] + one blank gap = 10. status adds its line, the
-	// update banner adds one footer line. Caps the list so both blocks fit.
+	// Split layout: the TOP block is header(2) + search box(3) + its blank(1) +
+	// list; the bottom block (footer) is pinned to the bottom. chrome = header(2) +
+	// search box+blank(4) + footer(3: rule + 2 spread rows) + one blank gap(1) =
+	// 10. status adds its line, the update banner adds one footer line.
 	chrome := 10
 	if m.status != "" {
 		chrome++
@@ -873,23 +878,62 @@ func (m model) visibleWindow() (int, int) {
 
 type hint struct{ key, desc string }
 
-func renderHints(hs []hint) string {
-	parts := make([]string, 0, len(hs))
-	for _, h := range hs {
-		parts = append(parts, keyStyle.Render(h.key)+" "+helpStyle.Render(h.desc))
+// hintSeg renders one "key desc" hint segment.
+func hintSeg(h hint) string {
+	return keyStyle.Render(h.key) + " " + helpStyle.Render(h.desc)
+}
+
+// spreadHints lays the hint segments out JUSTIFIED across the full width w: the
+// first segment starts at the left edge, the last ends at the right edge, and the
+// slack is distributed evenly between them — so the footer spans the row instead
+// of cramming into the bottom-left. Falls back to a " · " join when the segments
+// can't fit (the View's MaxWidth then trims).
+func spreadHints(w int, hs []hint) string {
+	segs := make([]string, len(hs))
+	total := 0
+	for i, h := range hs {
+		segs[i] = hintSeg(h)
+		total += lipgloss.Width(segs[i])
 	}
-	return strings.Join(parts, helpStyle.Render(" · "))
+	if len(segs) == 0 {
+		return ""
+	}
+	gaps := len(segs) - 1
+	if w <= 0 || gaps == 0 {
+		return strings.Join(segs, "  ")
+	}
+	space := w - total
+	if space < gaps {
+		return strings.Join(segs, helpStyle.Render(" · "))
+	}
+	each, extra := space/gaps, space%gaps
+	var b strings.Builder
+	for i, s := range segs {
+		b.WriteString(s)
+		if i < gaps {
+			g := each
+			if i < extra { // hand the remainder to the leftmost gaps
+				g++
+			}
+			b.WriteString(strings.Repeat(" ", g))
+		}
+	}
+	return b.String()
 }
 
 func (m model) footerView() string {
-	sep := helpStyle.Render(strings.Repeat("─", min(60, max(20, m.width))))
+	w := m.width
+	if w <= 0 {
+		w = 80
+	}
+	sep := helpStyle.Render(strings.Repeat("─", w)) // full-width rule
 	switch {
 	case m.mode == modeInput:
-		return sep + "\n" + renderHints([]hint{{"⏎", "submit"}, {"esc", "cancel"}})
+		return sep + "\n" + spreadHints(w, []hint{{"⏎", "submit"}, {"esc", "cancel"}})
 	case m.mode == modeConfirm:
-		return sep + "\n" + renderHints([]hint{{"y", "yes"}, {"n", "no"}})
+		return sep + "\n" + spreadHints(w, []hint{{"y", "yes"}, {"n", "no"}})
 	case m.state == stateError:
-		return sep + "\n" + renderHints([]hint{{"r", "retry"}, {"q", "quit"}})
+		return sep + "\n" + spreadHints(w, []hint{{"r", "retry"}, {"q", "quit"}})
 	case m.state == stateLoaded:
 		// Show the toggle that does something from HERE: scoped → offer ^a (all),
 		// all → offer ^s (this folder). Clearer than a static "this/all".
@@ -897,17 +941,15 @@ func (m model) footerView() string {
 		if m.scope == scopeThisDir {
 			scopeHint = hint{"^a", "all dirs"}
 		}
-		nav := renderHints([]hint{{"↑↓", "move"}, {"⏎", "attach"}, scopeHint, {"^c", "quit"}})
-		act := renderHints([]hint{{"^r", "rename"}, {"^n", "name-now"}, {"^k", "kill"}})
-		// The always-on filter is invisible without this hint; advertise how to
-		// type one and how to clear it (esc) so a narrowed list is never a dead end.
-		var filterHint string
+		row1 := spreadHints(w, []hint{{"↑↓", "move"}, {"⏎", "attach"}, scopeHint, {"^c", "quit"}})
+		// The always-on filter is invisible without a hint; advertise how to type
+		// one and how to clear it (esc) so a narrowed list is never a dead end.
+		filterHint := hint{"type", "to filter"}
 		if m.filter != "" {
-			filterHint = renderHints([]hint{{"type", "filter"}, {"esc", "clear"}})
-		} else {
-			filterHint = renderHints([]hint{{"type", "filter"}})
+			filterHint = hint{"esc", "clear filter"}
 		}
-		body := sep + "\n" + nav + "\n" + act + "\n" + filterHint
+		row2 := spreadHints(w, []hint{{"^r", "rename"}, {"^n", "name-now"}, {"^k", "kill"}, filterHint})
+		body := sep + "\n" + row1 + "\n" + row2
 		// When the background check found a newer release, surface a one-line banner
 		// above the hints with the ^u affordance (handled in handleBrowseKey).
 		if m.updateLatest != "" {
@@ -917,7 +959,7 @@ func (m model) footerView() string {
 		}
 		return body
 	default:
-		return sep + "\n" + renderHints([]hint{{"q", "quit"}})
+		return sep + "\n" + spreadHints(w, []hint{{"q", "quit"}})
 	}
 }
 
