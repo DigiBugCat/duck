@@ -4,17 +4,15 @@
 -- path. All the logic lives in the `duck snap` subcommand — this is just the
 -- hotkey.
 --
--- Setup
---   1. brew install --cask hammerspoon
---   2. Copy this into ~/.hammerspoon/init.lua (or `dofile` it from there).
---   3. Free up Cmd+Shift+3: System Settings → Keyboard → Keyboard Shortcuts →
---      Screenshots → uncheck "Save picture of screen as a file".
---   4. Grant Hammerspoon Accessibility + Screen Recording
---      (System Settings → Privacy & Security).
---   5. Launch Hammerspoon → Reload Config.
+-- MANAGED FILE — installed by `duck snap install-hotkey` from the binary's
+-- embedded copy (assets/hammerspoon-snap.lua), so every Mac gets the identical
+-- binding from git. Re-run install-hotkey after `duck update` to refresh it; do
+-- not hand-edit (your changes are overwritten). `duck snap install-hotkey`
+-- writes this to ~/.hammerspoon/duck-snap.lua and `dofile`s it from init.lua.
 --
--- (Prefer no extra app? macOS Shortcuts works too: a "Run Shell Script:
---  duck snap" shortcut with a keyboard shortcut, no daemon.)
+-- After installing: free Cmd+Shift+3 (System Settings → Keyboard → Keyboard
+-- Shortcuts → Screenshots → uncheck "Save picture of screen as a file"), grant
+-- Hammerspoon Accessibility + Screen Recording, then Reload Config.
 
 hs.hotkey.bind({ "cmd", "shift" }, "3", function()
   -- Login shell so PATH includes ~/.local/bin, where the duck binary lives.

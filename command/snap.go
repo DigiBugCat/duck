@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DigiBugCat/duck/assets"
 	"github.com/spf13/cobra"
 )
 
@@ -50,6 +51,7 @@ one-key capture, mirroring the original remote-shot.`,
 func init() {
 	snapCmd.Flags().BoolVar(&snapFull, "full", false,
 		"capture the full screen instead of an interactive selection")
+	snapCmd.AddCommand(snapInstallHotkeyCmd)
 }
 
 // captureArgs builds the screencapture argv. -x silences the shutter sound; -i
@@ -122,4 +124,114 @@ func pbcopy(s string) error {
 	c := exec.Command("pbcopy")
 	c.Stdin = strings.NewReader(s)
 	return c.Run()
+}
+
+// hammerspoonDofileMarker is the substring that marks duck's managed dofile line
+// in ~/.hammerspoon/init.lua, so re-running install-hotkey is idempotent.
+const hammerspoonDofileMarker = "duck-snap.lua"
+
+var snapInstallHotkeyCmd = &cobra.Command{
+	Use:   "install-hotkey",
+	Short: "Install the Hammerspoon Cmd+Shift+3 → duck snap binding (installs Hammerspoon if missing)",
+	Long: `install-hotkey writes duck's Hammerspoon binding — embedded in the binary, from
+git — to ~/.hammerspoon/duck-snap.lua and makes ~/.hammerspoon/init.lua load it,
+so the Cmd+Shift+3 → duck snap hotkey is identical on every Mac. If Hammerspoon
+isn't installed it is installed via Homebrew. Re-run after 'duck update' to
+refresh the binding. Idempotent and non-destructive: it only appends a single
+dofile line to an existing init.lua.`,
+	Args: cobra.NoArgs,
+	RunE: func(c *cobra.Command, args []string) error {
+		return runInstallHotkey()
+	},
+}
+
+func runInstallHotkey() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	// Install Hammerspoon itself if it's missing (the hotkey can't fire without it).
+	if !hammerspoonInstalled(home) {
+		if err := installHammerspoon(); err != nil {
+			return err
+		}
+	}
+
+	hsDir := filepath.Join(home, ".hammerspoon")
+	if err := os.MkdirAll(hsDir, 0o755); err != nil {
+		return err
+	}
+
+	// Write the managed binding (duck-owned; safe to overwrite on every run).
+	managed := filepath.Join(hsDir, "duck-snap.lua")
+	if err := os.WriteFile(managed, []byte(assets.HammerspoonSnap), 0o644); err != nil {
+		return err
+	}
+
+	// Ensure init.lua loads it — idempotent and non-destructive (only appends a
+	// single dofile line; never clobbers other Hammerspoon config).
+	initPath := filepath.Join(hsDir, "init.lua")
+	existing, _ := os.ReadFile(initPath) // missing → treated as empty
+	next, changed := ensureDofileLine(string(existing))
+	if changed {
+		if err := os.WriteFile(initPath, []byte(next), 0o644); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("binding installed → %s\n", managed)
+	if changed {
+		fmt.Printf("loaded from       → %s\n", initPath)
+	} else {
+		fmt.Printf("already loaded    → %s\n", initPath)
+	}
+	fmt.Println("\nFinish in System Settings (one-time):")
+	fmt.Println("  • Free Cmd+Shift+3: Keyboard → Keyboard Shortcuts → Screenshots →")
+	fmt.Println("    uncheck \"Save picture of screen as a file\".")
+	fmt.Println("  • Grant Hammerspoon Accessibility + Screen Recording (Privacy & Security).")
+	fmt.Println("  • Launch Hammerspoon (or its menu → Reload Config).")
+	return nil
+}
+
+// ensureDofileLine appends the duck-snap dofile to init.lua content if absent.
+// Returns the (possibly unchanged) content and whether it was modified.
+func ensureDofileLine(content string) (string, bool) {
+	if strings.Contains(content, hammerspoonDofileMarker) {
+		return content, false
+	}
+	line := "dofile(hs.configdir .. \"/duck-snap.lua\") -- duck snap (managed by `duck snap install-hotkey`)\n"
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return content + line, true
+}
+
+// hammerspoonInstalled reports whether Hammerspoon.app is present in either the
+// system or user Applications folder.
+func hammerspoonInstalled(home string) bool {
+	for _, p := range []string{
+		"/Applications/Hammerspoon.app",
+		filepath.Join(home, "Applications", "Hammerspoon.app"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// installHammerspoon installs Hammerspoon via Homebrew, streaming brew's output.
+func installHammerspoon() error {
+	brew, err := exec.LookPath("brew")
+	if err != nil {
+		return fmt.Errorf("Hammerspoon isn't installed and Homebrew wasn't found — install Homebrew (https://brew.sh) then re-run, or install Hammerspoon manually")
+	}
+	fmt.Println("Hammerspoon not found — installing via Homebrew…")
+	c := exec.Command(brew, "install", "--cask", "hammerspoon")
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("brew install --cask hammerspoon: %w", err)
+	}
+	return nil
 }

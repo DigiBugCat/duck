@@ -1,6 +1,9 @@
 package command
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestCaptureArgs(t *testing.T) {
 	for _, tt := range []struct {
@@ -38,5 +41,26 @@ func TestUploadCommand(t *testing.T) {
 	wantCmd := "mkdir -p /tmp/duck-shots && cat > " + wantPath
 	if cmd != wantCmd {
 		t.Errorf("remoteCmd = %q, want %q", cmd, wantCmd)
+	}
+}
+
+func TestEnsureDofileLine(t *testing.T) {
+	// Fresh/empty init.lua → the dofile line is appended.
+	out, changed := ensureDofileLine("")
+	if !changed || !strings.Contains(out, hammerspoonDofileMarker) {
+		t.Fatalf("empty: changed=%v out=%q", changed, out)
+	}
+
+	// Idempotent: running again on the result is a no-op.
+	if out2, changed2 := ensureDofileLine(out); changed2 || out2 != out {
+		t.Fatalf("idempotent: changed=%v out=%q", changed2, out2)
+	}
+
+	// Existing config without a trailing newline → newline inserted, config kept,
+	// line appended (non-destructive).
+	existing := "hs.alert.show('hi')"
+	out3, changed3 := ensureDofileLine(existing)
+	if !changed3 || !strings.HasPrefix(out3, existing+"\n") || !strings.Contains(out3, hammerspoonDofileMarker) {
+		t.Fatalf("append: changed=%v out=%q", changed3, out3)
 	}
 }

@@ -152,12 +152,20 @@ duck snap            # drag a region → path is on your clipboard → ⌘V into
 duck snap --full     # whole screen instead of a selection
 ```
 
-For a one-key capture, bind it to a hotkey. A Hammerspoon binding (Cmd+Shift+3,
-mirroring the original remote-shot) ships at [`docs/hammerspoon-snap.lua`](docs/hammerspoon-snap.lua);
-copy it into `~/.hammerspoon/init.lua`, free up ⌘⇧3 in System Settings →
-Keyboard → Keyboard Shortcuts → Screenshots, and grant Hammerspoon Accessibility
-+ Screen Recording. (macOS Shortcuts works too — bind a "Run Shell Script:
-`duck snap`" shortcut to any key, no extra app.)
+For a one-key capture, run:
+
+```sh
+duck snap install-hotkey   # installs Hammerspoon if needed + the Cmd+Shift+3 binding
+```
+
+It installs Hammerspoon (via Homebrew) if it's missing and writes a
+`Cmd+Shift+3` → `duck snap` binding from duck's **embedded** copy
+(`assets/hammerspoon-snap.lua`) into `~/.hammerspoon/` — so every Mac gets the
+identical hotkey from `duck update`, never a hand-copied file. Then free up ⌘⇧3
+(System Settings → Keyboard → Keyboard Shortcuts → Screenshots → uncheck "Save
+picture of screen as a file"), grant Hammerspoon Accessibility + Screen
+Recording, and Reload Config. (Prefer no extra app? macOS Shortcuts works too —
+bind a "Run Shell Script: `duck snap`" shortcut to any key.)
 
 ## Resilience
 
