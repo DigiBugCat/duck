@@ -122,6 +122,7 @@ laptop; codex is **not** required on the hub.
 | `duck ls` | list remote sessions without attaching |
 | `duck rename <s> <name…>` | set a raw display name for a session |
 | `duck kill <name>` / `duck clean` | kill one / all detached-idle sessions |
+| `duck snap` | capture a screen selection → upload it to the hub → copy the remote path to your clipboard (paste into a Claude session on the hub) |
 | `duck config` (`path`, `edit`) | show / locate / edit the config (hub, codex model, per-folder policy) |
 | `duck config claude-sync on\|off` | toggle per-folder Claude history sync (transcripts + memory) to the hub |
 | `duck hub set/setup/show` | set, provision, or print the hub |
@@ -136,6 +137,27 @@ laptop; codex is **not** required on the hub.
 <p align="center">
   <img src="docs/img/config.png" width="560" alt="duck config">
 </p>
+
+## Screenshots into a remote Claude
+
+Claude Code reads images from the clipboard of the machine it runs on — which,
+over duck, is the hub, not your laptop. `duck snap` bridges that: it captures a
+selection locally (macOS `screencapture`, like ⌘⇧4), streams the PNG to the hub
+over duck's multiplexed SSH (into `/tmp/duck-shots`), and copies the **remote
+path** to your laptop clipboard. Paste that path into a Claude session on the
+hub and ask about it — Claude reads the image by path.
+
+```sh
+duck snap            # drag a region → path is on your clipboard → ⌘V into Claude
+duck snap --full     # whole screen instead of a selection
+```
+
+For a one-key capture, bind it to a hotkey. A Hammerspoon binding (Cmd+Shift+3,
+mirroring the original remote-shot) ships at [`docs/hammerspoon-snap.lua`](docs/hammerspoon-snap.lua);
+copy it into `~/.hammerspoon/init.lua`, free up ⌘⇧3 in System Settings →
+Keyboard → Keyboard Shortcuts → Screenshots, and grant Hammerspoon Accessibility
++ Screen Recording. (macOS Shortcuts works too — bind a "Run Shell Script:
+`duck snap`" shortcut to any key, no extra app.)
 
 ## Resilience
 

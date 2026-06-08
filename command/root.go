@@ -236,6 +236,7 @@ func init() {
 	rootCmd.AddCommand(cleanCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(snapCmd)
 }
 
 // Execute runs the root command. It is the single entrypoint called by
