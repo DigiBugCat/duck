@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>duck — HYBRID</title>
+<!--
+  CONCEPT 06 — "HYBRID" · Pulse's bones, Feed's voice. One identity: near-black,
+  hairline borders, tabular numerals — and the agents speak quietly inside it.
+  THE HARD REQUIREMENT: accurate options positions, modeled on Schwab's data shape.
+
+  UI MODULE → DATA SOURCE MAP (audited stack only):
+  · Hero balance + day change ............ BROKER: account (cash, liquidation value) + positions (marketValue, incl. option legs)
+  · Portfolio chart (1D..ALL) ............ MARKET DATA: intraday_prices + price_history aggregated over positions
+  · Equity positions rows ................ BROKER: positions where instrument.assetType == "EQUITY" (qty, averagePrice) + quote (mark, netChangePct)
+  · OPTION sub-rows (grouped) ............ BROKER: positions where instrument.assetType == "OPTION" —
+                                            OCC symbol, putCall, underlyingSymbol, strikePrice, expirationDate,
+                                            shortQuantity / longQuantity, averagePrice, marketValue (negative for short), multiplier 100
+  · Strategy labels (covered call / CSP) . derived client-side: short CALL + ≥100 underlying shares → covered call;
+                                            short PUT + cash ≥ strike×100×qty → cash-secured put; long CALL alone → long call
+  · Greeks grid (Δ Γ θ IV), DTE .......... OPTIONS: options_chain per-contract greeks + IV via Polygon / ThetaData
+  · NVDA $750C attention state ........... EVENTS: earnings_calendar (NVDA Thu Jun 11, after close) + IV percentile vs 3-mo avg
+  · Leg detail mark-price chart .......... OPTIONS: contract price history (ThetaData EOD marks + Polygon intraday)
+  · Roll suggestion chip / proposal ...... AGENTS: earnings-watch run events → flock hub trade proposals → approvals-gate
+  · Quiet feed cards ..................... AGENTS: run events (earnings-watch, arm-watch, approvals-gate, duck hub);
+                                            NEWS & FILINGS: market_news; MARKET CONTEXT: index futures, treasury_rates;
+                                            EVENTS: economic_calendar + earnings_calendar
+  · Fill receipt card .................... BROKER (SOON): transactions feed / order status (fills incl. option orders)
+  · Milestone card ....................... BROKER: account liquidation value intraday high-water mark
+  · Trades queue + slide-to-approve ...... AGENTS: trade proposals; BROKER (SOON): preview/place orders via human approval gate
+  · Decided history ...................... AGENTS: approvals-gate decision log
+
+  RECONCILIATION (honest portfolio math — every line item sums exactly):
+    NVDA  120 × 682.92 = 81,950.40      AAPL 145 × 204.00 = 29,580.00 (mark nudged from spec's
+    MSFT   80 × 478.25 = 38,260.00      478.30→478.25 / 204.00 so totals close to the penny)
+    BRK.B 160 × 430.00 = 68,800.00      TLT  200 ×  87.64 = 17,528.00
+    Shares MV ............ 236,118.40
+    Long options ......... +1,620.00    (+2 AAPL 09/18/26 220C @ 8.10 × 100)
+    Short options ........ −1,436.00    (−1 NVDA 06/19/26 750C @ 12.40 ; −2 TLT 07/17/26 88P @ 0.98)
+    Cash ................. 48,210.00
+    TOTAL ................ 284,512.40   day +3,214.88 (+1.14%)   ✓
+    Option leg P/L: NVDA 750C sold 14.20 → 12.40 = +180 ; AAPL 220C 6.85 → 8.10 = +250 ;
+    TLT 88P sold 1.32 → 0.98 = +68. Today is Tue Jun 9 2026 → 750C 10 DTE, 220C 101 DTE, 88P 38 DTE.
+-->
+<style>
+  :root {
+    --bg: #040504;
+    --screen: #070908;
+    --surface: #0d1110;
+    --surface2: #121716;
+    --border: rgba(255,255,255,.065);
+    --hairline: rgba(255,255,255,.1);
+    --text: #f2f5f3;
+    --muted: #7e8884;
+    --faint: #4c5552;
+    --up: #2bdc96;
+    --dn: #ff5d73;
+    --amber: #e8b04a;
+    --amber-soft: rgba(232,176,74,.12);
+    --violet: #a795f5;
+    --blue: #6fa8ff;
+    --acc: var(--up);
+    --acc-soft: rgba(43,220,150,.12);
+  }
+  .up { --acc: var(--up); --acc-soft: rgba(43,220,150,.12); }
+  .dn { --acc: var(--dn); --acc-soft: rgba(255,93,115,.12); }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1100px 700px at 50% -15%, #0c1310 0%, var(--bg) 60%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px;
+    user-select: none; -webkit-user-select: none;
+  }
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--screen);
+    border-radius: 54px; border: 1px solid #232826;
+    box-shadow: 0 0 0 11px #121514, 0 0 0 12.5px #343a37, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  @media (max-width: 500px), (max-height: 940px) and (max-width: 940px) {
+    body { padding: 0; }
+    .phone {
+      width: 100vw; height: 100dvh;
+      border-radius: 0; border: none; box-shadow: none;
+    }
+    .island { display: none; }
+    .statusbar { height: calc(env(safe-area-inset-top, 14px) + 14px) !important; }
+    .statusbar span { display: none; }
+    .tabbar { padding-bottom: calc(env(safe-area-inset-bottom, 18px) + 8px) !important; height: auto !important; }
+    .homebar { display: none; }
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 90; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; z-index: 85; }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+  .main { flex: 1; position: relative; min-height: 0; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #fff; opacity: .3; z-index: 60; pointer-events: none; }
+
+  /* ============ views ============ */
+  .view { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--screen); opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity .22s ease, transform .26s cubic-bezier(.32,.72,.27,1); }
+  .view.on { opacity: 1; pointer-events: auto; transform: none; }
+  #view-detail {
+    z-index: 50; opacity: 1; transform: translateX(100%); pointer-events: auto;
+    transition: transform .3s cubic-bezier(.32,.72,.27,1);
+  }
+  #view-detail.active { transform: none; }
+  .scroll { flex: 1; overflow-y: auto; min-height: 0; padding-bottom: 116px; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ============ shared header ============ */
+  .homehead { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 8px 24px 2px; }
+  .wordmark { font-size: 13px; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase; color: var(--faint); }
+  .flock { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .4px; }
+  .flock .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--up); box-shadow: 0 0 7px var(--up); animation: heartbeat 2.4s ease-in-out infinite; }
+  @keyframes heartbeat { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  /* ============ home hero + chart ============ */
+  .hero { padding: 18px 24px 4px; }
+  .herolabel { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .3px; }
+  .heronum { font-size: 44px; font-weight: 650; letter-spacing: -1.6px; line-height: 1.12; font-variant-numeric: tabular-nums; }
+  .herochg { margin-top: 3px; font-size: 14.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--acc); display: flex; align-items: baseline; gap: 7px; transition: color .2s; }
+  .herochg .period { color: var(--faint); font-weight: 500; }
+
+  .chartwrap { position: relative; margin-top: 12px; }
+  .scrubtime {
+    position: absolute; top: -4px; left: 0; font-size: 11.5px; font-weight: 650;
+    color: var(--muted); font-variant-numeric: tabular-nums;
+    opacity: 0; transition: opacity .15s; pointer-events: none; white-space: nowrap;
+  }
+  .chartwrap.scrubbing .scrubtime { opacity: 1; }
+  svg.chart { display: block; width: 100%; height: auto; touch-action: none; cursor: crosshair; }
+  .chartline { fill: none; stroke: var(--acc); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; transition: stroke .2s; }
+  .chartfill { stroke: none; opacity: .9; }
+  .baseline { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 1.5 4.5; opacity: .55; }
+  .xline { stroke: var(--text); stroke-width: 1; opacity: 0; }
+  .xdot { fill: var(--acc); opacity: 0; transition: fill .2s; }
+  .chartwrap.scrubbing .xline { opacity: .35; }
+  .chartwrap.scrubbing .xdot { opacity: 1; }
+  .drawin { animation: drawfade .45s ease; }
+  @keyframes drawfade { from { opacity: 0; transform: translateY(4px); } }
+
+  .ranges { display: flex; padding: 10px 16px 2px; }
+  .ranges button {
+    flex: 1; border: none; background: none; font-family: inherit;
+    font-size: 12.5px; font-weight: 700; letter-spacing: .6px;
+    color: var(--faint); padding: 8px 0; border-radius: 9px; cursor: pointer;
+    transition: color .18s, background .18s;
+  }
+  .ranges button.on { color: var(--acc); background: var(--acc-soft); }
+
+  /* ============ positions w/ option legs ============ */
+  .seclabel { padding: 22px 24px 6px; font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: var(--faint); display: flex; justify-content: space-between; align-items: baseline; }
+  .seclabel .note { font-weight: 600; letter-spacing: .3px; text-transform: none; font-size: 11px; }
+  .pos { display: flex; align-items: center; gap: 12px; padding: 13px 24px 11px; cursor: pointer; transition: background .15s; }
+  .pos:active { background: rgba(255,255,255,.03); }
+  .pos .id { flex: 1; min-width: 0; }
+  .pos .tickline { display: flex; align-items: center; gap: 8px; }
+  .pos .tick { font-size: 15px; font-weight: 700; letter-spacing: -.2px; }
+  .strat { font-size: 9px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--amber); background: var(--amber-soft); padding: 2.5px 7px; border-radius: 5px; }
+  .strat.lc { color: var(--up); background: rgba(43,220,150,.1); }
+  .pos .sh { font-size: 11.5px; color: var(--faint); margin-top: 2px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .pos .spark { flex: none; width: 64px; }
+  .pos .spark svg { width: 64px; height: 24px; display: block; }
+  .pos .rt { flex: none; text-align: right; min-width: 98px; }
+  .pos .mv { font-size: 14.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .pos .dp { font-size: 12px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .u { color: var(--up); } .d { color: var(--dn); }
+
+  .leg {
+    display: flex; align-items: center; gap: 10px;
+    margin: 0 24px 2px 24px; padding: 9px 0 9px 14px; cursor: pointer;
+    border-left: 1px solid var(--hairline);
+    position: relative; transition: background .15s;
+  }
+  .leg::before { content: ''; position: absolute; left: 0; top: 50%; width: 9px; height: 1px; background: var(--hairline); }
+  .leg:active { background: rgba(255,255,255,.03); }
+  .leg .lid { flex: 1; min-width: 0; }
+  .leg .lname { font-size: 13px; font-weight: 650; letter-spacing: -.1px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .leg .lqty { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 700; }
+  .dte { font-size: 9.5px; font-weight: 800; letter-spacing: .5px; color: var(--muted); border: 1px solid var(--hairline); border-radius: 5px; padding: 1.5px 5.5px; font-variant-numeric: tabular-nums; }
+  .dte.warn { color: var(--amber); border-color: rgba(232,176,74,.4); }
+  .leg .lsub { font-size: 11px; color: var(--faint); margin-top: 2.5px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .leg .lsub .attn { color: var(--amber); font-weight: 650; }
+  .leg .lrt { flex: none; text-align: right; min-width: 98px; }
+  .leg .lmv { font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .leg .lpl { font-size: 11px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .leg .lpl .day { color: var(--faint); font-weight: 550; }
+
+  .cashrow { display: flex; justify-content: space-between; padding: 13px 24px 4px; border-top: 1px solid var(--border); margin-top: 8px; font-size: 14px; font-weight: 600; }
+  .cashrow .lab { color: var(--muted); }
+  .cashrow .val { font-variant-numeric: tabular-nums; }
+  .cashsub { padding: 2px 24px 0; font-size: 11px; color: var(--faint); font-weight: 550; font-variant-numeric: tabular-nums; }
+  .recon { margin: 16px 24px 8px; border: 1px solid var(--border); border-radius: 14px; padding: 11px 14px 5px; }
+  .recon .ri { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-weight: 550; padding-bottom: 7px; font-variant-numeric: tabular-nums; }
+  .recon .ri b { color: var(--text); font-weight: 650; }
+  .recon .ri.tot { border-top: 1px solid var(--border); padding-top: 8px; color: var(--text); font-weight: 650; }
+
+  /* ============ quiet feed ============ */
+  .feedscroll { padding-top: 4px; }
+  .qcard {
+    margin: 0 16px 12px; padding: 15px 17px 13px;
+    border: 1px solid var(--border); border-radius: 20px;
+    background: linear-gradient(180deg, #0c100f 0%, #090c0b 100%);
+    position: relative; overflow: hidden; cursor: pointer;
+    opacity: 0; transform: translateY(18px) scale(.985);
+    transition: background .15s;
+  }
+  .qcard.in { opacity: 1; transform: none; transition: opacity .4s ease, transform .5s cubic-bezier(.22,1.15,.36,1); }
+  .qcard:active { background: #0e1211; }
+  .qcard.needs { border-color: rgba(232,176,74,.35); }
+  .qhead { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
+  .qhead .adot { width: 6px; height: 6px; border-radius: 50%; background: var(--ac, var(--up)); flex: none; align-self: center; }
+  .qhead .aname { font-size: 11px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+  .qhead .atag { font-size: 9px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--ac, var(--up)); border: 1px solid var(--border); padding: 2px 6px; border-radius: 5px; }
+  .qhead .atime { margin-left: auto; font-size: 10.5px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .qbody { font-size: 13.5px; line-height: 1.55; color: #c4ccc8; font-weight: 480; }
+  .qbody b { color: var(--text); font-weight: 680; }
+  .qspark { display: block; width: 100%; height: 46px; margin: 9px 0 1px; }
+  .qrows { margin-top: 9px; border-top: 1px solid var(--border); }
+  .qrow { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .qrow:last-child { border-bottom: none; padding-bottom: 1px; }
+  .qrow .k { color: var(--muted); font-weight: 550; }
+  .qrow .v { font-weight: 680; }
+  .qchip {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 11px;
+    padding: 8px 14px; border-radius: 999px; border: 1px solid var(--hairline);
+    background: none; color: var(--text); font-family: inherit;
+    font-size: 12px; font-weight: 650; cursor: pointer; transition: transform .14s, border-color .2s;
+  }
+  .qchip:active { transform: scale(.95); }
+  .qchip.warm { color: var(--amber); border-color: rgba(232,176,74,.4); }
+  .rcpt { margin-top: 3px; border: 1px dashed rgba(255,255,255,.16); border-radius: 13px; padding: 12px 13px 9px; position: relative; }
+  .rcptbig { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14.5px; font-weight: 750; letter-spacing: .2px; margin-bottom: 7px; }
+  .rcptline { display: flex; justify-content: space-between; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--muted); padding: 2.5px 0; }
+  .rcptline .rv { color: var(--text); font-weight: 650; }
+  .seal {
+    position: absolute; right: 9px; top: 7px; font-size: 11px; font-weight: 900; letter-spacing: 2px;
+    color: var(--up); border: 2px solid var(--up); border-radius: 7px; padding: 4px 8px;
+    transform: rotate(-10deg) scale(0); opacity: 0; text-transform: uppercase;
+  }
+  .qcard.stamped .seal { animation: stamp .5s cubic-bezier(.2,1.6,.35,1) .3s forwards; }
+  @keyframes stamp {
+    0% { transform: rotate(-24deg) scale(2.2); opacity: 0; }
+    60% { transform: rotate(-10deg) scale(.92); opacity: 1; }
+    100% { transform: rotate(-10deg) scale(1); opacity: 1; }
+  }
+  .milenum { font-size: 38px; font-weight: 720; letter-spacing: -1.3px; font-variant-numeric: tabular-nums; color: var(--up); margin: 8px 0 3px; text-align: center; }
+  .milecap { font-size: 12.5px; color: var(--muted); font-weight: 550; text-align: center; line-height: 1.5; margin-bottom: 4px; }
+  .mileglow { position: absolute; inset: -40%; background: radial-gradient(closest-side, rgba(43,220,150,.1), transparent 70%); opacity: 0; pointer-events: none; }
+  .qcard.celebrated .mileglow { animation: glowin 1.6s ease forwards; }
+  @keyframes glowin { 0% { opacity: 0; transform: scale(.6); } 40% { opacity: 1; } 100% { opacity: .6; transform: scale(1); } }
+  .particles { position: absolute; inset: 0; pointer-events: none; overflow: visible; z-index: 6; }
+  .pt-dot {
+    position: absolute; left: 50%; top: 46%; width: 5px; height: 5px; border-radius: 50%;
+    background: var(--up); opacity: 0;
+    animation: burst .9s cubic-bezier(.16,.8,.3,1) forwards;
+  }
+  @keyframes burst {
+    0% { opacity: 1; transform: translate(0,0) scale(1); }
+    100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(.2); }
+  }
+
+  /* ============ detail ============ */
+  .navrow { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 6px 14px 8px; }
+  .backbtn { background: none; border: none; color: var(--text); font-size: 24px; font-family: inherit; padding: 4px 10px; cursor: pointer; line-height: 1; }
+  .navtick { font-size: 13px; font-weight: 700; letter-spacing: .6px; color: var(--muted); }
+  .ownpill { font-size: 11px; font-weight: 700; color: var(--muted); border: 1px solid var(--hairline); padding: 6px 11px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+  .dhero { padding: 4px 24px 0; }
+  .dname { font-size: 13px; font-weight: 600; color: var(--muted); }
+  .docc { font-size: 10.5px; font-weight: 600; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; margin-top: 2px; letter-spacing: .3px; }
+  .dnum { font-size: 38px; font-weight: 650; letter-spacing: -1.2px; font-variant-numeric: tabular-nums; line-height: 1.15; margin-top: 2px; }
+  .dchg { margin-top: 2px; font-size: 13.5px; font-weight: 600; color: var(--acc); font-variant-numeric: tabular-nums; transition: color .2s; }
+  .dchg .period { color: var(--faint); font-weight: 500; }
+  .dsec { padding: 22px 24px 0; }
+  .dsec h3 { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: var(--faint); margin-bottom: 11px; }
+  .attn-banner {
+    margin: 18px 24px 0; border: 1px solid rgba(232,176,74,.4); border-radius: 14px;
+    padding: 11px 14px; font-size: 12.5px; line-height: 1.55; color: var(--amber); font-weight: 550;
+    background: var(--amber-soft);
+  }
+  .attn-banner b { font-weight: 750; }
+  .greeks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .greek { border: 1px solid var(--border); border-radius: 13px; padding: 10px 6px; text-align: center; }
+  .greek .gk { font-size: 10px; font-weight: 700; letter-spacing: 1px; color: var(--faint); text-transform: uppercase; }
+  .greek .gv { font-size: 14.5px; font-weight: 680; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .greek .gv.warn { color: var(--amber); }
+  .mathcard { border: 1px solid var(--border); border-radius: 16px; padding: 4px 15px; }
+  .mrow { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .mrow:last-child { border-bottom: none; }
+  .mrow .mk { color: var(--muted); font-weight: 550; flex: none; }
+  .mrow .mv2 { font-weight: 680; font-variant-numeric: tabular-nums; text-align: right; }
+  .covernote { margin-top: 10px; font-size: 12px; color: var(--faint); font-weight: 550; line-height: 1.5; }
+  .covernote b { color: var(--muted); font-weight: 650; }
+  .poscard { border: 1px solid var(--border); border-radius: 18px; padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px 10px; }
+  .pc .k { font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .3px; }
+  .pc .v { font-size: 15px; font-weight: 650; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+  .stat { display: flex; justify-content: space-between; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .stat .k { font-size: 12.5px; color: var(--faint); font-weight: 600; }
+  .stat .v { font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .agentnote { border: 1px solid var(--border); border-radius: 16px; padding: 13px 15px; font-size: 13px; line-height: 1.55; color: #c4ccc8; font-weight: 480; }
+  .agentnote .src { display: block; margin-top: 8px; font-size: 10px; font-weight: 800; color: var(--faint); letter-spacing: 1.2px; text-transform: uppercase; }
+
+  /* ============ trades ============ */
+  .ahead { flex: none; padding: 10px 24px 2px; }
+  .ahead h2 { font-size: 21px; font-weight: 750; letter-spacing: -.4px; }
+  .asub { font-size: 12px; color: var(--faint); font-weight: 550; margin-top: 2px; }
+  .pstage { padding: 14px 22px 4px; }
+  .pcard {
+    border: 1px solid var(--border); border-radius: 24px;
+    background: linear-gradient(180deg, #0c100f 0%, #080b0a 100%);
+    padding: 20px 20px 16px; position: relative; overflow: hidden;
+    animation: cardin .4s cubic-bezier(.32,.72,.27,1);
+  }
+  @keyframes cardin { from { opacity: 0; transform: translateY(22px) scale(.97); } }
+  .pcard.leaving { transition: opacity .3s ease, transform .3s ease; opacity: 0; transform: translateY(-14px) scale(.97); }
+  .agent { font-size: 10.5px; font-weight: 800; letter-spacing: 1.8px; text-transform: uppercase; color: var(--faint); display: flex; align-items: center; gap: 8px; }
+  .agent .adot2 { width: 5px; height: 5px; border-radius: 50%; background: var(--ac, var(--up)); }
+  .ptitle { font-size: 21px; font-weight: 720; letter-spacing: -.5px; margin-top: 13px; line-height: 1.2; }
+  .plegs { margin-top: 12px; border: 1px dashed rgba(255,255,255,.14); border-radius: 13px; padding: 4px 13px; }
+  .pleg { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .pleg:last-child { border-bottom: none; }
+  .pleg .act { font-size: 9.5px; font-weight: 800; letter-spacing: 1px; flex: none; }
+  .pleg .act.b { color: var(--up); } .pleg .act.s { color: var(--dn); }
+  .pleg .desc { flex: 1; font-weight: 650; }
+  .pleg .px { color: var(--muted); font-weight: 600; flex: none; }
+  .pnet { margin-top: 10px; font-size: 13.5px; font-weight: 700; color: var(--up); font-variant-numeric: tabular-nums; }
+  .pnet .nlab { color: var(--faint); font-weight: 600; font-size: 11.5px; letter-spacing: .5px; text-transform: uppercase; margin-right: 7px; }
+  .pholding { margin-top: 9px; font-size: 11.5px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .prationale { margin-top: 12px; font-size: 13px; line-height: 1.6; color: #b9c2bd; font-weight: 480; }
+  .pmeta { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; padding-top: 12px; }
+  .pmeta b { color: var(--muted); font-weight: 700; }
+  .slidewrap { padding: 12px 22px 0; }
+  .slide {
+    position: relative; height: 62px; border-radius: 31px;
+    border: 1px solid var(--hairline); background: var(--surface);
+    overflow: hidden; touch-action: none;
+  }
+  .sfill { position: absolute; inset: 0; background: var(--acc-soft); transform-origin: left; transform: scaleX(0); }
+  .slabel {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 650; letter-spacing: .4px;
+    background: linear-gradient(90deg, #7e8884 40%, #e9efec 50%, #7e8884 60%);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; animation: shimmer 2.6s linear infinite;
+    pointer-events: none; transition: opacity .2s;
+  }
+  @keyframes shimmer { from { background-position: 180% 0; } to { background-position: -80% 0; } }
+  .sthumb {
+    position: absolute; top: 3px; left: 3px; width: 54px; height: 54px;
+    border-radius: 50%; background: var(--up); color: #04130c;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 21px; font-weight: 700; cursor: grab;
+    box-shadow: 0 4px 18px rgba(43,220,150,.35); will-change: transform;
+  }
+  .sthumb:active { cursor: grabbing; }
+  .denyrow { text-align: center; padding: 10px 0 4px; }
+  .denybtn { background: none; border: none; font-family: inherit; font-size: 13px; font-weight: 650; color: var(--faint); cursor: pointer; padding: 8px 22px; letter-spacing: .3px; transition: color .15s; }
+  .denybtn:active { color: var(--dn); }
+  .fillover {
+    position: absolute; inset: 0; z-index: 5; border-radius: 24px;
+    background: rgba(7,10,9,.97);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    opacity: 0; pointer-events: none; transition: opacity .25s;
+  }
+  .fillover.show { opacity: 1; pointer-events: auto; }
+  .fillcheck {
+    width: 60px; height: 60px; border-radius: 50%; border: 1.5px solid var(--up);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--up); font-size: 25px; margin-bottom: 10px;
+    box-shadow: 0 0 34px rgba(43,220,150,.25), inset 0 0 18px rgba(43,220,150,.1);
+  }
+  .fillover.show .fillcheck { animation: checkpop .55s cubic-bezier(.32,1.6,.4,1); }
+  @keyframes checkpop { from { transform: scale(.4); opacity: 0; } }
+  .filltitle { font-size: 11px; font-weight: 800; letter-spacing: 2.4px; text-transform: uppercase; color: var(--up); }
+  .fillorder { font-size: 16px; font-weight: 700; letter-spacing: -.2px; font-variant-numeric: tabular-nums; text-align: center; padding: 0 18px; }
+  .fillcount { margin-top: 12px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
+  .fillcount b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; font-size: 14px; }
+  .allclear { padding: 36px 22px; display: flex; flex-direction: column; align-items: center; gap: 9px; border: 1px dashed var(--border); border-radius: 24px; margin: 14px 22px 4px; }
+  .allclear .acdot { width: 8px; height: 8px; border-radius: 50%; background: var(--up); box-shadow: 0 0 12px var(--up); animation: heartbeat 2.4s infinite; }
+  .allclear h3 { font-size: 16px; font-weight: 700; letter-spacing: -.2px; }
+  .allclear p { font-size: 12.5px; color: var(--faint); font-weight: 550; }
+  .hist { margin: 0 24px; display: flex; align-items: center; gap: 11px; padding: 11px 0; border-bottom: 1px solid var(--border); }
+  .hist .hmark { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 11px; }
+  .hist .hmark.ok { color: var(--up); border-color: rgba(43,220,150,.35); }
+  .hist .hmark.no { color: var(--faint); }
+  .hist .ht { flex: 1; min-width: 0; }
+  .hist .h1 { font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .hist .h2 { font-size: 11px; color: var(--faint); font-weight: 550; margin-top: 1.5px; }
+  .hist .hwhen { flex: none; font-size: 10.5px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  /* ============ tab bar ============ */
+  .tabbar {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 40;
+    height: 88px; padding: 12px 26px 30px;
+    background: rgba(7,9,8,.82); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid var(--border); display: flex;
+  }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; background: none; border: none; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .8px; position: relative; cursor: pointer; font-family: inherit; transition: color .18s; text-transform: uppercase; }
+  .tab svg { width: 23px; height: 23px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .tab.active { color: var(--text); }
+  .tab .nbadge { position: absolute; top: -3px; right: 24%; background: var(--amber); color: #1d1404; font-size: 10px; font-weight: 800; min-width: 17px; height: 17px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; transition: opacity .3s, transform .3s; }
+  .tab .nbadge.gone { opacity: 0; transform: scale(.5); }
+
+  /* ============ toast ============ */
+  .toasts { position: absolute; top: 70px; left: 0; right: 0; z-index: 75; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+  .toast {
+    background: rgba(17,22,20,.94); backdrop-filter: blur(14px);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 10px 19px; font-size: 13px; font-weight: 600; color: var(--text);
+    box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    animation: toastin .3s cubic-bezier(.32,.72,.27,1); max-width: 86%;
+  }
+  @keyframes toastin { from { opacity: 0; transform: translateY(-14px) scale(.95); } }
+  .toast.out { transition: opacity .25s, transform .25s; opacity: 0; transform: translateY(-10px); }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span id="clock">9:41</span><span class="icons">●●●● 􀙇 ▮▮▮▯</span></div>
+
+  <div class="main">
+
+    <!-- ================= HOME ================= -->
+    <div class="view on" id="view-home">
+      <div class="homehead">
+        <span class="wordmark">duck</span>
+        <span class="flock"><span class="dot"></span>flock · 4 live</span>
+      </div>
+      <div class="scroll">
+        <div class="hero up" id="hero">
+          <div class="herolabel">Investing</div>
+          <div class="heronum num" id="heronum">$284,512.40</div>
+          <div class="herochg" id="herochg"><span id="herodelta">▲ $3,214.88 (+1.14%)</span><span class="period" id="heroperiod">Today</span></div>
+          <div class="chartwrap" id="homechartwrap">
+            <div class="scrubtime" id="homescrubtime"></div>
+            <svg class="chart" id="homechart" viewBox="0 0 361 188" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+        <div class="ranges up" id="homeranges"></div>
+
+        <div class="seclabel"><span>Positions</span><span class="note num" id="thetanote">θ +$47/day working for you</span></div>
+        <div id="poslist"></div>
+
+        <div class="cashrow"><span class="lab">Cash</span><span class="val num" id="cashval">$48,210.00</span></div>
+        <div class="cashsub" id="cashsub">$17,600.00 reserved · secures −2 TLT $88P</div>
+
+        <div class="recon" id="recon"></div>
+      </div>
+    </div>
+
+    <!-- ================= FEED ================= -->
+    <div class="view" id="view-feed">
+      <div class="homehead">
+        <span class="wordmark">the quiet feed</span>
+        <span class="flock num" id="feedbal"><span class="dot"></span>$284,512.40 · +1.14%</span>
+      </div>
+      <div class="scroll feedscroll" id="feed"></div>
+    </div>
+
+    <!-- ================= TRADES ================= -->
+    <div class="view" id="view-trades">
+      <div class="ahead">
+        <h2>Trades</h2>
+        <div class="asub">The flock proposes. You decide. Orders route to Schwab only after you approve.</div>
+      </div>
+      <div class="scroll" id="tradescroll">
+        <div class="pstage" id="pstage"></div>
+        <div class="slidewrap" id="slidewrap">
+          <div class="slide up" id="slide">
+            <div class="sfill" id="sfill"></div>
+            <div class="slabel" id="slabel">Slide to approve</div>
+            <div class="sthumb" id="sthumb">›</div>
+          </div>
+        </div>
+        <div class="denyrow" id="denyrow"><button class="denybtn" id="denybtn">Deny</button></div>
+        <div class="seclabel" style="padding-top:18px"><span>Decided</span><span class="note">approvals-gate log</span></div>
+        <div id="histlist"></div>
+      </div>
+    </div>
+
+    <!-- ================= DETAIL (positions / legs / feed subjects) ================= -->
+    <div class="view" id="view-detail">
+      <div class="navrow">
+        <button class="backbtn" id="detailback">‹</button>
+        <span class="navtick" id="navtick"></span>
+        <span class="ownpill num" id="ownpill"></span>
+      </div>
+      <div class="scroll" id="detailscroll">
+        <div class="dhero up" id="dhero">
+          <div class="dname" id="dname"></div>
+          <div class="docc" id="docc"></div>
+          <div class="dnum num" id="dnum"></div>
+          <div class="dchg" id="dchg"><span id="ddelta"></span> <span class="period" id="dperiod"></span></div>
+          <div class="chartwrap" id="dchartwrap" style="margin-top:14px">
+            <div class="scrubtime" id="dscrubtime"></div>
+            <svg class="chart" id="dchart" viewBox="0 0 361 168" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+        <div class="ranges up" id="dranges" style="padding-top:8px"></div>
+        <div id="dbody"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- tab bar -->
+  <nav class="tabbar">
+    <button class="tab active" data-tab="home">
+      <svg viewBox="0 0 24 24"><path d="M2 14 L7 14 L10 6 L14 19 L17 11 L22 11"/></svg>
+      Home
+    </button>
+    <button class="tab" data-tab="feed">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2.5"/><rect x="3" y="14" width="18" height="7" rx="2.5"/></svg>
+      Feed
+    </button>
+    <button class="tab" data-tab="trades">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.4 L11 15.2 L16 9.4"/></svg>
+      Trades<span class="nbadge" id="tabbadge">2</span>
+    </button>
+  </nav>
+  <div class="homebar"></div>
+
+  <div class="toasts" id="toasts"></div>
+</div>
+
+<script>
+'use strict';
+/* ================= utils ================= */
+const $ = id => document.getElementById(id);
+function rng(seed){ let t = seed >>> 0; return function(){ t += 0x6D2B79F5; let r = Math.imul(t ^ t >>> 15, 1 | t); r = r + Math.imul(r ^ r >>> 7, 61 | r) ^ r; return ((r ^ r >>> 14) >>> 0) / 4294967296; }; }
+function fmtMoney(v, dec){ if (dec === undefined) dec = 2; const neg = v < 0; const s = Math.abs(v).toFixed(dec).replace(/\B(?=(\d{3})+(?!\d))/g, ','); return (neg ? '−$' : '$') + s; }
+function fmtSigned(v, dec){ return (v >= 0 ? '+' : '−') + fmtMoney(Math.abs(v), dec).replace('−', ''); }
+function fmtDelta(v, pct){ const up = v >= 0; return (up ? '▲ ' : '▼ ') + fmtMoney(Math.abs(v)) + ' (' + (up ? '+' : '−') + Math.abs(pct).toFixed(2) + '%)'; }
+function toast(msg){ const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; $('toasts').appendChild(t); setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, 2400); }
+function countup(el, from, to, dur, fmt){
+  const t0 = performance.now();
+  function step(now){
+    const p = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - p, 3);
+    el.textContent = fmt(from + (to - from) * e);
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+function particleBurst(host, n){
+  const pc = document.createElement('div');
+  pc.className = 'particles';
+  for (let i = 0; i < n; i++){
+    const d = document.createElement('span');
+    d.className = 'pt-dot';
+    const ang = Math.random() * Math.PI * 2;
+    const dist = 55 + Math.random() * 110;
+    d.style.setProperty('--dx', (Math.cos(ang) * dist).toFixed(0) + 'px');
+    d.style.setProperty('--dy', (Math.sin(ang) * dist).toFixed(0) + 'px');
+    d.style.animationDelay = (Math.random() * 0.12) + 's';
+    d.style.width = d.style.height = (3 + Math.random() * 4).toFixed(1) + 'px';
+    pc.appendChild(d);
+  }
+  host.appendChild(pc);
+  setTimeout(() => pc.remove(), 1200);
+}
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const TODAY = new Date(2026, 5, 9); // Tue Jun 9 2026
+
+/* ================= state — BROKER: positions (EQUITY + OPTION instruments) ================= */
+const S = {
+  cash: 48210.00,
+  reserved: 17600.00, /* cash securing the short TLT 88 puts: 88 × 100 × 2 */
+  eq: {
+    NVDA:  { qty: 120, avg: 612.40, mark: 682.92, day: -0.61, name: 'NVIDIA Corporation' },
+    AAPL:  { qty: 145, avg: 182.40, mark: 204.00, day: +0.84, name: 'Apple Inc.' },
+    MSFT:  { qty: 80,  avg: 396.20, mark: 478.25, day: +0.52, name: 'Microsoft Corporation' },
+    'BRK.B': { qty: 160, avg: 388.45, mark: 430.00, day: +0.31, name: 'Berkshire Hathaway Cl B' },
+    TLT:   { qty: 200, avg: 94.10, mark: 87.64, day: +0.40, name: 'iShares 20+ Yr Treasury Bond ETF' }
+  },
+  order: ['NVDA', 'AAPL', 'MSFT', 'BRK.B', 'TLT'],
+  /* OPTION legs — Schwab shape: OCC symbol, putCall, underlyingSymbol, strike, expiry,
+     shortQuantity → qty < 0, multiplier 100. Greeks/IV from options_chain (Polygon/ThetaData). */
+  legs: [
+    { id: 'NVDA750C', under: 'NVDA', putCall: 'CALL', strike: 750, expLab: 'Jun 19', expFull: 'Jun 19, 2026',
+      qty: -1, open: 14.20, mark: 12.40, dayChg: +0.55, dte: 10, openSpan: 5, openLab: 'sold Jun 4',
+      occ: 'NVDA  260619C00750000', strat: 'covered call',
+      greeks: { d: '0.38', g: '0.0042', t: '−0.42', iv: '48%' }, ivWarn: true,
+      attn: 'earnings Thu · assignment risk > $750' },
+    { id: 'AAPL220C', under: 'AAPL', putCall: 'CALL', strike: 220, expLab: 'Sep 18', expFull: 'Sep 18, 2026',
+      qty: +2, open: 6.85, mark: 8.10, dayChg: +0.12, dte: 101, openSpan: 56, openLab: 'opened Apr 14',
+      occ: 'AAPL  260918C00220000', strat: 'long call',
+      greeks: { d: '0.44', g: '0.0061', t: '−0.031', iv: '26%' } },
+    { id: 'TLT88P', under: 'TLT', putCall: 'PUT', strike: 88, expLab: 'Jul 17', expFull: 'Jul 17, 2026',
+      qty: -2, open: 1.32, mark: 0.98, dayChg: -0.04, dte: 38, openSpan: 22, openLab: 'sold May 18',
+      occ: 'TLT   260717P00088000', strat: 'cash-secured put',
+      greeks: { d: '−0.21', g: '0.052', t: '−0.026', iv: '14%' } }
+  ]
+};
+function legMV(l){ return l.qty * l.mark * 100; }                 /* short → negative (a liability) */
+function legPL(l){ return (l.mark - l.open) * 100 * l.qty; }       /* short: decay → positive */
+function legDayPL(l){ return l.dayChg * 100 * l.qty; }
+function legsFor(sym){ return S.legs.filter(l => l.under === sym); }
+function legById(id){ return S.legs.find(l => l.id === id); }
+function legTitle(l){ return l.under + ' $' + l.strike + (l.putCall === 'CALL' ? 'C' : 'P') + ' · ' + l.expLab; }
+function sharesMV(){ let t = 0; for (const k in S.eq) t += S.eq[k].qty * S.eq[k].mark; return t; }
+function longOptMV(){ return S.legs.filter(l => l.qty > 0).reduce((a, l) => a + legMV(l), 0); }
+function shortOptMV(){ return S.legs.filter(l => l.qty < 0).reduce((a, l) => a + legMV(l), 0); }
+function totalValue(){ return sharesMV() + longOptMV() + shortOptMV() + S.cash; } /* 284,512.40 ✓ */
+
+/* ================= chart engine (inline SVG + pointer scrubbing, from Pulse) ================= */
+function Chart(svg, wrap, timeEl, H, onScrub){
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 361, PT = 10, PB = 10;
+  svg.innerHTML = '';
+  const defs = document.createElementNS(NS, 'defs');
+  const gid = 'g' + svg.id;
+  defs.innerHTML = '<linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" stop-color="currentColor" stop-opacity="0.16"/>' +
+    '<stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient>';
+  svg.appendChild(defs);
+  const fill = document.createElementNS(NS, 'path');
+  fill.setAttribute('class', 'chartfill'); fill.setAttribute('fill', 'url(#' + gid + ')');
+  const base = document.createElementNS(NS, 'line'); base.setAttribute('class', 'baseline');
+  const line = document.createElementNS(NS, 'path'); line.setAttribute('class', 'chartline');
+  const xline = document.createElementNS(NS, 'line'); xline.setAttribute('class', 'xline');
+  const xdot = document.createElementNS(NS, 'circle'); xdot.setAttribute('class', 'xdot'); xdot.setAttribute('r', '4');
+  svg.appendChild(fill); svg.appendChild(base); svg.appendChild(line); svg.appendChild(xline); svg.appendChild(xdot);
+  svg.style.color = 'var(--acc)';
+
+  let pts = [], labels = [], lo = 0, hi = 1;
+  const X = i => (i / (pts.length - 1)) * W;
+  const Y = v => PT + (1 - (v - lo) / (hi - lo || 1)) * (H - PT - PB);
+
+  function setData(arr, labs){
+    pts = arr; labels = labs;
+    lo = Math.min.apply(null, arr); hi = Math.max.apply(null, arr);
+    const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
+    let d = '';
+    for (let i = 0; i < arr.length; i++) d += (i ? 'L' : 'M') + X(i).toFixed(2) + ' ' + Y(arr[i]).toFixed(2);
+    line.setAttribute('d', d);
+    fill.setAttribute('d', d + 'L' + W + ' ' + H + 'L0 ' + H + 'Z');
+    const by = Y(arr[0]).toFixed(2);
+    base.setAttribute('x1', 0); base.setAttribute('x2', W);
+    base.setAttribute('y1', by); base.setAttribute('y2', by);
+    xline.setAttribute('y1', 2); xline.setAttribute('y2', H - 2);
+    line.classList.remove('drawin'); fill.classList.remove('drawin');
+    void line.getBoundingClientRect();
+    line.classList.add('drawin'); fill.classList.add('drawin');
+  }
+  function moveTo(clientX){
+    const r = svg.getBoundingClientRect();
+    const fx = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    const i = Math.round(fx * (pts.length - 1));
+    const px = X(i);
+    xline.setAttribute('x1', px); xline.setAttribute('x2', px);
+    xdot.setAttribute('cx', px); xdot.setAttribute('cy', Y(pts[i]));
+    const tpx = (px / W) * r.width;
+    timeEl.textContent = labels[i];
+    const tw = timeEl.offsetWidth;
+    timeEl.style.transform = 'translateX(' + Math.max(0, Math.min(r.width - tw, tpx - tw / 2)) + 'px)';
+    onScrub(pts[i], pts[0]);
+  }
+  svg.addEventListener('pointerdown', e => {
+    if (!pts.length) return;
+    svg.setPointerCapture(e.pointerId);
+    wrap.classList.add('scrubbing');
+    moveTo(e.clientX);
+  });
+  svg.addEventListener('pointermove', e => { if (wrap.classList.contains('scrubbing')) moveTo(e.clientX); });
+  function release(){
+    if (!wrap.classList.contains('scrubbing')) return;
+    wrap.classList.remove('scrubbing');
+    onScrub(null, pts[0]); /* snap back to live */
+  }
+  svg.addEventListener('pointerup', release);
+  svg.addEventListener('pointercancel', release);
+  return { setData: setData };
+}
+
+/* ---- series + labels (MARKET DATA: intraday_prices / price_history; OPTIONS: contract marks) ---- */
+function genSeries(seed, start, end, n){
+  const r = rng(seed), pts = [];
+  const step = Math.abs(end - start) / n * 2.4 + Math.abs(start) * 0.0011 + 0.0001;
+  let v = start;
+  for (let i = 0; i < n; i++){ pts.push(v); v += (r() - 0.5) * 2 * step; }
+  const drift = end - pts[n - 1];
+  for (let i = 0; i < n; i++) pts[i] += drift * (i / (n - 1));
+  pts[0] = start; pts[n - 1] = end;
+  return pts;
+}
+function labelFor(span, i, n){
+  if (span === 0){
+    const mins = 570 + (i / (n - 1)) * 390; /* 9:30 → 16:00 */
+    let h = Math.floor(mins / 60), m = Math.round(mins % 60);
+    if (m === 60){ h++; m = 0; }
+    const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h > 12 ? h - 12 : h;
+    return h12 + ':' + String(m).padStart(2, '0') + ' ' + ap + ' ET';
+  }
+  const d = new Date(TODAY.getTime() - (span - (i / (n - 1)) * span) * 864e5);
+  const lab = MONTHS[d.getMonth()] + ' ' + d.getDate();
+  return span > 200 ? lab + ', ' + d.getFullYear() : lab;
+}
+function buildRangePills(container, keys, onPick){
+  container.innerHTML = '';
+  keys.forEach((k, idx) => {
+    const b = document.createElement('button');
+    b.textContent = k;
+    if (idx === 0) b.classList.add('on');
+    b.addEventListener('click', () => {
+      container.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      onPick(k);
+    });
+    container.appendChild(b);
+  });
+}
+function setDirection(els, up){
+  els.forEach(el => { el.classList.toggle('up', up); el.classList.toggle('dn', !up); });
+}
+
+/* ================= HOME — hero, portfolio chart, positions ================= */
+const PORT_RANGES = {
+  '1D':  { start: 281297.52, span: 0,    n: 79 },
+  '1W':  { start: 279520.10, span: 7,    n: 64 },
+  '1M':  { start: 272210.40, span: 31,   n: 64 },
+  '3M':  { start: 289978.32, span: 92,   n: 64 },
+  'YTD': { start: 259840.00, span: 159,  n: 64 },
+  'ALL': { start: 198400.00, span: 1255, n: 80 }
+};
+const RANGE_KEYS = ['1D','1W','1M','3M','YTD','ALL'];
+function periodName(k){
+  return { '1D': 'Today', '1W': 'Past week', '1M': 'Past month', '3M': 'Past 3 months',
+           'YTD': 'Year to date', 'ALL': 'All time', 'OPEN': 'Since open' }[k];
+}
+let homeRange = '1D';
+const homeChart = Chart($('homechart'), $('homechartwrap'), $('homescrubtime'), 188, homeScrub);
+function homeScrub(val, start){
+  const end = totalValue();
+  const v = val === null ? end : val;
+  const d = v - start, pct = d / start * 100;
+  $('heronum').textContent = fmtMoney(v);
+  $('herodelta').textContent = fmtDelta(d, pct);
+  setDirection([$('hero'), $('homeranges')], d >= 0);
+}
+function setHomeRange(k){
+  homeRange = k;
+  const r = PORT_RANGES[k];
+  const pts = genSeries(20260609 + k.length * 7 + k.charCodeAt(0), r.start, totalValue(), r.n);
+  const labs = pts.map((_, i) => labelFor(r.span, i, r.n));
+  homeChart.setData(pts, labs);
+  $('heroperiod').textContent = periodName(k);
+  homeScrub(null, r.start);
+}
+buildRangePills($('homeranges'), RANGE_KEYS, setHomeRange);
+
+function sparkSVG(sym, p){
+  const n = 26;
+  const start = p.mark / (1 + p.day / 100);
+  const pts = genSeries(sym.charCodeAt(0) * 31 + 7, start, p.mark, n);
+  let lo = Math.min.apply(null, pts), hi = Math.max.apply(null, pts);
+  const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
+  let d = '';
+  for (let i = 0; i < n; i++){
+    d += (i ? 'L' : 'M') + (i / (n - 1) * 64).toFixed(1) + ' ' + (2 + (1 - (pts[i] - lo) / (hi - lo)) * 20).toFixed(1);
+  }
+  const col = p.day >= 0 ? 'var(--up)' : 'var(--dn)';
+  return '<svg viewBox="0 0 64 24"><path d="' + d + '" fill="none" stroke="' + col + '" stroke-width="1.4" stroke-linecap="round" opacity=".85"/></svg>';
+}
+
+function legRowHTML(l){
+  const mv = legMV(l), pl = legPL(l), dp = legDayPL(l);
+  const qtyStr = (l.qty > 0 ? '+' : '−') + Math.abs(l.qty);
+  const attn = l.attn ? ' <span class="attn">⚠ ' + l.attn + '</span>' : '';
+  return '<div class="leg" data-leg="' + l.id + '">' +
+    '<div class="lid"><div class="lname num"><span class="lqty">' + qtyStr + '</span>' + legTitle(l) +
+    '<span class="dte' + (l.ivWarn ? ' warn' : '') + '">' + l.dte + 'd</span></div>' +
+    '<div class="lsub num">' + l.strat + ' · ' + (l.qty < 0 ? 'sold' : 'paid') + ' $' + l.open.toFixed(2) + ' · mark $' + l.mark.toFixed(2) + attn + '</div></div>' +
+    '<div class="lrt"><div class="lmv num">' + fmtMoney(mv) + '</div>' +
+    '<div class="lpl num"><span class="' + (pl >= 0 ? 'u' : 'd') + '">' + fmtSigned(pl, 0) + '</span> <span class="day">· ' + fmtSigned(dp, 0) + ' today</span></div></div></div>';
+}
+function renderPositions(){
+  const list = $('poslist');
+  let html = '';
+  S.order.forEach(sym => {
+    const p = S.eq[sym];
+    const myLegs = legsFor(sym);
+    const strat = myLegs.length ? myLegs.map(l => '<span class="strat' + (l.strat === 'long call' ? ' lc' : '') + '">' + l.strat + '</span>').filter((v, i, a) => a.indexOf(v) === i).join('') : '';
+    html += '<div class="pos" data-sym="' + sym + '">' +
+      '<div class="id"><div class="tickline"><span class="tick">' + sym + '</span>' + strat + '</div>' +
+      '<div class="sh">' + p.qty + ' shares · $' + p.avg.toFixed(2) + ' avg</div></div>' +
+      '<div class="spark">' + sparkSVG(sym, p) + '</div>' +
+      '<div class="rt"><div class="mv num">' + fmtMoney(p.qty * p.mark) + '</div>' +
+      '<div class="dp ' + (p.day >= 0 ? 'u' : 'd') + ' num">' + (p.day >= 0 ? '+' : '−') + Math.abs(p.day).toFixed(2) + '%</div></div></div>';
+    myLegs.forEach(l => { html += legRowHTML(l); });
+  });
+  list.innerHTML = html;
+  list.querySelectorAll('.pos').forEach(el => el.addEventListener('click', () => openEquity(el.dataset.sym)));
+  list.querySelectorAll('.leg').forEach(el => el.addEventListener('click', () => openLeg(el.dataset.leg)));
+  $('cashval').textContent = fmtMoney(S.cash);
+  $('cashsub').textContent = fmtMoney(S.reserved).replace('$', '$') + ' reserved · secures −2 TLT $88P';
+  /* honest reconciliation — every line item, to the penny */
+  $('recon').innerHTML =
+    '<div class="ri"><span>Shares</span><b class="num">' + fmtMoney(sharesMV()) + '</b></div>' +
+    '<div class="ri"><span>Long options</span><b class="num">' + fmtSigned(longOptMV()) + '</b></div>' +
+    '<div class="ri"><span>Short options (liability)</span><b class="num">' + fmtSigned(shortOptMV()) + '</b></div>' +
+    '<div class="ri"><span>Cash</span><b class="num">' + fmtMoney(S.cash) + '</b></div>' +
+    '<div class="ri tot"><span>Total</span><b class="num">' + fmtMoney(totalValue()) + '</b></div>';
+  const theta = S.legs.reduce((a, l) => a + (l.qty < 0 ? Math.abs(parseFloat(String(l.greeks.t).replace('−','-'))) * 100 * Math.abs(l.qty) : 0), 0);
+  $('thetanote').textContent = 'θ +$' + Math.round(theta) + '/day working for you';
+}
+
+/* ================= equity detail data (MARKET DATA: quote; voice: the flock) ================= */
+const EQ_META = {
+  NVDA: { ranges: { '1W': 668.45, '1M': 642.18, '3M': 701.40, 'YTD': 588.36, 'ALL': 92.40 },
+    stats: [['Open','$688.20'],['Volume','31.2M'],['High','$691.45'],['Mkt cap','$1.66T'],['Low','$678.31'],['P/E','41.8']],
+    note: '<b>earnings-watch:</b> reports Thursday after close — options imply a ±7.1% move. Your −1 $750C caps 100 of these shares above $750 and pays you $42/day of theta while you wait.<span class="src">earnings_calendar · options_chain IV</span>' },
+  AAPL: { ranges: { '1W': 201.74, '1M': 197.30, '3M': 193.95, 'YTD': 208.42, 'ALL': 64.20 },
+    stats: [['Open','$202.60'],['Volume','48.6M'],['High','$204.71'],['Mkt cap','$3.01T'],['Low','$202.14'],['P/E','31.0']],
+    note: '<b>arm-watch:</b> riding the 50-day since the April reclaim. Your +2 Sep $220Cs add upside leverage without adding share risk — they’re +18% on cost.<span class="src">technical_indicators · positions</span>' },
+  MSFT: { ranges: { '1W': 472.95, '1M': 461.30, '3M': 449.86, 'YTD': 442.10, 'ALL': 212.65 },
+    stats: [['Open','$475.10'],['Volume','17.8M'],['High','$479.62'],['Mkt cap','$3.55T'],['Low','$474.05'],['P/E','36.4']],
+    note: '<b>duck:</b> the boring core. No option legs on it, no drama, 13.4% of the book compounding quietly.<span class="src">positions · quote</span>' },
+  'BRK.B': { ranges: { '1W': 426.78, '1M': 419.42, '3M': 432.90, 'YTD': 401.55, 'ALL': 228.40 },
+    stats: [['Open','$428.70'],['Volume','3.1M'],['High','$430.55'],['Mkt cap','$928B'],['Low','$427.96'],['P/E','23.1']],
+    note: '<b>duck:</b> your ballast. 24.2% of the book, lowest beta you own, and the flock has standing orders to leave it alone.<span class="src">positions · quote</span>' },
+  TLT: { ranges: { '1W': 86.94, '1M': 88.70, '3M': 91.10, 'YTD': 91.86, 'ALL': 112.30 },
+    stats: [['Open','$87.30'],['Volume','28.4M'],['High','$87.71'],['30d SEC yield','4.31%'],['Low','$87.18'],['Expense','0.15%']],
+    note: '<b>arm-watch:</b> you’re paid three ways here — the 4.3% yield, the −2 $88P collecting premium below the market, and any duration rally. CPI Wednesday is the catalyst.<span class="src">treasury_rates · options_chain</span>' }
+};
+
+/* ================= DETAIL view (equities + option legs + portfolio) ================= */
+let detailCtx = null; /* { kind:'eq'|'leg'|'port', key } */
+const dChart = Chart($('dchart'), $('dchartwrap'), $('dscrubtime'), 168, detailScrub);
+
+function detailScrub(val, start){
+  const c = detailCtx;
+  if (!c) return;
+  if (c.kind === 'leg'){
+    const l = legById(c.key);
+    const v = val === null ? l.mark : val;
+    const pl = (v - l.open) * 100 * l.qty;
+    $('dnum').textContent = fmtMoney(v);
+    $('ddelta').textContent = (pl >= 0 ? '▲ ' : '▼ ') + fmtSigned(pl, 0) + ' your P/L';
+    setDirection([$('dhero'), $('dranges')], pl >= 0);
+    return;
+  }
+  const end = c.kind === 'port' ? totalValue() : S.eq[c.key].mark;
+  const v = val === null ? end : val;
+  const d = v - start, pct = d / start * 100;
+  $('dnum').textContent = fmtMoney(v);
+  $('ddelta').textContent = fmtDelta(d, pct);
+  setDirection([$('dhero'), $('dranges')], d >= 0);
+}
+function setDetailRange(k){
+  const c = detailCtx;
+  let start, span, n, seed;
+  if (c.kind === 'leg'){
+    const l = legById(c.key);
+    if (k === '1D'){ start = l.mark - l.dayChg; span = 0; n = 79; }
+    else { start = l.open; span = Math.max(l.openSpan, 1); n = 56; }
+    seed = l.id.charCodeAt(0) * 211 + l.strike + k.charCodeAt(0);
+    const pts = genSeries(seed, start, l.mark, n);
+    dChart.setData(pts, pts.map((_, i) => labelFor(span, i, n)));
+    $('dperiod').textContent = k === '1D' ? 'Today' : 'Since open · ' + l.openLab;
+    detailScrub(null, start);
+    return;
+  }
+  const r = PORT_RANGES[k];
+  span = r.span; n = r.n;
+  if (c.kind === 'port'){
+    start = r.start;
+    seed = 20260609 + k.length * 7 + k.charCodeAt(0);
+    const pts = genSeries(seed, start, totalValue(), n);
+    dChart.setData(pts, pts.map((_, i) => labelFor(span, i, n)));
+  } else {
+    const p = S.eq[c.key];
+    start = k === '1D' ? p.mark / (1 + p.day / 100) : EQ_META[c.key].ranges[k];
+    seed = c.key.charCodeAt(0) * 101 + k.charCodeAt(0) * 13 + k.length;
+    const pts = genSeries(seed, start, p.mark, n);
+    dChart.setData(pts, pts.map((_, i) => labelFor(span, i, n)));
+  }
+  $('dperiod').textContent = periodName(k);
+  detailScrub(null, start);
+}
+
+function openDetailShell(){
+  $('detailscroll').scrollTop = 0;
+  $('view-detail').classList.add('active');
+}
+$('detailback').addEventListener('click', () => $('view-detail').classList.remove('active'));
+
+function openEquity(sym){
+  detailCtx = { kind: 'eq', key: sym };
+  const p = S.eq[sym], meta = EQ_META[sym];
+  $('navtick').textContent = sym;
+  $('ownpill').textContent = p.qty + ' sh';
+  $('dname').textContent = p.name + ' · ' + sym;
+  $('docc').textContent = '';
+  const equity = p.qty * p.mark;
+  const ret = equity - p.qty * p.avg;
+  const retPct = ret / (p.qty * p.avg) * 100;
+  const myLegs = legsFor(sym);
+  let body = '<div class="dsec"><h3>Your position</h3><div class="poscard">' +
+    '<div class="pc"><div class="k">Shares</div><div class="v">' + p.qty + '</div></div>' +
+    '<div class="pc"><div class="k">Equity</div><div class="v">' + fmtMoney(equity) + '</div></div>' +
+    '<div class="pc"><div class="k">Average cost</div><div class="v">' + fmtMoney(p.avg) + '</div></div>' +
+    '<div class="pc"><div class="k">Total return</div><div class="v ' + (ret >= 0 ? 'u' : 'd') + '">' + fmtSigned(ret) + ' (' + (ret >= 0 ? '+' : '−') + Math.abs(retPct).toFixed(2) + '%)</div></div></div></div>';
+  if (myLegs.length){
+    body += '<div class="dsec"><h3>Option legs on ' + sym + '</h3><div style="margin:0 -24px">' +
+      myLegs.map(legRowHTML).join('') + '</div></div>';
+  }
+  body += '<div class="dsec"><h3>Stats</h3><div class="stats">' +
+    meta.stats.map(s => '<div class="stat"><span class="k">' + s[0] + '</span><span class="v">' + s[1] + '</span></div>').join('') + '</div></div>';
+  body += '<div class="dsec" style="padding-bottom:24px"><h3>From the flock</h3><div class="agentnote">' + meta.note + '</div></div>';
+  $('dbody').innerHTML = body;
+  $('dbody').querySelectorAll('.leg').forEach(el => el.addEventListener('click', () => openLeg(el.dataset.leg)));
+  buildRangePills($('dranges'), RANGE_KEYS, setDetailRange);
+  setDetailRange('1D');
+  openDetailShell();
+}
+
+function openPortfolio(){
+  detailCtx = { kind: 'port', key: 'PORT' };
+  $('navtick').textContent = 'PORTFOLIO';
+  $('ownpill').textContent = '8 positions';
+  $('dname').textContent = 'Portfolio · Schwab ···8201';
+  $('docc').textContent = '';
+  $('dbody').innerHTML =
+    '<div class="dsec"><h3>Breakdown</h3><div class="mathcard">' +
+    '<div class="mrow"><span class="mk">Shares</span><span class="mv2 num">' + fmtMoney(sharesMV()) + '</span></div>' +
+    '<div class="mrow"><span class="mk">Long options</span><span class="mv2 num">' + fmtSigned(longOptMV()) + '</span></div>' +
+    '<div class="mrow"><span class="mk">Short options</span><span class="mv2 num">' + fmtSigned(shortOptMV()) + '</span></div>' +
+    '<div class="mrow"><span class="mk">Cash (' + fmtMoney(S.reserved, 0) + ' reserved)</span><span class="mv2 num">' + fmtMoney(S.cash) + '</span></div>' +
+    '<div class="mrow"><span class="mk"><b style="color:var(--text)">Total</b></span><span class="mv2 num">' + fmtMoney(totalValue()) + '</span></div></div></div>' +
+    '<div class="dsec" style="padding-bottom:24px"><h3>From the flock</h3><div class="agentnote"><b>duck:</b> intraday high-water mark ' +
+    '$285,012 at 11:42 AM. Two short legs decay in your favor every session; the NVDA call is the only thing that needs a decision before Thursday.<span class="src">account · positions · proposals</span></div></div>';
+  buildRangePills($('dranges'), RANGE_KEYS, setDetailRange);
+  setDetailRange('1D');
+  openDetailShell();
+}
+
+function openLeg(id){
+  const l = legById(id);
+  if (!l){ openEquity('NVDA'); return; }
+  detailCtx = { kind: 'leg', key: id };
+  const qtyStr = (l.qty > 0 ? '+' : '−') + Math.abs(l.qty);
+  $('navtick').textContent = l.under + ' OPTION';
+  $('ownpill').textContent = qtyStr + ' contract' + (Math.abs(l.qty) > 1 ? 's' : '');
+  $('dname').textContent = l.under + ' $' + l.strike + ' ' + (l.putCall === 'CALL' ? 'Call' : 'Put') + ' · exp ' + l.expFull + ' · ' + l.dte + ' DTE';
+  $('docc').textContent = 'OCC ' + l.occ + ' · ×100 multiplier · ' + (l.qty < 0 ? 'short' : 'long');
+  let body = '';
+  if (l.attn){
+    body += '<div class="attn-banner"><b>⚠ NVDA reports Thursday Jun 11, after close.</b> IV is 48% — elevated vs a 33% three-month average. Assignment risk if NVDA closes above $750 by Friday Jun 19 expiry.</div>';
+  }
+  body += '<div class="dsec"><h3>Greeks · options_chain</h3><div class="greeks">' +
+    '<div class="greek"><div class="gk">Δ delta</div><div class="gv num">' + l.greeks.d + '</div></div>' +
+    '<div class="greek"><div class="gk">Γ gamma</div><div class="gv num">' + l.greeks.g + '</div></div>' +
+    '<div class="greek"><div class="gk">θ /day</div><div class="gv num">' + l.greeks.t + '</div></div>' +
+    '<div class="greek"><div class="gk">IV</div><div class="gv num' + (l.ivWarn ? ' warn' : '') + '">' + l.greeks.iv + '</div></div></div></div>';
+  const rows = legMathRows(l);
+  body += '<div class="dsec"><h3>The math</h3><div class="mathcard">' +
+    rows.map(r2 => '<div class="mrow"><span class="mk">' + r2[0] + '</span><span class="mv2 num">' + r2[1] + '</span></div>').join('') +
+    '</div>' + legCoverNote(l) + '</div>';
+  if (l.id === 'NVDA750C'){
+    body += '<div class="dsec" style="padding-bottom:24px"><h3>earnings-watch suggests</h3>' +
+      '<div class="agentnote">IV should crush into the low 30s after Thursday’s print. Rolling now sells tomorrow’s panic at today’s price.' +
+      '<span class="src">run event · 12:41 PM</span></div>' +
+      '<button class="qchip warm" id="rollchip">↻ Roll to Jul $780C for +$6.10 credit?</button></div>';
+  } else {
+    body += '<div style="padding-bottom:24px"></div>';
+  }
+  $('dbody').innerHTML = body;
+  const rc = document.getElementById('rollchip');
+  if (rc) rc.addEventListener('click', () => { $('view-detail').classList.remove('active'); setTab('trades'); });
+  buildRangePills($('dranges'), ['1D', 'OPEN'], setDetailRange);
+  setDetailRange('1D');
+  openDetailShell();
+}
+function legMathRows(l){
+  const pl = legPL(l);
+  if (l.id === 'NVDA750C') return [
+    ['Premium collected', '$1,420.00 (1 × $14.20 × 100)'],
+    ['Captured so far', '<span class="u">+' + fmtMoney(pl).replace('$','$') + '</span> · buyback costs $1,240'],
+    ['Max profit on leg', '$1,420 — kept in full if assigned @ $750'],
+    ['If assigned', 'shares go at $764.20 effective ($750 + $14.20)'],
+    ['Today', fmtSigned(legDayPL(l), 0) + ' (mark +$0.55 on IV bid)']
+  ];
+  if (l.id === 'AAPL220C') return [
+    ['Cost basis', '$1,370.00 (2 × $6.85 × 100)'],
+    ['Market value', '$1,620.00 · <span class="u">+$250 (+18.2%)</span>'],
+    ['Breakeven at expiry', '$226.85 ($220 + $6.85)'],
+    ['Max loss', '$1,370 — debit paid, nothing else at risk'],
+    ['Today', fmtSigned(legDayPL(l), 0)]
+  ];
+  if (l.id === 'TLT88P') return [
+    ['Premium collected', '$264.00 (2 × $1.32 × 100)'],
+    ['Captured so far', '<span class="u">+' + fmtMoney(pl) + '</span> · buyback costs $196'],
+    ['Breakeven', '$86.68 ($88 − $1.32)'],
+    ['Collateral reserved', '$17,600.00 cash — fully secured'],
+    ['Today', fmtSigned(legDayPL(l), 0)]
+  ];
+  return [
+    [l.qty < 0 ? 'Premium collected' : 'Cost basis', fmtMoney(Math.abs(l.qty) * l.open * 100)],
+    ['Unrealized', fmtSigned(pl)],
+    ['Today', fmtSigned(legDayPL(l), 0)]
+  ];
+}
+function legCoverNote(l){
+  if (l.id === 'NVDA750C') return '<div class="covernote"><b>Covered by 100 of your 120 NVDA shares.</b> Worst case isn’t a loss — it’s selling 100 shares at $764.20 effective and keeping 20 plus the other legs.</div>';
+  if (l.id === 'TLT88P') return '<div class="covernote"><b>Cash-secured.</b> If assigned you buy 200 TLT at $86.68 effective — 1.1% under today’s mark, at a level arm-watch already wanted to add.</div>';
+  if (l.id === 'AAPL220C') return '<div class="covernote"><b>Defined risk.</b> Long calls — the debit is the whole downside. Δ 0.44 means these move like ~88 shares without tying up $18k.</div>';
+  if (l.id === 'NVDA780C') return '<div class="covernote"><b>Covered by 100 of your 120 NVDA shares.</b> Rolled from the $750 strike on Jun 9 for a $610 net credit.</div>';
+  return '';
+}
+
+/* ================= FEED — the quiet feed (AGENTS / NEWS / EVENTS) ================= */
+const AC = { ew: 'var(--violet)', aw: 'var(--blue)', gate: 'var(--up)', duck: 'var(--amber)' };
+function qspark(seed, endUpBias, color){
+  const r = rng(seed), n = 34;
+  let v = 50; const a = [];
+  for (let i = 0; i < n; i++){ v += (r() - 0.5) * 9 + endUpBias; a.push(v); }
+  const mn = Math.min.apply(null, a), mx = Math.max.apply(null, a), sp = mx - mn || 1;
+  let pts = '';
+  for (let j = 0; j < n; j++) pts += (j * (320 / (n - 1))).toFixed(1) + ',' + (44 - ((a[j] - mn) / sp) * 38 + 2).toFixed(1) + ' ';
+  return '<svg class="qspark" viewBox="0 0 320 46" preserveAspectRatio="none"><polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity=".8"/></svg>';
+}
+const CARDS = [
+  { id: 'fc-roll', who: 'approvals-gate', ac: AC.gate, tag: 'needs you', warm: true, time: '1:02 PM', open: 'trades',
+    body: '<div class="qbody"><b>earnings-watch wants to roll your NVDA covered call</b> before Thursday’s print — up $30 in strike, out 28 days, and it pays <b>you</b> $610 to do it.</div>' +
+      '<div class="qrows">' +
+      '<div class="qrow"><span class="k">Close</span><span class="v num">−1 NVDA 06/19 $750C · ~$12.40</span></div>' +
+      '<div class="qrow"><span class="k">Open</span><span class="v num">−1 NVDA 07/17 $780C · ~$18.50</span></div>' +
+      '<div class="qrow"><span class="k">Net</span><span class="v num u">credit +$6.10 · +$610</span></div></div>' +
+      '<button class="qchip warm" data-open="trades">Review in Trades ›</button>' },
+  { id: 'fc-iv', who: 'earnings-watch', ac: AC.ew, tag: 'insight', time: '12:58 PM', open: 'leg:NVDA750C',
+    body: '<div class="qbody"><b>NVDA IV hit 48%</b> — vs a 3-month average of 33. The market is paying up for Thursday. Your short $750C is the beneficiary: Δ 0.38, and <b class="num">θ −$42/day</b> decays toward you.</div>' +
+      qspark(71, 0.9, 'var(--violet)') +
+      '<button class="qchip" data-open="leg:NVDA750C">View the leg ›</button>' },
+  { id: 'fc-theta', who: 'duck', ac: AC.duck, tag: 'premium', time: '11:58 AM', open: 'port',
+    body: '<div class="qbody"><b>Quiet income check.</b> Your two short legs have captured <b class="num u">+$248</b> of the $1,684 premium collected — and ~$47/day of theta keeps working while you do nothing.</div>' +
+      '<div class="qrows">' +
+      '<div class="qrow"><span class="k">−1 NVDA $750C</span><span class="v num u">+$180 of $1,420</span></div>' +
+      '<div class="qrow"><span class="k">−2 TLT $88P</span><span class="v num u">+$68 of $264</span></div></div>' },
+  { id: 'fc-mile', who: 'duck', ac: AC.duck, tag: 'milestone', time: '11:42 AM', open: 'port',
+    body: '<div class="mileglow"></div><div class="milenum num" id="milenum">$285,012</div>' +
+      '<div class="milecap">New high-water mark, crossed at 11:42 AM.<br>Up <b class="u num">+38.4%</b> all time. Nice and boring. Keep going.</div>' },
+  { id: 'fc-aapl', who: 'arm-watch', ac: AC.aw, tag: 'insight', time: '9:48 AM', open: 'leg:AAPL220C',
+    body: '<div class="qbody"><b>AAPL +0.84%</b>, holding above the 50-day since April. Your +2 Sep $220Cs are <b class="num u">+$250 (+18.2%)</b> on cost — leverage doing its job with the debit as the only risk.</div>' +
+      qspark(52, 0.8, 'var(--blue)') +
+      '<button class="qchip" data-open="leg:AAPL220C">View the legs ›</button>' },
+  { id: 'fc-brief', who: 'duck', ac: AC.duck, tag: 'morning brief', time: '7:02 AM', open: 'port',
+    body: '<div class="qbody"><b>Good morning.</b> Quiet open expected, loud week ahead.</div>' +
+      '<div class="qrows">' +
+      '<div class="qrow"><span class="k">S&amp;P futures</span><span class="v num u">+0.4%</span></div>' +
+      '<div class="qrow"><span class="k">10Y Treasury</span><span class="v num">4.18%</span></div>' +
+      '<div class="qrow"><span class="k">CPI (May)</span><span class="v num">Wed 8:30 AM — moves your TLT puts</span></div>' +
+      '<div class="qrow"><span class="k">NVDA reports</span><span class="v num">Thu after close — your $750C expires 8 days later</span></div></div>' },
+  { id: 'fc-fill', who: 'approvals-gate', ac: AC.gate, tag: 'via schwab', time: 'Thu Jun 4', open: 'leg:NVDA750C',
+    body: '<div class="rcpt"><div class="seal">Filled</div>' +
+      '<div class="rcptbig">SLD 1 NVDA 06/19/26 750 C @ 14.20</div>' +
+      '<div class="rcptline"><span>Order</span><span class="rv">sell to open · limit 14.10 · day</span></div>' +
+      '<div class="rcptline"><span>Filled</span><span class="rv">10:31:08 AM ET</span></div>' +
+      '<div class="rcptline"><span>Premium</span><span class="rv">+$1,420.00</span></div>' +
+      '<div class="rcptline"><span>Covered by</span><span class="rv">100 / 120 NVDA shares</span></div>' +
+      '<div class="rcptline"><span>Approved by</span><span class="rv">you · 10:28 AM</span></div></div>' +
+      '<div class="qbody" style="margin-top:9px">You approved earnings-watch’s covered call. Filled 10¢ over your limit. 🤝</div>' }
+];
+const feedEl = $('feed');
+CARDS.forEach(c => {
+  const el = document.createElement('article');
+  el.className = 'qcard' + (c.warm ? ' needs' : '');
+  el.id = c.id;
+  el.dataset.open = c.open;
+  el.style.setProperty('--ac', c.ac);
+  el.innerHTML = '<div class="qhead"><span class="adot"></span><span class="aname">' + c.who + '</span>' +
+    '<span class="atag">' + c.tag + '</span><span class="atime">' + c.time + '</span></div>' + c.body;
+  feedEl.appendChild(el);
+});
+/* animate-in + milestone celebration on first sight */
+const seenCards = new WeakSet();
+const io = new IntersectionObserver(entries => {
+  entries.forEach(en => {
+    if (!en.isIntersecting) return;
+    const el = en.target;
+    if (seenCards.has(el)) return;
+    seenCards.add(el);
+    el.classList.add('in');
+    if (el.id === 'fc-fill') el.classList.add('stamped');
+    if (el.id === 'fc-mile'){
+      el.classList.add('celebrated');
+      countup($('milenum'), 280000, 285012, 1100, v => fmtMoney(v, 0));
+      setTimeout(() => particleBurst(el, 26), 600);
+    }
+  });
+}, { root: feedEl, threshold: 0.3 });
+document.querySelectorAll('.qcard').forEach(el => io.observe(el));
+
+/* card taps → detail / trades */
+feedEl.addEventListener('click', e => {
+  const card = e.target.closest('.qcard');
+  if (!card) return;
+  const chip = e.target.closest('[data-open]');
+  const target = (chip && chip !== card ? chip.dataset.open : card.dataset.open) || 'port';
+  if (target === 'trades'){ setTab('trades'); return; }
+  if (target === 'port'){ openPortfolio(); return; }
+  if (target.indexOf('leg:') === 0){ openLeg(target.slice(4)); return; }
+  openEquity(target);
+});
+
+/* ================= TRADES — proposals queue + slide-to-approve ================= */
+const PROPOSALS = [
+  { id: 'roll', agent: 'earnings-watch', ac: AC.ew, title: 'Roll the NVDA covered call',
+    legs: [
+      { act: 'BUY TO CLOSE', b: true,  desc: '1 NVDA 06/19/26 $750 C', px: '~$12.40' },
+      { act: 'SELL TO OPEN', b: false, desc: '1 NVDA 07/17/26 $780 C', px: '~$18.50' }
+    ],
+    net: 'net credit +$6.10 · +$610.00',
+    holding: 'Stays covered the whole way — 100 of your 120 NVDA shares.',
+    rationale: 'IV is 48% into Thursday’s print and should crush into the low 30s after. Rolling up $30 of strike and out 28 days banks the +$180 already captured, collects another $610, and lifts your assignment line to $780 — above the average analyst target.',
+    expires: 'Thu 9:30 AM', mark: 'NVDA $682.92',
+    fillLabel: 'Cash', fillText: 'Rolled −1 NVDA $750C → $780C · +$610 credit',
+    from: () => S.cash,
+    apply: () => {
+      const i = S.legs.findIndex(l => l.id === 'NVDA750C');
+      if (i >= 0) S.legs.splice(i, 1);
+      S.legs.unshift({ id: 'NVDA780C', under: 'NVDA', putCall: 'CALL', strike: 780, expLab: 'Jul 17', expFull: 'Jul 17, 2026',
+        qty: -1, open: 18.50, mark: 18.50, dayChg: 0, dte: 38, openSpan: 1, openLab: 'rolled Jun 9',
+        occ: 'NVDA  260717C00780000', strat: 'covered call',
+        greeks: { d: '0.31', g: '0.0031', t: '−0.35', iv: '41%' } });
+      S.cash += 610; /* −$1,240 buyback + $1,850 premium */
+    },
+    to: () => S.cash,
+    hist: { h1: 'ROLL −1 NVDA $750C → 07/17 $780C', h2: 'earnings-watch · net credit +$610' } },
+  { id: 'tlt', agent: 'arm-watch', ac: AC.aw, title: 'Add 20 TLT under the market',
+    legs: [
+      { act: 'BUY', b: true, desc: '20 TLT · limit $87.60 · day', px: '$1,752.00' }
+    ],
+    net: 'adds 0.6% duration · new avg $93.51',
+    holding: 'You hold 200 sh @ $94.10 avg · plus −2 $88P cash-secured below.',
+    rationale: 'The 10-year auction tailed ahead of Wednesday’s CPI and TLT sits 0.9% above the May low with RSI-14 at 38. Duration is 6.2% of the book against an 8% target — this fill plus your short puts builds the position at two prices below the market.',
+    expires: '4:00 PM ET', mark: 'TLT $87.64',
+    fillLabel: 'TLT position', fillText: 'BOT 20 TLT @ 87.60',
+    from: () => S.eq.TLT.qty * S.eq.TLT.mark,
+    apply: () => { S.cash -= 20 * 87.60; S.eq.TLT.qty += 20; },
+    to: () => S.eq.TLT.qty * S.eq.TLT.mark,
+    hist: { h1: 'BUY 20 TLT @ $87.60 limit', h2: 'arm-watch · duration add' } }
+];
+const HISTORY = [
+  { ok: true,  h1: 'SLD 1 NVDA 06/19 $750C @ 14.20', h2: 'earnings-watch · covered call · +$1,420 premium', when: 'Jun 4' },
+  { ok: true,  h1: 'SLD 2 TLT 07/17 $88P @ 1.32',    h2: 'arm-watch · cash-secured · $17,600 reserved',    when: 'May 18' },
+  { ok: false, h1: 'SELL 15 NVDA @ $684.50 limit',   h2: 'earnings-watch · trim — you kept the shares',    when: 'Jun 8' },
+  { ok: true,  h1: 'BOT 2 AAPL 09/18 $220C @ 6.85',  h2: 'arm-watch · long call · $1,370 debit',           when: 'Apr 14' }
+];
+let queue = PROPOSALS.slice();
+let busy = false;
+
+function updateBadges(){
+  const n = queue.length;
+  $('tabbadge').textContent = n;
+  $('tabbadge').classList.toggle('gone', n === 0);
+}
+function renderHistory(){
+  $('histlist').innerHTML = HISTORY.map(h =>
+    '<div class="hist"><div class="hmark ' + (h.ok ? 'ok' : 'no') + '">' + (h.ok ? '✓' : '✕') + '</div>' +
+    '<div class="ht"><div class="h1 num">' + h.h1 + '</div><div class="h2">' + h.h2 + '</div></div>' +
+    '<div class="hwhen">' + h.when + '</div></div>').join('');
+}
+function renderProposal(){
+  const stage = $('pstage');
+  stage.innerHTML = '';
+  if (!queue.length){
+    $('slidewrap').style.display = 'none';
+    $('denyrow').style.display = 'none';
+    stage.innerHTML = '<div class="allclear"><div class="acdot"></div><h3>All clear</h3><p>The flock is watching. Nothing needs you.</p></div>';
+    return;
+  }
+  $('slidewrap').style.display = '';
+  $('denyrow').style.display = '';
+  const p = queue[0];
+  const card = document.createElement('div');
+  card.className = 'pcard';
+  card.id = 'pcard';
+  card.style.setProperty('--ac', p.ac);
+  card.innerHTML =
+    '<div class="agent"><span class="adot2"></span>' + p.agent + ' · via approvals-gate · ' + (PROPOSALS.length - queue.length + 1) + ' of ' + PROPOSALS.length + '</div>' +
+    '<div class="ptitle">' + p.title + '</div>' +
+    '<div class="plegs">' + p.legs.map(l =>
+      '<div class="pleg"><span class="act ' + (l.b ? 'b' : 's') + '">' + l.act + '</span><span class="desc num">' + l.desc + '</span><span class="px num">' + l.px + '</span></div>').join('') + '</div>' +
+    '<div class="pnet num"><span class="nlab">Net</span>' + p.net + '</div>' +
+    '<div class="pholding num">' + p.holding + '</div>' +
+    '<div class="prationale">' + p.rationale + '</div>' +
+    '<div class="pmeta num"><span>mark <b>' + p.mark + '</b></span><span>expires <b>' + p.expires + '</b></span></div>' +
+    '<div class="fillover" id="fillover">' +
+      '<div class="fillcheck">✓</div>' +
+      '<div class="filltitle">Filled</div>' +
+      '<div class="fillorder num" id="fillorder"></div>' +
+      '<div class="fillcount" id="fillcount"></div>' +
+    '</div>';
+  stage.appendChild(card);
+  resetSlide();
+}
+
+/* ----- slide to approve (pointer events) ----- */
+const slide = $('slide'), thumb = $('sthumb'), sfill = $('sfill'), slabel = $('slabel');
+let dragging = false, startX = 0, cur = 0, confirmed = false;
+function applyThumb(){
+  thumb.style.transform = 'translateX(' + cur + 'px)';
+  const max = slide.clientWidth - thumb.offsetWidth - 6;
+  sfill.style.transform = 'scaleX(' + Math.min(1, (cur + thumb.offsetWidth + 6) / slide.clientWidth) + ')';
+  slabel.style.opacity = Math.max(0, 1 - cur / (max * 0.55));
+}
+function resetSlide(){
+  confirmed = false; cur = 0;
+  thumb.style.transition = 'transform .35s cubic-bezier(.32,.72,.27,1)';
+  sfill.style.transition = 'transform .35s cubic-bezier(.32,.72,.27,1)';
+  thumb.textContent = '›';
+  applyThumb();
+  slabel.style.opacity = 1;
+}
+thumb.addEventListener('pointerdown', e => {
+  if (confirmed || busy || !queue.length) return;
+  dragging = true;
+  startX = e.clientX - cur;
+  thumb.setPointerCapture(e.pointerId);
+  thumb.style.transition = 'none';
+  sfill.style.transition = 'none';
+});
+thumb.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const max = slide.clientWidth - thumb.offsetWidth - 6;
+  cur = Math.max(0, Math.min(max, e.clientX - startX));
+  applyThumb();
+});
+function endDrag(){
+  if (!dragging) return;
+  dragging = false;
+  const max = slide.clientWidth - thumb.offsetWidth - 6;
+  thumb.style.transition = 'transform .35s cubic-bezier(.32,.72,.27,1)';
+  sfill.style.transition = 'transform .35s cubic-bezier(.32,.72,.27,1)';
+  if (cur >= max * 0.92){
+    cur = max; confirmed = true;
+    thumb.textContent = '✓';
+    applyThumb();
+    approve();
+  } else {
+    cur = 0; applyThumb(); slabel.style.opacity = 1;
+  }
+}
+thumb.addEventListener('pointerup', endDrag);
+thumb.addEventListener('pointercancel', endDrag);
+
+function approve(){
+  if (busy || !queue.length) return;
+  busy = true;
+  const p = queue[0];
+  setTimeout(() => {
+    const over = $('fillover');
+    $('fillorder').textContent = p.fillText;
+    const from = p.from();
+    p.apply(); /* mutate BROKER state honestly */
+    const to = p.to();
+    over.classList.add('show');
+    particleBurst(over, 26);
+    const fc = $('fillcount');
+    fc.innerHTML = p.fillLabel + ' &nbsp;<b id="fcnum"></b>';
+    countup(document.getElementById('fcnum'), from, to, 1100, fmtMoney);
+    queue.shift();
+    HISTORY.unshift({ ok: true, h1: p.hist.h1, h2: p.hist.h2, when: 'just now' });
+    renderPositions();
+    renderHistory();
+    updateBadges();
+    setHomeRange(homeRange);
+    setTimeout(() => {
+      const card = document.getElementById('pcard');
+      if (card) card.classList.add('leaving');
+      setTimeout(() => { busy = false; renderProposal(); }, 320);
+    }, 1900);
+  }, 260);
+}
+$('denybtn').addEventListener('click', () => {
+  if (busy || !queue.length) return;
+  busy = true;
+  const p = queue.shift();
+  HISTORY.unshift({ ok: false, h1: p.hist.h1, h2: p.hist.h2 + ' — denied', when: 'just now' });
+  toast('Denied — ' + p.agent + ' notified');
+  renderHistory();
+  updateBadges();
+  const card = document.getElementById('pcard');
+  if (card) card.classList.add('leaving');
+  setTimeout(() => { busy = false; renderProposal(); }, 320);
+});
+
+/* ================= navigation ================= */
+function setTab(name){
+  $('view-detail').classList.remove('active');
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  ['home', 'feed', 'trades'].forEach(v => $('view-' + v).classList.toggle('on', v === name));
+  if (name === 'trades') renderProposal();
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
+$('hero').querySelector('.herolabel').addEventListener('click', openPortfolio);
+
+/* ================= boot ================= */
+function tick(){
+  const d = new Date();
+  let h = d.getHours() % 12; if (h === 0) h = 12;
+  $('clock').textContent = h + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+tick(); setInterval(tick, 20000);
+renderPositions();
+renderHistory();
+updateBadges();
+renderProposal();
+setHomeRange('1D');
+countup($('heronum'), 281297.52, 284512.40, 1100, fmtMoney);
+</script>
+</body>
+</html>
