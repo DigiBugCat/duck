@@ -102,8 +102,8 @@ func TestParseUname(t *testing.T) {
 
 func TestInstallScriptsAndTmuxConf(t *testing.T) {
 	tool := installToolchainScript()
-	if !strings.Contains(tool, "tmux") || !strings.Contains(tool, "mutagen") {
-		t.Errorf("toolchain script must install tmux and mutagen:\n%s", tool)
+	if !strings.Contains(tool, "tmux") || !strings.Contains(tool, "mutagen") || !strings.Contains(tool, "rsync") {
+		t.Errorf("toolchain script must install tmux, mutagen, and rsync:\n%s", tool)
 	}
 	tpm := installTPMScript()
 	if !strings.Contains(tpm, "tmux-plugins/tpm") || !strings.Contains(tpm, "~/.tmux/plugins/tpm") {

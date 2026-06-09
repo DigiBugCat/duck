@@ -39,7 +39,16 @@ func swapRun(t *testing.T, fail func(call int) error) (*[]recordedCmd, func()) {
 	// and the recorded binary name stays "rsync".
 	origBin := rsyncBin
 	rsyncBin = func() (string, error) { return "rsync", nil }
-	return &got, func() { run = orig; mkdirRemote = origMkdir; rsyncBin = origBin }
+	// Stub the hub-side resolver so tests never ssh to a real host; pin a known
+	// abspath so the --rsync-path assertion is deterministic.
+	origHubBin := hubRsyncBin
+	hubRsyncBin = func(string) (string, error) { return "/opt/homebrew/bin/rsync", nil }
+	return &got, func() {
+		run = orig
+		mkdirRemote = origMkdir
+		rsyncBin = origBin
+		hubRsyncBin = origHubBin
+	}
 }
 
 // TestReconcileNewestBuildsTwoNewestWinsRsyncs is the SAFETY-CRITICAL test. It
@@ -104,6 +113,11 @@ func TestReconcileNewestBuildsTwoNewestWinsRsyncs(t *testing.T) {
 		// quotes would be literal path chars → rsync 3.4.x (l)stats "'rel'", exit 23).
 		if !contains(c.args, "-s") {
 			t.Fatalf("cmd %d must carry -s (--secluded-args); got args=%v", i, c.args)
+		}
+		// --rsync-path must point the remote at the hub's GNU rsync (its non-login
+		// PATH would otherwise pick openrsync, which rejects -s).
+		if !contains(c.args, "--rsync-path=/opt/homebrew/bin/rsync") {
+			t.Fatalf("cmd %d must carry --rsync-path=<hub GNU rsync>; got args=%v", i, c.args)
 		}
 		var remote string
 		if strings.HasPrefix(src, addr+":") {

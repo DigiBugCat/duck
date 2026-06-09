@@ -191,6 +191,38 @@ var mkdirRemote = func(addr, rel string) error {
 	return err
 }
 
+// hubRsyncBin resolves the absolute path of a GNU rsync 3.x on the HUB, the
+// symmetric requirement to the local rsyncBin: rsync's remote invocation runs
+// under a NON-login ssh shell whose PATH lacks /opt/homebrew/bin, so it would
+// otherwise pick /usr/bin/rsync (openrsync) — which rejects -s and lacks
+// --info=progress2, failing the transfer. We probe over hub.Run (login-shell
+// wrapped, so Homebrew PATH is present) and the caller passes the result as
+// --rsync-path so the remote runs the GNU build. A seam so tests don't shell to
+// the hub. The probe prints the first GNU-3.x abspath (openrsync rejected); a
+// non-empty result + nil means found.
+var hubRsyncBin = func(addr string) (string, error) {
+	// POSIX sh: try the PATH rsync (its abspath via command -v) then the Homebrew
+	// locations; print the first whose --version is GNU 3.x and is NOT openrsync.
+	const probe = `for c in "$(command -v rsync 2>/dev/null)" /opt/homebrew/bin/rsync /usr/local/bin/rsync; do
+  [ -n "$c" ] && [ -x "$c" ] || continue
+  v=$("$c" --version 2>/dev/null | head -1)
+  case "$v" in
+    *openrsync*) continue ;;
+    *"version 3"*) printf '%s\n' "$c"; exit 0 ;;
+  esac
+done
+exit 1`
+	out, err := hub.New(addr).Run(probe)
+	if err != nil {
+		return "", fmt.Errorf("hub has no GNU rsync 3.x (the macOS built-in openrsync is too slow); install it on the hub: brew install rsync")
+	}
+	bin := strings.TrimSpace(out)
+	if bin == "" {
+		return "", fmt.Errorf("hub has no GNU rsync 3.x (the macOS built-in openrsync is too slow); install it on the hub: brew install rsync")
+	}
+	return bin, nil
+}
+
 // commonFlags are the attribute-relaxation + progress flags shared by every
 // direction, and WHY each is safe:
 //
@@ -228,6 +260,14 @@ func Reconcile(addr, tildeDir string, dir Direction, report func(string)) error 
 	if err != nil {
 		return err
 	}
+	// The HUB must run GNU rsync 3.x too (its non-login ssh PATH defaults to
+	// openrsync). Resolve its abspath and pass it as --rsync-path so the remote
+	// side speaks the same protocol — this is what makes -s/--info=progress2 safe
+	// on the hub.
+	hubBin, err := hubRsyncBin(addr)
+	if err != nil {
+		return err
+	}
 	local, err := paths.Expand(tildeDir)
 	if err != nil {
 		return err
@@ -255,6 +295,7 @@ func Reconcile(addr, tildeDir string, dir Direction, report func(string)) error 
 	// --delete for Push/Pull). src/dst stay LAST (the safety test reads them there).
 	pass := func(prefix string, extra []string, src, dst string) error {
 		args := append([]string{}, commonFlags...)
+		args = append(args, "--rsync-path="+hubBin)
 		args = append(args, extra...)
 		args = append(args, "-e", sshTransport, src, dst)
 		return run(labeled(report, prefix), bin, args...)
