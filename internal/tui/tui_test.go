@@ -18,6 +18,7 @@ type fakeService struct {
 	rename    []struct{ tmux, display string }
 	nameNow   []string
 	kill      []string
+	revive    []string
 	refreshN  int
 	nameTitle string
 }
@@ -41,6 +42,10 @@ func (f *fakeService) NameNow(tmux string) (string, error) {
 }
 func (f *fakeService) Kill(tmux string) error {
 	f.kill = append(f.kill, tmux)
+	return nil
+}
+func (f *fakeService) Revive(tmux string) error {
+	f.revive = append(f.revive, tmux)
 	return nil
 }
 
@@ -572,24 +577,24 @@ func TestThreeSessionsSameDirRenderDistinctRawNames(t *testing.T) {
 // that made ○ dead code.
 func TestGlyphForLiveness(t *testing.T) {
 	// Looped wins over attached and any age.
-	if g := glyphFor(true, true, 10*time.Hour); g != loopGlyph {
+	if g := glyphFor(false, true, true, 10*time.Hour); g != loopGlyph {
 		t.Fatalf("looped should be the loop glyph even when attached, got %q", g)
 	}
-	if g := glyphFor(true, false, idleThreshold+time.Minute); g != loopGlyph {
+	if g := glyphFor(false, true, false, idleThreshold+time.Minute); g != loopGlyph {
 		t.Fatalf("looped should be the loop glyph regardless of age, got %q", g)
 	}
-	if g := glyphFor(false, true, 10*time.Hour); g != attachedGlyph {
+	if g := glyphFor(false, false, true, 10*time.Hour); g != attachedGlyph {
 		t.Fatalf("attached should be the attached glyph regardless of age, got %q", g)
 	}
-	if g := glyphFor(false, false, 5*time.Minute); g != liveGlyph {
+	if g := glyphFor(false, false, false, 5*time.Minute); g != liveGlyph {
 		t.Fatalf("recently-active detached should be the live glyph, got %q", g)
 	}
-	if g := glyphFor(false, false, idleThreshold+time.Minute); g != idleGlyph {
+	if g := glyphFor(false, false, false, idleThreshold+time.Minute); g != idleGlyph {
 		t.Fatalf("stale detached should be the idle glyph, got %q", g)
 	}
 	// Pin the boundary itself: the split is exclusive (`age < idleThreshold`),
 	// so exactly AT the threshold a detached session is already idle, not live.
-	if g := glyphFor(false, false, idleThreshold); g != idleGlyph {
+	if g := glyphFor(false, false, false, idleThreshold); g != idleGlyph {
 		t.Fatalf("at exactly idleThreshold a detached session should be idle (exclusive < boundary), got %q", g)
 	}
 }
@@ -652,4 +657,42 @@ func lineWidth(s string) int {
 		}
 	}
 	return w
+}
+
+// TestGlyphForEvicted: evicted wins over everything — the row's tmux session is
+// gone, so no other state flag is meaningful.
+func TestGlyphForEvicted(t *testing.T) {
+	if g := glyphFor(true, true, true, 0); g != evictedGlyph {
+		t.Fatalf("evicted should be the evicted glyph regardless of other flags, got %q", g)
+	}
+}
+
+// TestEnterOnEvictedRowRevivesThenSelects pins the revive handoff: enter on an
+// evicted row must NOT quit directly — it revives via the Service first, and
+// only on success quits with the row selected so the caller attaches normally.
+func TestEnterOnEvictedRowRevivesThenSelects(t *testing.T) {
+	svc := &fakeService{rows: []rowmodel.Row{
+		{Display: "gone", TmuxName: "gone", Dir: "~/dev/gone", Evicted: true},
+	}}
+	m := initialModel(svc)
+	m, _ = upd(m, loadedMsg{rows: svc.rows})
+	m, cmd := upd(m, keyEnter)
+	if m.selected != "" {
+		t.Fatal("enter on evicted row must not select before the revive completes")
+	}
+	done, ok := actionResult(cmd)
+	if !ok {
+		t.Fatal("enter on evicted row should dispatch the revive action")
+	}
+	if len(svc.revive) != 1 || svc.revive[0] != "gone" {
+		t.Fatalf("revive calls = %v", svc.revive)
+	}
+	var quit tea.Cmd
+	m, quit = upd(m, done)
+	if m.selected != "gone" {
+		t.Fatalf("after revive the row should be selected for attach, got %q", m.selected)
+	}
+	if !drainHasQuit(quit) {
+		t.Fatal("revive completion should quit the picker into attach")
+	}
 }

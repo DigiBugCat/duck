@@ -81,3 +81,22 @@ func names(rows []Row) []string {
 	}
 	return out
 }
+
+// TestRankEvictedSinksLast: evicted rows sit below every live row (even idle
+// ones), newest eviction first within the group.
+func TestRankEvictedSinksLast(t *testing.T) {
+	now := time.Now()
+	rows := []Row{
+		{TmuxName: "ev-old", Evicted: true, LastSeen: now.Add(-48 * time.Hour)},
+		{TmuxName: "idle", LastSeen: now.Add(-72 * time.Hour)},
+		{TmuxName: "ev-new", Evicted: true, LastSeen: now.Add(-1 * time.Hour)},
+		{TmuxName: "looped", Looped: true, LastSeen: now.Add(-90 * time.Hour)},
+	}
+	got := Rank(rows)
+	want := []string{"looped", "idle", "ev-new", "ev-old"}
+	for i, w := range want {
+		if got[i].TmuxName != w {
+			t.Fatalf("rank[%d] = %s, want %s (full: %v)", i, got[i].TmuxName, w, got)
+		}
+	}
+}

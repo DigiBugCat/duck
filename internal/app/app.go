@@ -42,6 +42,11 @@ type Service interface {
 	NameNow(tmuxName string) (string, error)
 	// Kill terminates the tmux session and forgets its names.json entry.
 	Kill(tmuxName string) error
+	// Revive recreates an EVICTED session (same tmux name, same dir) and, when
+	// the eviction breadcrumb captured a Claude Code session id, re-runs
+	// `claude --resume <id>` inside it so the conversation comes back. The
+	// caller attaches afterwards like any live session.
+	Revive(tmuxName string) error
 }
 
 // App is the production Service. It composes the remote tmux manager, the
@@ -149,6 +154,7 @@ func (a *App) refresh(autoName bool) ([]model.Row, error) {
 		// carry the new names in-memory for this session.
 		_ = a.names.Save(n)
 	}
+	rows = append(rows, a.evictedRows(live, n, now)...)
 	ranked := model.Rank(rows)
 	a.cache = ranked
 	return ranked, nil
@@ -198,6 +204,57 @@ func (a *App) autoNameOnFirstSight(live []session.Sess, n names.Names, now time.
 		dirty = true
 	}
 	return dirty
+}
+
+// evictedRows turns the hub's eviction breadcrumbs into picker rows: sessions
+// that were killed by the eviction sweep but can be revived in place. A
+// breadcrumb whose name is live again (revived out-of-band, or the name was
+// reclaimed) is skipped — the live row already covers it. Names resolve through
+// the SAME precedence as live rows (the names.json entry survives eviction);
+// there is no live pane title, so a frozen codex/user name or the dir floor
+// shows. A breadcrumb read error degrades to no evicted rows rather than
+// failing the refresh.
+func (a *App) evictedRows(live []session.Sess, n names.Names, now time.Time) []model.Row {
+	evicted, err := a.sessions.ListEvicted()
+	if err != nil || len(evicted) == 0 {
+		return nil
+	}
+	liveNames := make(map[string]bool, len(live))
+	for _, s := range live {
+		liveNames[s.Name] = true
+	}
+	rows := make([]model.Row, 0, len(evicted))
+	for _, e := range evicted {
+		if liveNames[e.Name] {
+			continue
+		}
+		rows = append(rows, model.Row{
+			Display:  names.Resolve(n, e.Name, e.Dir, ""),
+			Dir:      e.Dir,
+			Age:      humanizeAge(now.Sub(e.EvictedAt)),
+			TmuxName: e.Name,
+			LastSeen: e.EvictedAt,
+			Evicted:  true,
+		})
+	}
+	return rows
+}
+
+// Revive recreates the evicted session named tmuxName from its breadcrumb:
+// fresh tmux session under the same name in the same dir, plus a
+// `claude --resume <id>` when the breadcrumb captured the Claude Code session
+// id, then drops the breadcrumb.
+func (a *App) Revive(tmuxName string) error {
+	evicted, err := a.sessions.ListEvicted()
+	if err != nil {
+		return err
+	}
+	for _, e := range evicted {
+		if e.Name == tmuxName {
+			return a.sessions.Revive(e)
+		}
+	}
+	return fmt.Errorf("no eviction record for %s", tmuxName)
 }
 
 // Attach hands the process off to the session manager's interactive attach.
@@ -262,9 +319,14 @@ func (a *App) NameNow(tmuxName string) (string, error) {
 	return title, nil
 }
 
-// Kill terminates the session and drops its names.json entry.
+// Kill terminates the session and drops its names.json entry. An EVICTED row
+// has no live tmux session, so the "can't find session" failure is tolerated;
+// either way any eviction breadcrumb is dropped so the row disappears for good.
 func (a *App) Kill(tmuxName string) error {
-	if err := a.sessions.Kill(tmuxName); err != nil {
+	if err := a.sessions.Kill(tmuxName); err != nil && !session.IsNoSessionErr(err) {
+		return err
+	}
+	if err := a.sessions.ForgetEvicted(tmuxName); err != nil {
 		return err
 	}
 	n, err := a.names.Load()

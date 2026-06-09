@@ -260,6 +260,7 @@ func init() {
 	rootCmd.AddCommand(killCmd)
 	rootCmd.AddCommand(loopCmd)
 	rootCmd.AddCommand(cleanCmd)
+	rootCmd.AddCommand(evictCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(snapCmd)

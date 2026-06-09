@@ -32,6 +32,7 @@ type Row struct {
 	Windows  int       // tmux window count
 	TmuxName string    // internal tmux session id (dispatch key; never displayed)
 	LastSeen time.Time // last-active timestamp, used by Rank (not displayed)
+	Evicted  bool      // not live on the hub — evicted to save RAM; enter revives it (recreate + claude --resume)
 }
 
 // Filter returns the subset of rows whose display name or dir matches the
@@ -66,14 +67,18 @@ func fuzzyMatch(haystack, needle string) bool {
 }
 
 // Rank orders rows for the picker: looped (/loop-running) first, then attached,
-// then by recency (most-recent LastSeen first), stable within a group. It returns
-// a new slice; the input is not mutated. Looped outranks attached so a running
-// loop you are NOT attached to still surfaces at the very top — the whole point of
-// the pin is to keep autonomous loops from being buried.
+// then by recency (most-recent LastSeen first), stable within a group; evicted
+// rows sink below every live one. It returns a new slice; the input is not
+// mutated. Looped outranks attached so a running loop you are NOT attached to
+// still surfaces at the very top — the whole point of the pin is to keep
+// autonomous loops from being buried.
 func Rank(rows []Row) []Row {
 	out := make([]Row, len(rows))
 	copy(out, rows)
 	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Evicted != out[j].Evicted {
+			return !out[i].Evicted // live sorts above evicted
+		}
 		if out[i].Looped != out[j].Looped {
 			return out[i].Looped // looped sorts first
 		}

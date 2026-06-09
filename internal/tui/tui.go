@@ -163,6 +163,10 @@ type actionDoneMsg struct {
 	summary string
 	err     error
 	refresh bool
+	// selectAfter, when non-empty, is a tmux name to select-and-quit with on
+	// success (the revive→attach handoff: the session is live again, so the
+	// caller can exec the normal attach after teardown).
+	selectAfter string
 }
 
 // ---- Commands ----
@@ -202,6 +206,19 @@ func (m model) nameNowCmd(tmuxName string) tea.Cmd {
 			return actionDoneMsg{err: err}
 		}
 		return actionDoneMsg{summary: "named: " + name, refresh: true}
+	}
+}
+
+// reviveCmd recreates an evicted session off the UI thread; on success the
+// actionDoneMsg carries selectAfter so the picker quits straight into the
+// normal attach path, exactly as if the user had hit enter on a live row.
+func (m model) reviveCmd(tmuxName string) tea.Cmd {
+	svc := m.svc
+	return func() tea.Msg {
+		if err := svc.Revive(tmuxName); err != nil {
+			return actionDoneMsg{err: err}
+		}
+		return actionDoneMsg{selectAfter: tmuxName}
 	}
 }
 
@@ -280,6 +297,10 @@ func (m model) handleActionDone(msg actionDoneMsg) (tea.Model, tea.Cmd) {
 		m.status = msg.err.Error()
 		m.statusErr = true
 		return m, nil
+	}
+	if msg.selectAfter != "" {
+		m.selected = msg.selectAfter
+		return m, tea.Quit
 	}
 	m.status = msg.summary
 	m.statusErr = false
@@ -364,6 +385,11 @@ func (m model) handleBrowseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if r, ok := m.cursorRow(); ok {
+			if r.Evicted {
+				// The tmux session is gone (evicted to save RAM): recreate it (and
+				// `claude --resume` its conversation) first, THEN quit into attach.
+				return m.runAction(m.reviveCmd(r.TmuxName))
+			}
 			m.selected = r.TmuxName
 			return m, tea.Quit
 		}
@@ -537,6 +563,9 @@ var (
 	// loopGlyph marks a session running a /loop (pinned to the top). The recycle
 	// arrow reads as "running on a loop"; the purple ties it to duck's accent.
 	loopGlyph = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}).Bold(true).Render("↻")
+	// evictedGlyph marks a session whose tmux process was evicted to save RAM;
+	// enter revives it (recreate + claude --resume) before attaching.
+	evictedGlyph = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Render("⊘")
 )
 
 // idleThreshold splits "live-detached" (◐) from "idle/old" (○) by recency.
@@ -551,8 +580,10 @@ const idleThreshold = 2 * time.Hour
 // flags and the last-active age so it is unit-testable without a wall clock
 // (renderRow passes time.Since(r.LastSeen)). Looped is checked first so a running
 // loop is always recognisable even when also attached.
-func glyphFor(looped, attached bool, age time.Duration) string {
+func glyphFor(evicted, looped, attached bool, age time.Duration) string {
 	switch {
+	case evicted:
+		return evictedGlyph
 	case looped:
 		return loopGlyph
 	case attached:
@@ -751,7 +782,7 @@ func (m model) renderRow(r rowmodel.Row, selected bool) string {
 	if selected {
 		caret = caretStyle.Render("› ")
 	}
-	glyph := glyphFor(r.Looped, r.Attached, time.Since(r.LastSeen))
+	glyph := glyphFor(r.Evicted, r.Looped, r.Attached, time.Since(r.LastSeen))
 
 	ageStr := r.Age
 	winStr := itoa(r.Windows) + "w"

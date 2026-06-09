@@ -122,6 +122,8 @@ laptop; codex is **not** required on the hub.
 | `duck ls` | list remote sessions without attaching |
 | `duck rename <s> <name…>` | set a raw display name for a session |
 | `duck kill <name>` / `duck clean` | kill one / all detached-idle sessions |
+| `duck evict [--age 12h]` | evict stale sessions to save hub RAM — still resumable from the picker (⊘ rows recreate the session and `claude --resume` its conversation) |
+| `duck evict --install [--age 12h] [--every 30m]` | install the sweep as a launchd agent on the hub so it evicts on its own (`--uninstall` removes it) |
 | `duck snap` | capture a screen selection → upload it to the hub → copy the remote path to your clipboard (paste into a Claude session on the hub) |
 | `duck config` (`path`, `edit`) | show / locate / edit the config (hub, codex model, per-folder policy) |
 | `duck config claude-sync on\|off` | toggle per-folder Claude history sync (transcripts + memory) to the hub |
