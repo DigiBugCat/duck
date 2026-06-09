@@ -30,6 +30,7 @@ package reconcile
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -75,12 +76,11 @@ var run = func(onProgress func(string), name string, args ...string) error {
 	return nil
 }
 
-// rsyncBin resolves a GNU rsync 3.x binary, REQUIRED by duck. The macOS default
-// (/usr/bin/rsync) is openrsync (protocol 29): no incremental file-list, no
-// --info=progress2, slow on big trees — so it is rejected. It tries `rsync` on
-// PATH then the Homebrew locations, returning the first whose `--version` is a
-// GNU 3.x build. A seam so tests stub it without shelling out.
-var rsyncBin = func() (string, error) {
+// probeRsync scans `rsync` on PATH then the Homebrew locations, returning the
+// first whose `--version` is a GNU 3.x build. The macOS default (/usr/bin/rsync)
+// is openrsync (protocol 29): no incremental file-list, no --info=progress2, slow
+// on big trees — so it is rejected. Empty string + nil means none found.
+func probeRsync() string {
 	for _, cand := range []string{"rsync", "/opt/homebrew/bin/rsync", "/usr/local/bin/rsync"} {
 		out, err := exec.Command(cand, "--version").CombinedOutput()
 		if err != nil {
@@ -93,10 +93,34 @@ var rsyncBin = func() (string, error) {
 			continue
 		}
 		if strings.Contains(v, "version 3") || strings.Contains(v, "protocol version 3") {
-			return cand, nil
+			return cand
 		}
 	}
-	return "", fmt.Errorf("duck requires GNU rsync 3.x (the macOS built-in openrsync is too slow); install it: brew install rsync")
+	return ""
+}
+
+// rsyncBin resolves a GNU rsync 3.x binary, REQUIRED by duck. If none is found it
+// auto-installs one via Homebrew (streaming brew's output) and re-probes, so the
+// first run on a fresh Mac just works without a manual `brew install rsync`. A
+// seam so tests stub it without shelling out.
+var rsyncBin = func() (string, error) {
+	if bin := probeRsync(); bin != "" {
+		return bin, nil
+	}
+	brew, err := exec.LookPath("brew")
+	if err != nil {
+		return "", fmt.Errorf("duck requires GNU rsync 3.x (the macOS built-in openrsync is too slow), but Homebrew wasn't found — install Homebrew (https://brew.sh) then re-run, or install rsync manually")
+	}
+	fmt.Println("GNU rsync 3.x not found — installing via Homebrew…")
+	c := exec.Command(brew, "install", "rsync")
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := c.Run(); err != nil {
+		return "", fmt.Errorf("brew install rsync: %w", err)
+	}
+	if bin := probeRsync(); bin != "" {
+		return bin, nil
+	}
+	return "", fmt.Errorf("installed rsync via Homebrew but still can't resolve a GNU 3.x build on PATH or in /opt/homebrew/bin — check your Homebrew setup")
 }
 
 // progressWriter turns rsync's `--info=progress2` output — a carriage-return /
