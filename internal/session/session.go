@@ -54,12 +54,21 @@ type Sess struct {
 	Attached   bool      // a client is currently attached
 	LastActive time.Time // session_activity, for recency ranking
 	Windows    int       // window count
+	Looped     bool      // the @duck_loop option is set — the session is running a /loop; the picker pins these at the top
 	PaneTitle  string    // active pane's #{pane_title} — Claude Code writes a task summary here (with a ✳/⠂ status glyph), which names.Resolve prefers over codex
 }
 
 // dirOption is the tmux user option duck stamps on each session it creates so
 // Recent(dir) and the picker can map a session back to its working directory.
 const dirOption = "@duck_dir"
+
+// loopOption is the tmux user option that marks a session as running a /loop. It
+// is NOT set by duck itself (duck has no view into Claude Code's loop state); a
+// hook on the hub's Claude Code stamps it (`tmux set-option @duck_loop 1`) when a
+// loop is active and clears it when the loop ends. duck only READS it, so an
+// unset option (the common case) simply means "not looped" and pins nothing —
+// the feature degrades to a no-op until the marker is wired.
+const loopOption = "@duck_loop"
 
 // Manager performs remote tmux operations over an injected Runner. The zero
 // value is not usable; construct with New.
@@ -78,13 +87,14 @@ func NewManager(run Runner, attach Attacher) *Manager {
 // so a display name (resolved elsewhere) never breaks parsing; @duck_dir may be
 // empty for non-duck sessions. The order is the contract with parseList.
 //
-//	name \t @duck_dir \t attached \t activity-epoch \t windows \t pane_title
+//	name \t @duck_dir \t attached \t activity-epoch \t windows \t @duck_loop \t pane_title
 //
 // pane_title is last because it is free text (Claude Code's task summary) that
 // may itself contain odd characters; trailing it keeps the earlier fields
-// unambiguous. tmux resolves #{pane_title} to the active pane of the active
-// window for the session.
-const listFormat = "#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{pane_title}"
+// unambiguous. @duck_loop sits just before it (a controlled "1"/empty marker, so
+// it never carries a tab) so the free-text title stays the trailing field. tmux
+// resolves #{pane_title} to the active pane of the active window for the session.
+const listFormat = "#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{@duck_loop}\t#{pane_title}"
 
 // List returns every live tmux session on the hub, parsed from a single
 // `tmux list-sessions -F …` call (name, dir option, attached, activity,
@@ -139,10 +149,16 @@ func parseList(out string) []Sess {
 		if w, err := strconv.Atoi(strings.TrimSpace(fields[4])); err == nil {
 			s.Windows = w
 		}
-		// pane_title is optional (older list output / tests emit only 5 fields); a
-		// missing field just leaves PaneTitle empty so Resolve falls through.
+		// @duck_loop and pane_title are optional (older list output / tests emit only
+		// 5 fields); a missing field just leaves them zero so Resolve falls through
+		// and nothing is pinned. @duck_loop is a controlled marker: any non-empty,
+		// non-"0" value means looped (a hook stamps "1").
 		if len(fields) >= 6 {
-			s.PaneTitle = fields[5]
+			loop := strings.TrimSpace(fields[5])
+			s.Looped = loop != "" && loop != "0"
+		}
+		if len(fields) >= 7 {
+			s.PaneTitle = fields[6]
 		}
 		sessions = append(sessions, s)
 	}

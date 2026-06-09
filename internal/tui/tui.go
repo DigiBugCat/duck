@@ -534,6 +534,9 @@ var (
 	attachedGlyph = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#059669", Dark: "#34D399"}).Bold(true).Render("●")
 	liveGlyph     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#D97706", Dark: "#FBBF24"}).Render("◐")
 	idleGlyph     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Render("○")
+	// loopGlyph marks a session running a /loop (pinned to the top). The recycle
+	// arrow reads as "running on a loop"; the purple ties it to duck's accent.
+	loopGlyph = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}).Bold(true).Render("↻")
 )
 
 // idleThreshold splits "live-detached" (◐) from "idle/old" (○) by recency.
@@ -542,12 +545,16 @@ var (
 // constant if liveness should key on something stronger than session_activity.
 const idleThreshold = 2 * time.Hour
 
-// glyphFor maps liveness to the picker's status glyph: ● attached, ◐ live-
-// detached (active within idleThreshold), ○ idle/old. It is a pure function of
-// the attached flag and the last-active age so it is unit-testable without a
-// wall clock (renderRow passes time.Since(r.LastSeen)).
-func glyphFor(attached bool, age time.Duration) string {
+// glyphFor maps state to the picker's status glyph: ↻ looped (running a /loop —
+// pinned at the top, outranks everything), ● attached, ◐ live-detached (active
+// within idleThreshold), ○ idle/old. It is a pure function of the looped/attached
+// flags and the last-active age so it is unit-testable without a wall clock
+// (renderRow passes time.Since(r.LastSeen)). Looped is checked first so a running
+// loop is always recognisable even when also attached.
+func glyphFor(looped, attached bool, age time.Duration) string {
 	switch {
+	case looped:
+		return loopGlyph
 	case attached:
 		return attachedGlyph
 	case age < idleThreshold:
@@ -744,7 +751,7 @@ func (m model) renderRow(r rowmodel.Row, selected bool) string {
 	if selected {
 		caret = caretStyle.Render("› ")
 	}
-	glyph := glyphFor(r.Attached, time.Since(r.LastSeen))
+	glyph := glyphFor(r.Looped, r.Attached, time.Since(r.LastSeen))
 
 	ageStr := r.Age
 	winStr := itoa(r.Windows) + "w"

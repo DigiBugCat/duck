@@ -44,7 +44,7 @@ type fakeAttacher struct{ attached string }
 func (f *fakeAttacher) ExecAttach(id string) error { f.attached = id; return nil }
 func (f *fakeAttacher) RunAttach(id string) error  { f.attached = id; return nil }
 
-const listCmd = "tmux list-sessions -F '#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{pane_title}'"
+const listCmd = "tmux list-sessions -F '#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{@duck_loop}\t#{pane_title}'"
 
 func newApp(r *fakeRunner, n namer.Namer) *App {
 	mgr := session.NewManager(r, &fakeAttacher{})

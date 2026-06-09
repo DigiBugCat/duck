@@ -53,6 +53,27 @@ func TestRankAttachedThenRecency(t *testing.T) {
 	}
 }
 
+// TestRankLoopedOutranksAttached pins the looped tier: a /loop-running session is
+// ranked above even a freshly-attached one, so an autonomous loop you are not
+// attached to surfaces at the very top. Within each tier the usual attached-then-
+// recency order still holds.
+func TestRankLoopedOutranksAttached(t *testing.T) {
+	now := time.Now()
+	rows := []Row{
+		{Display: "attached-fresh", Attached: true, LastSeen: now.Add(-30 * time.Second)},
+		{Display: "looped-old", Looped: true, LastSeen: now.Add(-5 * time.Hour)},
+		{Display: "detached", LastSeen: now.Add(-1 * time.Minute)},
+		{Display: "looped-fresh", Looped: true, LastSeen: now.Add(-10 * time.Second)},
+	}
+	got := Rank(rows)
+	want := []string{"looped-fresh", "looped-old", "attached-fresh", "detached"}
+	for i, w := range want {
+		if got[i].Display != w {
+			t.Fatalf("rank[%d] = %q, want %q (full: %v)", i, got[i].Display, w, names(got))
+		}
+	}
+}
+
 func names(rows []Row) []string {
 	out := make([]string, len(rows))
 	for i, r := range rows {

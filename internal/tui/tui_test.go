@@ -566,22 +566,30 @@ func TestThreeSessionsSameDirRenderDistinctRawNames(t *testing.T) {
 	}
 }
 
-// TestGlyphForLiveness pins the glyph semantics (DESIGN §6): ● attached,
-// ◐ live-detached (active within idleThreshold), ○ idle/old. Pure function, no
-// wall clock. Guards against the old Windows>0 bug that made ○ dead code.
+// TestGlyphForLiveness pins the glyph semantics (DESIGN §6): ↻ looped (outranks
+// everything), ● attached, ◐ live-detached (active within idleThreshold), ○
+// idle/old. Pure function, no wall clock. Guards against the old Windows>0 bug
+// that made ○ dead code.
 func TestGlyphForLiveness(t *testing.T) {
-	if g := glyphFor(true, 10*time.Hour); g != attachedGlyph {
+	// Looped wins over attached and any age.
+	if g := glyphFor(true, true, 10*time.Hour); g != loopGlyph {
+		t.Fatalf("looped should be the loop glyph even when attached, got %q", g)
+	}
+	if g := glyphFor(true, false, idleThreshold+time.Minute); g != loopGlyph {
+		t.Fatalf("looped should be the loop glyph regardless of age, got %q", g)
+	}
+	if g := glyphFor(false, true, 10*time.Hour); g != attachedGlyph {
 		t.Fatalf("attached should be the attached glyph regardless of age, got %q", g)
 	}
-	if g := glyphFor(false, 5*time.Minute); g != liveGlyph {
+	if g := glyphFor(false, false, 5*time.Minute); g != liveGlyph {
 		t.Fatalf("recently-active detached should be the live glyph, got %q", g)
 	}
-	if g := glyphFor(false, idleThreshold+time.Minute); g != idleGlyph {
+	if g := glyphFor(false, false, idleThreshold+time.Minute); g != idleGlyph {
 		t.Fatalf("stale detached should be the idle glyph, got %q", g)
 	}
 	// Pin the boundary itself: the split is exclusive (`age < idleThreshold`),
 	// so exactly AT the threshold a detached session is already idle, not live.
-	if g := glyphFor(false, idleThreshold); g != idleGlyph {
+	if g := glyphFor(false, false, idleThreshold); g != idleGlyph {
 		t.Fatalf("at exactly idleThreshold a detached session should be idle (exclusive < boundary), got %q", g)
 	}
 }

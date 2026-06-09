@@ -74,6 +74,36 @@ func TestListBuildsFormatStringAndParses(t *testing.T) {
 	}
 }
 
+// TestListParsesLoopAndPaneTitle pins the two trailing fields: @duck_loop (the
+// looped-session marker the picker pins on) then pane_title. A "1" loop value
+// reads as Looped=true; an empty/"0" value reads as false; a 5-field line (no
+// trailing fields at all) leaves both zero so the feature degrades to a no-op.
+func TestListParsesLoopAndPaneTitle(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{}}
+	want := "tmux list-sessions -F '" + listFormat + "'"
+	f.out[want] = "lp\t~/dev/lp\t0\t100\t1\t1\t✳ working\n" + // looped, with a Claude title
+		"plain\t~/dev/plain\t0\t100\t1\t\tshell\n" + // empty loop field → not looped
+		"old\t~/dev/old\t0\t100\t1\n" // 5-field legacy line → both zero
+	m := NewManager(f, &fakeAttacher{})
+
+	sessions, err := m.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("want 3 sessions, got %d: %+v", len(sessions), sessions)
+	}
+	if !sessions[0].Looped || sessions[0].PaneTitle != "✳ working" {
+		t.Fatalf("row 0 should be looped with pane title: %+v", sessions[0])
+	}
+	if sessions[1].Looped || sessions[1].PaneTitle != "shell" {
+		t.Fatalf("row 1 empty loop field should be not-looped: %+v", sessions[1])
+	}
+	if sessions[2].Looped || sessions[2].PaneTitle != "" {
+		t.Fatalf("row 2 legacy 5-field line should leave loop/title zero: %+v", sessions[2])
+	}
+}
+
 func TestListNoServerIsEmptyNotError(t *testing.T) {
 	// tmux exits non-zero with "no server running on <socket>" on an empty hub;
 	// List must absorb THAT signature into an empty slice, not an error. sshx

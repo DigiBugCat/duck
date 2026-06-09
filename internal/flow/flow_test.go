@@ -141,8 +141,9 @@ func (f *fakeAttacher) RunAttach(id string) error {
 
 func listCmd() string {
 	// Mirror the manager's list format without importing its private const
-	// (pane_title is the trailing field added so names.Resolve can prefer it).
-	return "tmux list-sessions -F '#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{pane_title}'"
+	// (@duck_loop then pane_title are the trailing fields — pane_title last because
+	// it is free text; @duck_loop is the looped-session marker the picker pins on).
+	return "tmux list-sessions -F '#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{@duck_loop}\t#{pane_title}'"
 }
 
 // newFlow builds a Flow with default sync-awareness collaborators: an unknown

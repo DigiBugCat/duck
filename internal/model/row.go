@@ -28,6 +28,7 @@ type Row struct {
 	Dir      string    // tilde-form working directory, e.g. ~/dev/foo
 	Age      string    // humanized last-active age, e.g. "2m", "1h", "3d"
 	Attached bool      // a client is currently attached
+	Looped   bool      // the session is running a /loop (@duck_loop set) — ranked to the top
 	Windows  int       // tmux window count
 	TmuxName string    // internal tmux session id (dispatch key; never displayed)
 	LastSeen time.Time // last-active timestamp, used by Rank (not displayed)
@@ -64,15 +65,20 @@ func fuzzyMatch(haystack, needle string) bool {
 	return i == len(nr)
 }
 
-// Rank orders rows for the picker: attached first, then by recency (most-recent
-// LastSeen first), stable within a group. It returns a new slice; the input is
-// not mutated.
+// Rank orders rows for the picker: looped (/loop-running) first, then attached,
+// then by recency (most-recent LastSeen first), stable within a group. It returns
+// a new slice; the input is not mutated. Looped outranks attached so a running
+// loop you are NOT attached to still surfaces at the very top — the whole point of
+// the pin is to keep autonomous loops from being buried.
 func Rank(rows []Row) []Row {
 	out := make([]Row, len(rows))
 	copy(out, rows)
 	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Looped != out[j].Looped {
+			return out[i].Looped // looped sorts first
+		}
 		if out[i].Attached != out[j].Attached {
-			return out[i].Attached // attached sorts first
+			return out[i].Attached // then attached
 		}
 		return out[i].LastSeen.After(out[j].LastSeen) // most recent first
 	})

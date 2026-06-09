@@ -137,6 +137,7 @@ func (a *App) refresh(autoName bool) ([]model.Row, error) {
 			Dir:      s.Dir,
 			Age:      humanizeAge(now.Sub(s.LastActive)),
 			Attached: s.Attached,
+			Looped:   s.Looped,
 			Windows:  s.Windows,
 			TmuxName: s.Name,
 			LastSeen: s.LastActive,
