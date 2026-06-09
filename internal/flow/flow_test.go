@@ -27,13 +27,15 @@ type fakeSyncer struct {
 	addCalls   int
 	reconCalls int
 	lastForce  bool
+	lastDir    Direction
 	calls      []string // "reconcile"/"addwait" in call order
 	addPaths   []string // tildeDir of every AddAndWait, in order (co-sync target asserts)
 }
 
 func (f *fakeSyncer) IsSynced(string) (bool, error) { return f.synced, nil }
-func (f *fakeSyncer) Reconcile(string) error {
+func (f *fakeSyncer) Reconcile(_ string, dir Direction) error {
 	f.reconCalls++
+	f.lastDir = dir
 	f.calls = append(f.calls, "reconcile")
 	return nil
 }
@@ -163,7 +165,7 @@ func newFlowDeps(r *fakeRunner, a *fakeAttacher, s *fakeSyncer, p *fakePolicy, c
 func TestEnsureSyncedShortCircuitsWhenAlreadySynced(t *testing.T) {
 	s := &fakeSyncer{synced: true}
 	f := newFlow(&fakeRunner{}, &fakeAttacher{}, s)
-	dir, err := f.EnsureSynced("/home/me/dev/foo", false)
+	dir, err := f.EnsureSynced("/home/me/dev/foo", DirNone)
 	if err != nil {
 		t.Fatalf("EnsureSynced: %v", err)
 	}
@@ -176,7 +178,7 @@ func TestEnsureSyncedShortCircuitsWhenAlreadySynced(t *testing.T) {
 func TestEnsureSyncedAddsWhenUnsynced(t *testing.T) {
 	s := &fakeSyncer{synced: false}
 	f := newFlow(&fakeRunner{}, &fakeAttacher{}, s)
-	if _, err := f.EnsureSynced("/home/me/dev/foo", false); err != nil {
+	if _, err := f.EnsureSynced("/home/me/dev/foo", DirNone); err != nil {
 		t.Fatalf("EnsureSynced: %v", err)
 	}
 	if s.addCalls != 1 {

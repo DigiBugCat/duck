@@ -76,30 +76,46 @@ func (s realSyncer) IsSynced(tildeDir string) (bool, error) {
 	return false, nil
 }
 
-// Reconcile runs the per-file NEWEST-WINS rsync seed (two `rsync -au` passes,
-// PUSH then PULL) between this machine and the hub for tildeDir. It is called by
-// Flow.EnsureSynced on the force/merge path BEFORE AddAndWait, so that the
-// force-add's mutagen two-way-resolved session finds both sides already
-// identical and has no conflicts to resolve. A failure here aborts the merge
+// reconcileDir maps the flow-level Direction to the reconcile package's. They
+// are distinct enums so flow does not leak the reconcile type through its Syncer
+// seam; DirNone never reaches here (EnsureSynced only reconciles when set).
+func reconcileDir(d Direction) reconcile.Direction {
+	switch d {
+	case DirPush:
+		return reconcile.Push
+	case DirPull:
+		return reconcile.Pull
+	default:
+		return reconcile.Merge
+	}
+}
+
+// Reconcile seeds this machine and the hub for tildeDir in the chosen direction
+// (Push: local clobbers hub; Pull: hub clobbers local; Merge: newest-wins union)
+// BEFORE AddAndWait, so the force-add's mutagen two-way-resolved session finds
+// both sides already coherent and has no conflicts to resolve. A failure aborts
 // (the caller does NOT proceed to AddAndWait).
-func (s realSyncer) Reconcile(tildeDir string) (err error) {
+func (s realSyncer) Reconcile(tildeDir string, dir Direction) (err error) {
 	// Make the rsync seed VISIBLE: Start the spinner (idempotent — if AddAndWait
 	// later runs on the same realSyncer it shares this one line) and emit a
-	// status. We do NOT Stop on success: on the force/merge path waitSteady owns
-	// the final ✓ so reconcile→add reads as one continuous line. But on a seed
-	// FAILURE (caller aborts before AddAndWait/waitSteady) we MUST clear the line
-	// here, else Execute's "error:" note appends to a dangling spinner line. Stop
-	// is safe-once, so this never double-fires. We also do NOT touch
-	// reconcile.ReconcileNewest's rsync argv — the status is emitted here only, so
-	// the safety-critical rsync commands stay byte-identical.
+	// status. We do NOT Stop on success: waitSteady owns the final ✓ so
+	// reconcile→add reads as one continuous line. But on a seed FAILURE (caller
+	// aborts before AddAndWait/waitSteady) we MUST clear the line here, else
+	// Execute's "error:" note appends to a dangling spinner line. Stop is
+	// safe-once, so this never double-fires.
 	s.progress.Start("syncing", tildeDir)
-	s.progress.Update("reconciling (newest version of each file wins)")
+	s.progress.Update("reconciling")
 	defer func() {
 		if err != nil {
 			s.progress.Stop(false)
 		}
 	}()
-	return reconcile.ReconcileNewest(s.addr, tildeDir)
+	// Stream the rsync seed's live progress into the SAME spinner line so a big
+	// first seed shows what is transferring. The callback runs on rsync's stdout
+	// copier goroutine; ttyProgress.Update is mutex-guarded for exactly this.
+	return reconcile.Reconcile(s.addr, tildeDir, reconcileDir(dir), func(line string) {
+		s.progress.Update(line)
+	})
 }
 
 // AddAndWait ensures the default bundle exists, adds tildeDir to it (which

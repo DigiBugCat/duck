@@ -31,9 +31,20 @@ import (
 // realSyncer.
 type Syncer interface {
 	IsSynced(tildeDir string) (bool, error)
-	Reconcile(tildeDir string) error
+	Reconcile(tildeDir string, dir Direction) error
 	AddAndWait(tildeDir string, force bool) error
 }
+
+// Direction is how a conflicting folder (one the hub already has with files) is
+// seeded before the mutagen merge. DirNone means no seed (the non-force path).
+type Direction int
+
+const (
+	DirNone  Direction = iota // no reconcile; AddAndWait(force=false)
+	DirPush                   // local clobbers hub (mirror local→hub, --delete)
+	DirPull                   // hub clobbers local (mirror hub→local, --delete)
+	DirMerge                  // newest-of-each-file wins, union, no deletions
+)
 
 // PolicyStore is the per-folder sync-policy seam: Get returns the remembered
 // "sync"/"never" policy for a tilde-form dir (ok=false when unknown); Set
@@ -112,7 +123,31 @@ const (
 	// again next time. It is what the hub-conflict prompt's [n] choice routes to —
 	// declining the merge once must not silently disable sync forever.
 	OverrideNoSyncOnce
+	// OverridePush / OverridePull force a DIRECTIONAL clobber-merge into a non-empty
+	// hub dir and remember "sync": Push mirrors local→hub (local wins, --delete),
+	// Pull mirrors hub→local (hub wins, --delete). Like OverrideSync (which is the
+	// newest-wins Merge) they carry force=true into the sync path; only the
+	// reconcile DIRECTION differs. The command layer routes the conflict prompt's
+	// [p]/[u] choices and the --push/--pull flags here.
+	OverridePush
+	OverridePull
 )
+
+// directionFor maps a sync override to the reconcile Direction EnsureSynced uses.
+// The three force/merge overrides each pick a direction; everything else is
+// DirNone (no seed — the non-force path).
+func directionFor(o Override) Direction {
+	switch o {
+	case OverrideSync:
+		return DirMerge
+	case OverridePush:
+		return DirPush
+	case OverridePull:
+		return DirPull
+	default:
+		return DirNone
+	}
+}
 
 // InteractiveAttach performs ONE interactive attach to tmuxName and reports
 // whether the user left CLEANLY (detached or exited normally) — the single bit
@@ -235,17 +270,16 @@ func (noPrompter) AskSync(string, string) (Choice, error) { return ChoiceNo, nil
 // them. Returns the tilde-form dir. Idempotent: an already-synced dir
 // short-circuits.
 //
-// force is the NEWEST-WINS MERGE path: when true (the merge choice / `duck
-// --sync` on a conflict), EnsureSynced first runs Reconcile (the per-file
-// newest-wins rsync seed) and ONLY THEN AddAndWait(force=true). The order is
-// load-bearing — the seed makes both sides identical so the subsequent mutagen
-// two-way-resolved session has no conflicts to resolve, making force=true safe
-// and equal to "the newest copy of each file already won." A Reconcile failure
-// returns immediately and does NOT proceed to the force-add (a partial seed
-// must never be treated as a finished merge). When force is false no Reconcile
-// runs and a non-empty hub dir surfaces as actions.ErrHubNonEmpty for the
-// caller to resolve.
-func (f *Flow) EnsureSynced(cwd string, force bool) (tildeDir string, err error) {
+// dir is the directional MERGE path: when not DirNone (the merge/push/pull
+// choice / `duck --merge|--push|--pull` on a conflict), EnsureSynced first runs
+// Reconcile (the rsync seed in that direction) and ONLY THEN AddAndWait(force=
+// true). The order is load-bearing — the seed makes both sides coherent so the
+// subsequent mutagen two-way-resolved session has no conflicts to resolve. A
+// Reconcile failure returns immediately and does NOT proceed to the force-add (a
+// partial seed must never be treated as a finished merge). When dir is DirNone no
+// Reconcile runs and a non-empty hub dir surfaces as actions.ErrHubNonEmpty for
+// the caller to resolve.
+func (f *Flow) EnsureSynced(cwd string, dir Direction) (tildeDir string, err error) {
 	tildeDir = paths.Contract(cwd)
 	synced, err := f.sync.IsSynced(tildeDir)
 	if err != nil {
@@ -254,14 +288,14 @@ func (f *Flow) EnsureSynced(cwd string, force bool) (tildeDir string, err error)
 	if synced {
 		return tildeDir, nil // short-circuit: already syncing
 	}
-	if force {
-		// Reconcile BEFORE AddAndWait: seed both sides to identical newest-per-file
-		// content so the force-add's mutagen session has no conflicts left.
-		if err := f.sync.Reconcile(tildeDir); err != nil {
+	if dir != DirNone {
+		// Reconcile BEFORE AddAndWait: seed both sides coherent (per direction) so
+		// the force-add's mutagen session has no conflicts left.
+		if err := f.sync.Reconcile(tildeDir, dir); err != nil {
 			return "", err
 		}
 	}
-	if err := f.sync.AddAndWait(tildeDir, force); err != nil {
+	if err := f.sync.AddAndWait(tildeDir, dir != DirNone); err != nil {
 		return "", err
 	}
 	return tildeDir, nil
@@ -301,7 +335,7 @@ func (f *Flow) coSyncClaude(absCwd string) {
 	}
 	// force=true → newest-wins reconcile then merge (safe for a corpus that may
 	// already live on the hub). Best-effort: swallow errors so the session opens.
-	if _, err := f.EnsureSynced(local, true); err != nil {
+	if _, err := f.EnsureSynced(local, DirMerge); err != nil {
 		fmt.Fprintf(os.Stderr, "duck: claude history co-sync skipped: %v\n", err)
 	}
 }
@@ -328,7 +362,7 @@ func (f *Flow) EnsureSyncedGated(cwd string) (tildeDir string, err error) {
 	// gated path never forces a merge into a non-empty hub dir (force=false), so a
 	// hub conflict here surfaces as actions.ErrHubNonEmpty for the caller to
 	// resolve — it does not silently merge.
-	td, err := f.EnsureSynced(cwd, false)
+	td, err := f.EnsureSynced(cwd, DirNone)
 	if err != nil {
 		return "", err
 	}
@@ -458,12 +492,12 @@ func (f *Flow) RunWithOverride(cwd string, override Override) error {
 	var sessionDir string
 	if doSync {
 		// EnsureSynced takes the ABSOLUTE cwd (it contracts internally) and returns
-		// the tilde-form dir; using its result keeps the path form consistent. Only
-		// OverrideSync forces a NEWEST-WINS merge into a non-empty hub dir (reconcile
-		// then force-add); every other sync path passes force=false (so a hub
-		// conflict surfaces as actions.ErrHubNonEmpty for the command layer to
-		// resolve interactively).
-		sessionDir, err = f.EnsureSynced(cwd, override == OverrideSync)
+		// the tilde-form dir; using its result keeps the path form consistent.
+		// Only the Sync/Push/Pull overrides force a directional merge into a
+		// non-empty hub dir (reconcile then force-add); every other sync path is
+		// DirNone (so a hub conflict surfaces as actions.ErrHubNonEmpty for the
+		// command layer to resolve interactively).
+		sessionDir, err = f.EnsureSynced(cwd, directionFor(override))
 		if err != nil {
 			return err
 		}
@@ -524,10 +558,10 @@ func (f *Flow) RunWithOverride(cwd string, override Override) error {
 // best-effort: a store write failure does not block the session.
 func (f *Flow) decideSync(cwd, d string, override Override) (bool, error) {
 	switch override {
-	case OverrideSync:
-		// Force doSync and remember "sync". The force=true it additionally carries
-		// (the newest-wins reconcile-then-merge) is consumed by EnsureSynced, not by
-		// this decision.
+	case OverrideSync, OverridePush, OverridePull:
+		// Force doSync and remember "sync". The reconcile DIRECTION these carry
+		// (merge / local-wins / hub-wins) is consumed by EnsureSynced via
+		// directionFor, not by this decision.
 		_ = f.policy.Set(d, folder.PolicySync)
 		return true, nil
 	case OverrideNoSync:

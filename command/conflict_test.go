@@ -85,21 +85,24 @@ func TestRunWithHubConflictNoErrorPassesThrough(t *testing.T) {
 	})
 }
 
-// TestConflictOverride pins the merge-prompt answer→override mapping for the new
-// [Y/n] default-YES prompt: empty (the blank-Enter default), y, and yes →
-// OverrideSync (the newest-wins merge); n, no, and gibberish → OverrideNoSyncOnce
-// (open in the hub's copy, no sync, and do NOT persist "never"). This is the
-// load-bearing default: a blank Enter MUST do the newest-wins merge (it is
-// non-destructive of newer data), and declining must be a ONE-TIME no-sync.
+// TestConflictOverride pins the direction-prompt answer→override mapping for the
+// [p]ush / [u]ll / [m]erge / [n]o prompt: p → OverridePush (local clobbers hub),
+// u → OverridePull (hub clobbers local), m and the blank-Enter default →
+// OverrideSync (newest-wins merge), n and gibberish → OverrideNoSyncOnce (open in
+// the hub's copy, no sync, do NOT persist "never"). The load-bearing default: a
+// blank Enter MUST be the non-destructive merge, and declining a ONE-TIME no-sync.
 func TestConflictOverride(t *testing.T) {
 	cases := []struct {
 		in   string
 		want flow.Override
 	}{
-		{"y", flow.OverrideSync},
-		{"yes", flow.OverrideSync},
-		{"YES", flow.OverrideSync},
-		{" y \n", flow.OverrideSync},
+		{"p", flow.OverridePush},
+		{"push", flow.OverridePush},
+		{" P \n", flow.OverridePush},
+		{"u", flow.OverridePull},
+		{"pull", flow.OverridePull},
+		{"m", flow.OverrideSync},
+		{"merge", flow.OverrideSync},
 		{"", flow.OverrideSync},
 		{"\n", flow.OverrideSync},
 		{"  ", flow.OverrideSync},

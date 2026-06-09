@@ -26,7 +26,7 @@ func swapRun(t *testing.T, fail func(call int) error) (*[]recordedCmd, func()) {
 	t.Helper()
 	var got []recordedCmd
 	orig := run
-	run = func(name string, args ...string) error {
+	run = func(_ func(string), name string, args ...string) error {
 		got = append(got, recordedCmd{name: name, args: append([]string(nil), args...)})
 		if fail != nil {
 			return fail(len(got) - 1)
@@ -35,7 +35,11 @@ func swapRun(t *testing.T, fail func(call int) error) (*[]recordedCmd, func()) {
 	}
 	origMkdir := mkdirRemote
 	mkdirRemote = func(addr, rel string) error { return nil }
-	return &got, func() { run = orig; mkdirRemote = origMkdir }
+	// Stub the GNU-rsync resolver so tests never shell out to `rsync --version`
+	// and the recorded binary name stays "rsync".
+	origBin := rsyncBin
+	rsyncBin = func() (string, error) { return "rsync", nil }
+	return &got, func() { run = orig; mkdirRemote = origMkdir; rsyncBin = origBin }
 }
 
 // TestReconcileNewestBuildsTwoNewestWinsRsyncs is the SAFETY-CRITICAL test. It
@@ -63,7 +67,7 @@ func TestReconcileNewestBuildsTwoNewestWinsRsyncs(t *testing.T) {
 	got, restore := swapRun(t, nil)
 	defer restore()
 
-	if err := ReconcileNewest(addr, tildeDir); err != nil {
+	if err := Reconcile(addr, tildeDir, Merge, nil); err != nil {
 		t.Fatalf("ReconcileNewest: %v", err)
 	}
 
@@ -150,7 +154,7 @@ func TestReconcileNewestPushFailureStops(t *testing.T) {
 	})
 	defer restore()
 
-	err := ReconcileNewest("me@hub", "~/dev/foo")
+	err := Reconcile("me@hub", "~/dev/foo", Merge, nil)
 	if !errors.Is(err, boom) {
 		t.Fatalf("push failure must surface, got %v", err)
 	}
@@ -171,8 +175,92 @@ func TestReconcileNewestPullFailureSurfaces(t *testing.T) {
 	})
 	defer restore()
 
-	if err := ReconcileNewest("me@hub", "~/dev/foo"); !errors.Is(err, boom) {
+	if err := Reconcile("me@hub", "~/dev/foo", Merge, nil); !errors.Is(err, boom) {
 		t.Fatalf("pull failure must surface, got %v", err)
+	}
+}
+
+// TestReconcileNewestRelaxesOwnershipAndStreamsProgress pins the exit-23 fix: a
+// non-root hub cannot chown to a foreign uid/gid, so BOTH passes must disable
+// owner/group/dir-time preservation (else a large corpus's container/sudo-owned
+// files fail with exit 23 and ABORT the merge), and both must carry --progress
+// so the seed streams live progress.
+func TestReconcileNewestRelaxesOwnershipAndStreamsProgress(t *testing.T) {
+	got, restore := swapRun(t, nil)
+	defer restore()
+	if err := Reconcile("me@hub", "~/dev/foo", Merge, nil); err != nil {
+		t.Fatalf("ReconcileNewest: %v", err)
+	}
+	want := []string{"--no-owner", "--no-group", "--omit-dir-times", "--info=progress2"}
+	for i, c := range *got {
+		for _, w := range want {
+			if !contains(c.args, w) {
+				t.Fatalf("cmd %d missing %s; got args=%v", i, w, c.args)
+			}
+		}
+	}
+}
+
+// TestReconcilePushMirrors pins push = local CLOBBERS hub: EXACTLY ONE pass,
+// local→hub, carrying --delete (mirror) — and never -u.
+func TestReconcilePushMirrors(t *testing.T) {
+	const addr, tildeDir = "me@hub", "~/dev/foo"
+	local, _ := paths.Expand(tildeDir)
+	got, restore := swapRun(t, nil)
+	defer restore()
+	if err := Reconcile(addr, tildeDir, Push, nil); err != nil {
+		t.Fatalf("Reconcile push: %v", err)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("push must be ONE pass, got %d: %v", len(*got), *got)
+	}
+	c := (*got)[0].args
+	if !contains(c, "--delete") {
+		t.Fatalf("push must carry --delete (mirror); got %v", c)
+	}
+	if contains(c, "-u") {
+		t.Fatalf("push must NOT carry -u (local always wins); got %v", c)
+	}
+	if c[len(c)-2] != local+"/" || c[len(c)-1] != addr+":"+paths.Quote(hub.RemoteSyncPath(tildeDir))+"/" {
+		t.Fatalf("push must be local→hub; got src=%q dst=%q", c[len(c)-2], c[len(c)-1])
+	}
+}
+
+// TestReconcilePullMirrors pins pull = hub CLOBBERS local: EXACTLY ONE pass,
+// hub→local, carrying --delete.
+func TestReconcilePullMirrors(t *testing.T) {
+	const addr, tildeDir = "me@hub", "~/dev/foo"
+	local, _ := paths.Expand(tildeDir)
+	got, restore := swapRun(t, nil)
+	defer restore()
+	if err := Reconcile(addr, tildeDir, Pull, nil); err != nil {
+		t.Fatalf("Reconcile pull: %v", err)
+	}
+	if len(*got) != 1 {
+		t.Fatalf("pull must be ONE pass, got %d: %v", len(*got), *got)
+	}
+	c := (*got)[0].args
+	if !contains(c, "--delete") {
+		t.Fatalf("pull must carry --delete (mirror); got %v", c)
+	}
+	if c[len(c)-2] != addr+":"+paths.Quote(hub.RemoteSyncPath(tildeDir))+"/" || c[len(c)-1] != local+"/" {
+		t.Fatalf("pull must be hub→local; got src=%q dst=%q", c[len(c)-2], c[len(c)-1])
+	}
+}
+
+// TestProgressWriterReportsLatestAndCapturesError feeds a CR/LF rsync stream and
+// asserts the writer reports the LAST progress fragment and stashes a
+// diagnostic-looking line in errTail instead of reporting it.
+func TestProgressWriterReportsLatestAndCapturesError(t *testing.T) {
+	var last string
+	w := &progressWriter{report: func(s string) { last = s }}
+	w.Write([]byte("big.bin\r   100  50%  1MB/s\r   200 100%  2MB/s\n"))
+	if last != "200 100%  2MB/s" {
+		t.Fatalf("reported %q, want the latest progress fragment", last)
+	}
+	w.Write([]byte("rsync: chown failed: Operation not permitted\n"))
+	if w.errTail == "" || !strings.Contains(w.errTail, "chown failed") {
+		t.Fatalf("errTail = %q, want the rsync diagnostic", w.errTail)
 	}
 }
 
@@ -215,7 +303,7 @@ func TestReconcileNewestMkdirsHubBeforePush(t *testing.T) {
 		return nil
 	}
 
-	if err := ReconcileNewest(addr, tildeDir); err != nil {
+	if err := Reconcile(addr, tildeDir, Merge, nil); err != nil {
 		t.Fatalf("ReconcileNewest: %v", err)
 	}
 	if mkdirArgs == nil {

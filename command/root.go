@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	syncpkg "github.com/DigiBugCat/duck/command/sync"
 	"github.com/DigiBugCat/duck/internal/actions"
@@ -32,6 +33,9 @@ var (
 	flagResume   bool
 	flagSync     bool
 	flagNoSync   bool
+	flagPush     bool
+	flagPull     bool
+	flagMerge    bool
 )
 
 var rootCmd = &cobra.Command{
@@ -144,10 +148,12 @@ func runWithHubConflict(r overrideRunner, target string, override flow.Override)
 		// pass through unchanged — the non-interactive branch NEVER reads stdin.
 		return err
 	}
-	fmt.Printf("Hub already has %s with files.\n"+
-		"  [y] sync  — one user across machines: the NEWEST version of each file wins (nothing is deleted)\n"+
+	fmt.Printf("Hub already has %s with files. Choose a direction:\n"+
+		"  [p] push   local → hub  (local CLOBBERS the hub copy, incl. deletes)\n"+
+		"  [u] pull   hub → local  (hub CLOBBERS your local copy, incl. deletes)\n"+
+		"  [m] merge  newest of each file wins (union, nothing deleted)\n"+
 		"  [n] no sync — just open a remote session in the hub’s copy\n"+
-		"Sync? [Y/n]: ", e.Path)
+		"Choice [m]: ", e.Path)
 	line, lerr := readLine(os.Stdin)
 	if lerr != nil {
 		return err // surface the original conflict if we cannot read an answer.
@@ -156,17 +162,23 @@ func runWithHubConflict(r overrideRunner, target string, override flow.Override)
 }
 
 // conflictOverride maps a raw answer line at the hub-conflict prompt to the
-// override to re-run the flow with. It uses parseYesNo (NOT parseChoice) so a
-// blank Enter is YES, matching the printed [Y/n] default: empty/y/yes →
-// OverrideSync (the newest-wins merge — reconcile then force-add); n/no/anything
-// else → OverrideNoSyncOnce (open a session in the hub's existing copy WITHOUT
-// syncing, and do NOT persist "never", so duck asks again next time). Pure, so
-// the answer→override mapping is unit-tested without a TTY.
+// override to re-run the flow with. The default (blank Enter) is MERGE — the only
+// non-destructive choice — matching the printed [m] default: p → OverridePush
+// (local clobbers hub), u → OverridePull (hub clobbers local), m/empty →
+// OverrideSync (newest-wins merge), n/anything else → OverrideNoSyncOnce (open a
+// session in the hub's copy WITHOUT syncing, NOT persisting "never", so duck asks
+// again next time). Pure, so the mapping is unit-tested without a TTY.
 func conflictOverride(line string) flow.Override {
-	if parseYesNo(line) {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "p", "push":
+		return flow.OverridePush
+	case "u", "pull":
+		return flow.OverridePull
+	case "m", "merge", "":
 		return flow.OverrideSync
+	default:
+		return flow.OverrideNoSyncOnce
 	}
-	return flow.OverrideNoSyncOnce
 }
 
 // ensureHubOrOfferSetup is the bare-`duck` first-run gate. If a hub is already
@@ -208,7 +220,11 @@ func ensureHubOrOfferSetup() error {
 // mutually exclusive (enforced in init), so at most one is set.
 func syncOverride() flow.Override {
 	switch {
-	case flagSync:
+	case flagPush:
+		return flow.OverridePush
+	case flagPull:
+		return flow.OverridePull
+	case flagMerge, flagSync: // --sync is kept as an alias for --merge.
 		return flow.OverrideSync
 	case flagNoSync:
 		return flow.OverrideNoSync
@@ -226,8 +242,14 @@ func init() {
 		"force syncing cwd to the hub (remembered for this folder)")
 	rootCmd.Flags().BoolVar(&flagNoSync, "no-sync", false,
 		"open a session without syncing cwd (remembered for this folder)")
+	rootCmd.Flags().BoolVar(&flagMerge, "merge", false,
+		"merge cwd with the hub: newest of each file wins, nothing deleted")
+	rootCmd.Flags().BoolVar(&flagPush, "push", false,
+		"push cwd to the hub: local CLOBBERS the hub copy (incl. deletes)")
+	rootCmd.Flags().BoolVar(&flagPull, "pull", false,
+		"pull the hub into cwd: hub CLOBBERS your local copy (incl. deletes)")
 	rootCmd.MarkFlagsMutuallyExclusive("continue", "resume")
-	rootCmd.MarkFlagsMutuallyExclusive("sync", "no-sync")
+	rootCmd.MarkFlagsMutuallyExclusive("sync", "no-sync", "merge", "push", "pull")
 
 	rootCmd.AddCommand(syncpkg.Cmd)
 	rootCmd.AddCommand(lsCmd)
