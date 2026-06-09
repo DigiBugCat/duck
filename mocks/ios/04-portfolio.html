@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>duck · Portfolio</title>
+<style>
+  :root {
+    --bg: #08090b;
+    --screen: #0e1014;
+    --surface: #161a20;
+    --surface2: #1d222a;
+    --border: rgba(255,255,255,.07);
+    --text: #eef0f2;
+    --muted: #878e99;
+    --faint: #5a6069;
+    --coral: #e8694a;
+    --green: #30d158;
+    --red: #ff453a;
+    --blue: #64a8ff;
+    --amber: #ffd60a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #1a1410 0%, var(--bg) 55%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--text); min-height: 100vh;
+    display: flex; align-items: center; justify-content: center; padding: 32px 16px;
+  }
+  .phone {
+    width: 393px; height: 852px; background: var(--screen);
+    border-radius: 54px; border: 1px solid #2a2e35;
+    box-shadow: 0 0 0 11px #16181c, 0 0 0 12.5px #3a3e46, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative; display: flex; flex-direction: column;
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 50; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+
+  header { padding: 10px 20px 2px; flex: none; display: flex; align-items: center; justify-content: space-between; }
+  .apptitle { font-size: 30px; font-weight: 800; letter-spacing: -.6px; }
+  .acctpill { background: var(--surface); border: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); padding: 6px 12px; border-radius: 999px; }
+
+  .scroll { flex: 1; overflow-y: auto; padding: 8px 16px 120px; }
+
+  /* hero */
+  .hero {
+    background: linear-gradient(170deg, #1c2129 0%, #14181e 70%);
+    border: 1px solid var(--border); border-radius: 22px;
+    padding: 20px 18px 0; overflow: hidden; position: relative;
+  }
+  .herolabel { font-size: 11px; font-weight: 700; letter-spacing: 1.1px; color: var(--faint); text-transform: uppercase; }
+  .heroval { font-size: 40px; font-weight: 850; letter-spacing: -1.2px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .herochg { margin-top: 4px; font-size: 14px; font-weight: 700; color: var(--green); }
+  .herochg span { color: var(--faint); font-weight: 600; font-size: 12px; }
+  .spark { display: block; width: 100%; height: 86px; margin-top: 8px; }
+  .ranges { display: flex; gap: 6px; padding: 0 0 14px; margin-top: 2px; }
+  .ranges button {
+    flex: 1; border: none; background: none; color: var(--faint);
+    font-size: 11.5px; font-weight: 700; padding: 6px 0; border-radius: 8px; font-family: inherit;
+  }
+  .ranges .on { background: var(--surface2); color: var(--text); }
+
+  .statrow { display: flex; gap: 10px; margin-top: 12px; }
+  .stat {
+    flex: 1; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 12px 14px;
+  }
+  .stat .k { font-size: 10px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase; color: var(--faint); }
+  .stat .v { font-size: 17px; font-weight: 750; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  /* alert */
+  .alert {
+    margin-top: 12px; display: flex; gap: 11px; align-items: flex-start;
+    background: rgba(255,214,10,.07); border: 1px solid rgba(255,214,10,.25);
+    border-radius: 16px; padding: 13px 14px;
+  }
+  .alert .aicon { font-size: 16px; }
+  .alert .atext { font-size: 12.5px; line-height: 1.45; color: #e8dfc0; }
+  .alert .atext b { color: var(--amber); }
+  .alert .asrc { font-size: 10.5px; color: var(--faint); margin-top: 3px; font-weight: 600; }
+
+  /* positions */
+  .sectionlabel { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--faint); padding: 18px 6px 8px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; overflow: hidden; }
+  .pos { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
+  .card .pos:last-child { border-bottom: none; }
+  .sym { width: 52px; flex: none; }
+  .sym .t { font-size: 15px; font-weight: 800; letter-spacing: -.2px; }
+  .sym .q { font-size: 10.5px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; margin-top: 2px; }
+  .minispark { flex: 1; height: 30px; }
+  .posnums { flex: none; text-align: right; width: 108px; }
+  .mv { font-size: 14.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pl { font-size: 11.5px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .up { color: var(--green); } .dn { color: var(--red); }
+
+  .tabbar { position: absolute; bottom: 0; left: 0; right: 0; z-index: 40; height: 92px; padding: 10px 10px 28px; background: rgba(14,16,20,.85); backdrop-filter: blur(20px); border-top: 1px solid var(--border); display: flex; }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--faint); font-size: 10px; font-weight: 650; position: relative; }
+  .tab .ticon { font-size: 22px; line-height: 1; }
+  .tab.active { color: var(--coral); }
+  .tab .nbadge { position: absolute; top: -4px; right: 24%; background: var(--red); color: #fff; font-size: 10px; font-weight: 800; min-width: 17px; height: 17px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #fff; opacity: .35; z-index: 60; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span>9:41</span><span class="icons">●●●● <span>􀙇</span> ▮▮▮▯</span></div>
+
+  <header>
+    <div class="apptitle">Portfolio</div>
+    <div class="acctpill">Schwab ····8841</div>
+  </header>
+
+  <div class="scroll">
+    <div class="hero">
+      <div class="herolabel">Total value</div>
+      <div class="heroval">$284,512.40</div>
+      <div class="herochg">▲ $3,214.88 (+1.14%) <span>today</span></div>
+      <svg class="spark" viewBox="0 0 360 86" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#30d158" stop-opacity=".28"/>
+            <stop offset="1" stop-color="#30d158" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <path d="M0,62 C20,58 32,66 48,60 C66,53 78,40 96,44 C114,48 126,38 144,34 C160,30 172,42 190,38 C208,34 222,20 240,24 C258,28 268,18 286,14 C304,10 318,22 336,16 C346,12 354,10 360,8 L360,86 L0,86 Z" fill="url(#g)"/>
+        <path d="M0,62 C20,58 32,66 48,60 C66,53 78,40 96,44 C114,48 126,38 144,34 C160,30 172,42 190,38 C208,34 222,20 240,24 C258,28 268,18 286,14 C304,10 318,22 336,16 C346,12 354,10 360,8" fill="none" stroke="#30d158" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="360" cy="8" r="4" fill="#30d158"/>
+      </svg>
+      <div class="ranges">
+        <button>1D</button><button class="on">1W</button><button>1M</button><button>3M</button><button>YTD</button><button>ALL</button>
+      </div>
+    </div>
+
+    <div class="statrow">
+      <div class="stat"><div class="k">Cash</div><div class="v">$48,210</div></div>
+      <div class="stat"><div class="k">Buying power</div><div class="v">$96,420</div></div>
+      <div class="stat"><div class="k">Day P/L</div><div class="v up">+$3,214</div></div>
+    </div>
+
+    <div class="alert">
+      <div class="aicon">⚠️</div>
+      <div>
+        <div class="atext"><b>NVDA is 14.2% of portfolio</b> — above your 12% single-name cap. earnings-watch queued a trim order in Approvals.</div>
+        <div class="asrc">earnings-watch · 12 min ago</div>
+      </div>
+    </div>
+
+    <div class="sectionlabel">Positions · 6</div>
+    <div class="card">
+      <div class="pos">
+        <div class="sym"><div class="t">NVDA</div><div class="q">120 sh</div></div>
+        <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none"><path d="M0,22 L15,20 30,24 45,16 60,14 75,18 90,10 105,6 120,9" fill="none" stroke="#30d158" stroke-width="1.8"/></svg>
+        <div class="posnums"><div class="mv">$81,950</div><div class="pl up">+$8,462 · -0.61% d</div></div>
+      </div>
+      <div class="pos">
+        <div class="sym"><div class="t">AAPL</div><div class="q">145 sh</div></div>
+        <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none"><path d="M0,18 L15,16 30,19 45,14 60,16 75,12 90,13 105,9 120,8" fill="none" stroke="#30d158" stroke-width="1.8"/></svg>
+        <div class="posnums"><div class="mv">$29,855</div><div class="pl up">+$3,120 · +0.84% d</div></div>
+      </div>
+      <div class="pos">
+        <div class="sym"><div class="t">ARM</div><div class="q">—</div></div>
+        <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none"><path d="M0,24 L15,22 30,18 45,20 60,14 75,12 90,15 105,8 120,6" fill="none" stroke="#64a8ff" stroke-width="1.8" stroke-dasharray="3 3"/></svg>
+        <div class="posnums"><div class="mv">pending buy</div><div class="pl" style="color:#64a8ff">in Approvals →</div></div>
+      </div>
+      <div class="pos">
+        <div class="sym"><div class="t">TLT</div><div class="q">200 sh</div></div>
+        <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none"><path d="M0,10 L15,12 30,11 45,16 60,18 75,15 90,20 105,17 120,15" fill="none" stroke="#ff453a" stroke-width="1.8"/></svg>
+        <div class="posnums"><div class="mv">$18,288</div><div class="pl dn">-$532 · +0.40% d</div></div>
+      </div>
+      <div class="pos">
+        <div class="sym"><div class="t">MSFT</div><div class="q">80 sh</div></div>
+        <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none"><path d="M0,20 L15,18 30,16 45,17 60,12 75,14 90,10 105,11 120,7" fill="none" stroke="#30d158" stroke-width="1.8"/></svg>
+        <div class="posnums"><div class="mv">$33,704</div><div class="pl up">+$4,890 · +0.52% d</div></div>
+      </div>
+      <div class="pos">
+        <div class="sym"><div class="t">BRK.B</div><div class="q">160 sh</div></div>
+        <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none"><path d="M0,16 L15,15 30,17 45,13 60,15 75,11 90,12 105,10 120,11" fill="none" stroke="#30d158" stroke-width="1.8"/></svg>
+        <div class="posnums"><div class="mv">$72,505</div><div class="pl up">+$6,210 · +0.31% d</div></div>
+      </div>
+    </div>
+  </div>
+
+  <nav class="tabbar">
+    <a class="tab" href="01-sessions.html"><span class="ticon">🗂</span>Sessions</a>
+    <a class="tab" href="03-trades.html"><span class="ticon">⇄</span>Trades<span class="nbadge">3</span></a>
+    <a class="tab active" href="04-portfolio.html"><span class="ticon">◔</span>Portfolio</a>
+    <a class="tab" href="05-flock.html"><span class="ticon">𓅮</span>Flock</a>
+  </nav>
+  <div class="homebar"></div>
+</div>
+</body>
+</html>

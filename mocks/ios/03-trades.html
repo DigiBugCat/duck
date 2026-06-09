@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>duck · Trade Approvals</title>
+<style>
+  :root {
+    --bg: #08090b;
+    --screen: #0e1014;
+    --surface: #161a20;
+    --surface2: #1d222a;
+    --border: rgba(255,255,255,.07);
+    --text: #eef0f2;
+    --muted: #878e99;
+    --faint: #5a6069;
+    --coral: #e8694a;
+    --green: #30d158;
+    --red: #ff453a;
+    --blue: #64a8ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; user-select: none; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #1a1410 0%, var(--bg) 55%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--text); min-height: 100vh;
+    display: flex; align-items: center; justify-content: center; padding: 32px 16px;
+  }
+  .phone {
+    width: 393px; height: 852px; background: var(--screen);
+    border-radius: 54px; border: 1px solid #2a2e35;
+    box-shadow: 0 0 0 11px #16181c, 0 0 0 12.5px #3a3e46, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative; display: flex; flex-direction: column;
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 50; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+
+  header { padding: 10px 20px 6px; flex: none; display: flex; align-items: center; justify-content: space-between; }
+  .apptitle { font-size: 30px; font-weight: 800; letter-spacing: -.6px; }
+  .pendpill {
+    background: rgba(255,69,58,.13); color: var(--red); border: 1px solid rgba(255,69,58,.25);
+    font-size: 12px; font-weight: 800; padding: 6px 12px; border-radius: 999px;
+  }
+  .subline { padding: 0 20px 8px; font-size: 12.5px; color: var(--faint); font-weight: 500; flex: none; }
+  .subline b { color: var(--muted); }
+
+  /* ---------- deck ---------- */
+  .deck { flex: 1; position: relative; margin: 8px 18px 6px; }
+  .tcard {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, #1a1f27 0%, #14181e 100%);
+    border: 1px solid var(--border); border-radius: 26px;
+    padding: 22px 20px 18px;
+    display: flex; flex-direction: column;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55);
+    touch-action: none; cursor: grab;
+    transition: transform .28s ease, opacity .28s ease;
+  }
+  .tcard.dragging { transition: none; cursor: grabbing; }
+  .tcard.behind1 { transform: scale(.95) translateY(16px); opacity: .8; z-index: 2; }
+  .tcard.behind2 { transform: scale(.90) translateY(32px); opacity: .5; z-index: 1; }
+  .tcard.top { z-index: 3; }
+  .tcard.flyout { transition: transform .45s ease, opacity .4s ease; opacity: 0; }
+
+  .cardtop { display: flex; align-items: flex-start; justify-content: space-between; }
+  .sidepill { font-size: 11px; font-weight: 900; letter-spacing: 1.4px; padding: 5px 12px; border-radius: 8px; }
+  .sidepill.buy { background: rgba(48,209,88,.15); color: var(--green); border: 1px solid rgba(48,209,88,.3); }
+  .sidepill.sell { background: rgba(255,69,58,.13); color: var(--red); border: 1px solid rgba(255,69,58,.3); }
+  .source { text-align: right; font-size: 10.5px; color: var(--faint); font-weight: 600; line-height: 1.5; }
+  .source b { color: var(--blue); font-weight: 700; }
+
+  .symbol { font-size: 46px; font-weight: 850; letter-spacing: -1.5px; margin-top: 14px; line-height: 1; }
+  .desc { font-size: 13.5px; color: var(--muted); margin-top: 5px; font-weight: 500; }
+
+  .orderline {
+    margin-top: 16px; display: flex; align-items: baseline; gap: 8px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .orderline .qty { font-size: 21px; font-weight: 700; }
+  .orderline .at { color: var(--faint); font-size: 13px; }
+  .orderline .px { font-size: 21px; font-weight: 700; color: var(--coral); }
+  .estval { font-size: 12px; color: var(--faint); margin-top: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  .quotegrid {
+    margin-top: 16px; display: grid; grid-template-columns: 1fr 1fr 1fr;
+    background: #0c0e12; border: 1px solid var(--border); border-radius: 14px;
+    padding: 12px 14px; gap: 4px 10px;
+  }
+  .q { font-size: 10px; color: var(--faint); font-weight: 700; text-transform: uppercase; letter-spacing: .8px; }
+  .v { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14px; font-weight: 650; }
+  .v.up { color: var(--green); } .v.dn { color: var(--red); }
+
+  .holding { margin-top: 12px; font-size: 12px; color: var(--muted); display: flex; gap: 7px; align-items: center; }
+  .holding .hicon { color: var(--blue); }
+
+  .rationale {
+    margin-top: 12px; flex: 1;
+    font-size: 13px; line-height: 1.55; color: #c4c9d2;
+    border-left: 2.5px solid var(--coral); padding-left: 12px;
+  }
+  .rationale .who { font-size: 10px; font-weight: 800; letter-spacing: 1px; color: var(--coral); text-transform: uppercase; display: block; margin-bottom: 4px; }
+
+  .expiry { font-size: 11px; color: var(--faint); text-align: center; font-weight: 600; margin-top: 8px; }
+  .expiry b { color: #ffd60a; }
+
+  .stamp {
+    position: absolute; top: 84px; font-size: 34px; font-weight: 900; letter-spacing: 3px;
+    padding: 6px 18px; border-radius: 12px; border: 4px solid;
+    opacity: 0; transform: rotate(-14deg); pointer-events: none;
+  }
+  .stamp.yes { left: 22px; color: var(--green); border-color: var(--green); }
+  .stamp.no { right: 22px; color: var(--red); border-color: var(--red); transform: rotate(14deg); }
+
+  .empty {
+    position: absolute; inset: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    color: var(--faint); font-size: 15px; font-weight: 600;
+  }
+  .empty .big { font-size: 52px; }
+
+  /* ---------- actions ---------- */
+  .actions { flex: none; display: flex; justify-content: center; gap: 26px; padding: 12px 0 6px; }
+  .act {
+    width: 62px; height: 62px; border-radius: 50%; border: none;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; font-family: inherit;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .act.no { color: var(--red); box-shadow: 0 6px 20px rgba(255,69,58,.18); }
+  .act.yes { color: var(--green); box-shadow: 0 6px 20px rgba(48,209,88,.18); }
+  .act.info { width: 46px; height: 46px; font-size: 16px; color: var(--muted); align-self: center; }
+
+  .hint { flex: none; text-align: center; font-size: 11px; color: var(--faint); padding-bottom: 6px; font-weight: 600; }
+  .hint .l { color: var(--red); } .hint .r { color: var(--green); }
+
+  /* history strip */
+  .history { flex: none; padding: 4px 20px 116px; display: flex; gap: 8px; overflow-x: auto; }
+  .hchip {
+    flex: none; font-size: 11px; font-weight: 650; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 12px; display: flex; gap: 6px; align-items: center;
+  }
+  .hchip .y { color: var(--green); } .hchip .n { color: var(--red); }
+
+  .tabbar {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 40;
+    height: 92px; padding: 10px 10px 28px;
+    background: rgba(14,16,20,.85); backdrop-filter: blur(20px);
+    border-top: 1px solid var(--border); display: flex;
+  }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--faint); font-size: 10px; font-weight: 650; position: relative; }
+  .tab .ticon { font-size: 22px; line-height: 1; }
+  .tab.active { color: var(--coral); }
+  .tab .nbadge { position: absolute; top: -4px; right: 24%; background: var(--red); color: #fff; font-size: 10px; font-weight: 800; min-width: 17px; height: 17px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #fff; opacity: .35; z-index: 60; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span>9:41</span><span class="icons">●●●● <span>􀙇</span> ▮▮▮▯</span></div>
+
+  <header>
+    <div class="apptitle">Approvals</div>
+    <div class="pendpill" id="pendcount">3 pending</div>
+  </header>
+  <div class="subline">Schwab ····8841 · <b>$48,210</b> cash available</div>
+
+  <div class="deck" id="deck">
+    <div class="empty" id="empty">
+      <div class="big">🎉</div>
+      <div>Queue clear — nothing pending</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button class="act no" onclick="decide(false)">✕</button>
+    <button class="act info">ⓘ</button>
+    <button class="act yes" onclick="decide(true)">✓</button>
+  </div>
+  <div class="hint">swipe <span class="l">← deny</span> · <span class="r">approve →</span></div>
+
+  <div class="history">
+    <div class="hchip"><span class="y">✓</span> AAPL buy 25 — 2h ago</div>
+    <div class="hchip"><span class="y">✓</span> TLT roll — 5h ago</div>
+    <div class="hchip"><span class="n">✕</span> MSTR buy 10 — yesterday</div>
+    <div class="hchip"><span class="y">✓</span> NVDA trim 20 — Mon</div>
+  </div>
+
+  <nav class="tabbar">
+    <a class="tab" href="01-sessions.html"><span class="ticon">🗂</span>Sessions</a>
+    <a class="tab active" href="03-trades.html"><span class="ticon">⇄</span>Trades<span class="nbadge" id="tabbadge">3</span></a>
+    <a class="tab" href="04-portfolio.html"><span class="ticon">◔</span>Portfolio</a>
+    <a class="tab" href="05-flock.html"><span class="ticon">𓅮</span>Flock</a>
+  </nav>
+  <div class="homebar"></div>
+</div>
+
+<script>
+const TRADES = [
+  {
+    side: "buy", symbol: "ARM", desc: "Arm Holdings plc — EQUITY",
+    qty: "150 sh", px: "$148.50 lmt", est: "est. $22,275.00 · 7.8% of portfolio",
+    mark: "147.92", chg: "+2.31", chgPct: "+1.59%", up: true, lo: "144.80", hi: "149.10",
+    holding: "No existing position",
+    who: "arm-watch · heartbeat",
+    rationale: "Datacenter momentum plus post-earnings drift. Entry under 149 keeps risk tight against the 145 support shelf; stop planned at 143.80.",
+    expiry: "11:42"
+  },
+  {
+    side: "sell", symbol: "NVDA", desc: "NVIDIA Corporation — EQUITY",
+    qty: "40 sh", px: "MKT", est: "est. $27,316.80 · trims position 33%",
+    mark: "682.92", chg: "-4.18", chgPct: "-0.61%", up: false, lo: "678.10", hi: "694.55",
+    holding: "Holding 120 sh @ $612.40 avg · +$8,462 unrealized",
+    who: "earnings-watch · cron",
+    rationale: "Position exceeded the 12% single-name cap after last week's run. Trimming a third locks gains while keeping core exposure into GTC.",
+    expiry: "10:15"
+  },
+  {
+    side: "buy", symbol: "TLT", desc: "iShares 20+ Year Treasury Bond ETF",
+    qty: "100 sh", px: "$91.20 lmt", est: "est. $9,120.00 · duration hedge",
+    mark: "91.44", chg: "+0.36", chgPct: "+0.40%", up: true, lo: "90.88", hi: "91.60",
+    holding: "Holding 200 sh @ $94.10 avg · -$532 unrealized",
+    who: "arm-watch · heartbeat",
+    rationale: "CPI print came in soft; adding duration ahead of FOMC. Averages the basis down to $93.13 and rebalances the equity-heavy book.",
+    expiry: "14:00"
+  },
+];
+
+const deck = document.getElementById("deck");
+let cards = [];
+
+function makeCard(t) {
+  const el = document.createElement("div");
+  el.className = "tcard";
+  el.innerHTML = `
+    <div class="cardtop">
+      <span class="sidepill ${t.side}">${t.side.toUpperCase()}</span>
+      <div class="source">requested by<br><b>${t.who}</b></div>
+    </div>
+    <div class="symbol">${t.symbol}</div>
+    <div class="desc">${t.desc}</div>
+    <div class="orderline"><span class="qty">${t.qty}</span><span class="at">@</span><span class="px">${t.px}</span></div>
+    <div class="estval">${t.est}</div>
+    <div class="quotegrid">
+      <div><div class="q">Mark</div><div class="v">${t.mark}</div></div>
+      <div><div class="q">Day</div><div class="v ${t.up ? "up" : "dn"}">${t.chg} (${t.chgPct})</div></div>
+      <div><div class="q">Range</div><div class="v">${t.lo}–${t.hi}</div></div>
+    </div>
+    <div class="holding"><span class="hicon">◆</span>${t.holding}</div>
+    <div class="rationale"><span class="who">agent rationale</span>${t.rationale}</div>
+    <div class="expiry">expires <b>${t.expiry}</b> if untouched — then auto-denied</div>
+    <div class="stamp yes">APPROVE</div>
+    <div class="stamp no">DENY</div>`;
+  return el;
+}
+
+function layout() {
+  cards.forEach((c, i) => {
+    c.classList.remove("top", "behind1", "behind2");
+    if (i === 0) c.classList.add("top");
+    else if (i === 1) c.classList.add("behind1");
+    else c.classList.add("behind2");
+  });
+  const n = cards.length;
+  document.getElementById("pendcount").textContent = n ? `${n} pending` : "all clear";
+  const badge = document.getElementById("tabbadge");
+  badge.style.display = n ? "flex" : "none";
+  badge.textContent = n;
+  document.getElementById("empty").style.display = n ? "none" : "flex";
+  if (cards[0]) attachDrag(cards[0]);
+}
+
+function attachDrag(card) {
+  if (card.dataset.draggable) return;
+  card.dataset.draggable = "1";
+  let startX = 0, startY = 0, dx = 0, dy = 0, dragging = false;
+
+  card.addEventListener("pointerdown", e => {
+    if (cards[0] !== card) return;
+    dragging = true; startX = e.clientX; startY = e.clientY;
+    card.classList.add("dragging");
+    card.setPointerCapture(e.pointerId);
+  });
+  card.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    dx = e.clientX - startX; dy = e.clientY - startY;
+    card.style.transform = `translate(${dx}px, ${dy * 0.4}px) rotate(${dx / 18}deg)`;
+    const yes = card.querySelector(".stamp.yes"), no = card.querySelector(".stamp.no");
+    yes.style.opacity = Math.min(1, Math.max(0, dx / 90));
+    no.style.opacity = Math.min(1, Math.max(0, -dx / 90));
+  });
+  const release = () => {
+    if (!dragging) return;
+    dragging = false;
+    card.classList.remove("dragging");
+    if (Math.abs(dx) > 110) flyOut(card, dx > 0);
+    else {
+      card.style.transform = "";
+      card.querySelector(".stamp.yes").style.opacity = 0;
+      card.querySelector(".stamp.no").style.opacity = 0;
+    }
+    dx = 0;
+  };
+  card.addEventListener("pointerup", release);
+  card.addEventListener("pointercancel", release);
+}
+
+function flyOut(card, approved) {
+  card.querySelector(approved ? ".stamp.yes" : ".stamp.no").style.opacity = 1;
+  card.classList.add("flyout");
+  card.style.transform = `translate(${approved ? 560 : -560}px, -40px) rotate(${approved ? 24 : -24}deg)`;
+  cards = cards.filter(c => c !== card);
+  setTimeout(() => card.remove(), 450);
+  layout();
+}
+
+function decide(approved) {
+  if (cards[0]) flyOut(cards[0], approved);
+}
+
+TRADES.slice().reverse().forEach(t => {
+  const c = makeCard(t);
+  deck.appendChild(c);
+  cards.unshift(c);
+});
+layout();
+</script>
+</body>
+</html>

@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>duck · Flock</title>
+<style>
+  :root {
+    --bg: #08090b;
+    --screen: #0e1014;
+    --surface: #161a20;
+    --surface2: #1d222a;
+    --border: rgba(255,255,255,.07);
+    --text: #eef0f2;
+    --muted: #878e99;
+    --faint: #5a6069;
+    --coral: #e8694a;
+    --coral-soft: rgba(232,105,74,.14);
+    --green: #30d158;
+    --red: #ff453a;
+    --blue: #64a8ff;
+    --amber: #ffd60a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #1a1410 0%, var(--bg) 55%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--text); min-height: 100vh;
+    display: flex; align-items: center; justify-content: center; padding: 32px 16px;
+  }
+  .phone {
+    width: 393px; height: 852px; background: var(--screen);
+    border-radius: 54px; border: 1px solid #2a2e35;
+    box-shadow: 0 0 0 11px #16181c, 0 0 0 12.5px #3a3e46, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative; display: flex; flex-direction: column;
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 50; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+
+  header { padding: 10px 20px 8px; flex: none; display: flex; align-items: center; justify-content: space-between; }
+  .apptitle { font-size: 30px; font-weight: 800; letter-spacing: -.6px; }
+  .hubpill { display: flex; align-items: center; gap: 7px; background: var(--surface); border: 1px solid var(--border); padding: 7px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+
+  .scroll { flex: 1; overflow-y: auto; padding: 0 16px 120px; }
+
+  .sectionlabel { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--faint); padding: 16px 6px 8px; display: flex; justify-content: space-between; }
+  .sectionlabel .proj { color: var(--blue); font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: none; letter-spacing: 0; font-weight: 600; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; overflow: hidden; }
+
+  .auto { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
+  .card .auto:last-child { border-bottom: none; }
+  .aglyph {
+    width: 38px; height: 38px; flex: none; border-radius: 12px;
+    display: flex; align-items: center; justify-content: center; font-size: 16px;
+    background: var(--surface2); color: var(--faint);
+  }
+  .aglyph.live { background: var(--coral-soft); color: var(--coral); animation: pulse 1.6s infinite; }
+  .aglyph.cron { background: rgba(100,168,255,.12); color: var(--blue); }
+  .aglyph.evt { background: rgba(255,214,10,.1); color: var(--amber); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+  .ameta { flex: 1; min-width: 0; }
+  .aname { font-size: 15px; font-weight: 650; }
+  .atrig {
+    margin-top: 3px; font-size: 11px; color: var(--faint);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .astate { flex: none; text-align: right; }
+  .statepill { font-size: 10px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase; padding: 3px 8px; border-radius: 6px; }
+  .statepill.running { background: var(--coral-soft); color: var(--coral); }
+  .statepill.idle { background: var(--surface2); color: var(--muted); }
+  .statepill.paused { background: rgba(255,214,10,.12); color: var(--amber); }
+  .statepill.waiting { background: rgba(100,168,255,.12); color: var(--blue); }
+  .ainfo { font-size: 10.5px; color: var(--faint); margin-top: 5px; font-variant-numeric: tabular-nums; }
+
+  .ctrl {
+    width: 32px; height: 32px; flex: none; border-radius: 50%;
+    border: 1px solid var(--border); background: var(--surface2);
+    color: var(--muted); font-size: 12px;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  /* runs */
+  .run { display: flex; align-items: center; gap: 11px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .card .run:last-child { border-bottom: none; }
+  .rstate { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .rstate.running { background: var(--coral); box-shadow: 0 0 8px var(--coral); animation: pulse 1.6s infinite; }
+  .rstate.done { background: var(--green); }
+  .rstate.failed { background: var(--red); }
+  .rmeta { flex: 1; min-width: 0; }
+  .rname { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rsub { font-size: 11px; color: var(--faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .rtok { flex: none; font-size: 11px; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  .tabbar { position: absolute; bottom: 0; left: 0; right: 0; z-index: 40; height: 92px; padding: 10px 10px 28px; background: rgba(14,16,20,.85); backdrop-filter: blur(20px); border-top: 1px solid var(--border); display: flex; }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--faint); font-size: 10px; font-weight: 650; position: relative; }
+  .tab .ticon { font-size: 22px; line-height: 1; }
+  .tab.active { color: var(--coral); }
+  .tab .nbadge { position: absolute; top: -4px; right: 24%; background: var(--red); color: #fff; font-size: 10px; font-weight: 800; min-width: 17px; height: 17px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #fff; opacity: .35; z-index: 60; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span>9:41</span><span class="icons">●●●● <span>􀙇</span> ▮▮▮▯</span></div>
+
+  <header>
+    <div class="apptitle">Flock</div>
+    <div class="hubpill"><span class="dot"></span>:8787 · 2 live</div>
+  </header>
+
+  <div class="scroll">
+    <div class="sectionlabel">Automations <span class="proj">Cassandra-Finance/.flock</span></div>
+    <div class="card">
+      <div class="auto">
+        <div class="aglyph live">♥</div>
+        <div class="ameta">
+          <div class="aname">arm-watch</div>
+          <div class="atrig">heartbeat · every 300s · gpt-5.3-codex</div>
+        </div>
+        <div class="astate">
+          <span class="statepill running">running</span>
+          <div class="ainfo">fired 4m ago · 18.2k tok</div>
+        </div>
+        <div class="ctrl">⏸</div>
+      </div>
+      <div class="auto">
+        <div class="aglyph cron">◷</div>
+        <div class="ameta">
+          <div class="aname">earnings-watch</div>
+          <div class="atrig">cron · 0 9 * * 1-5</div>
+        </div>
+        <div class="astate">
+          <span class="statepill idle">idle</span>
+          <div class="ainfo">next 9:00 AM tomorrow</div>
+        </div>
+        <div class="ctrl">▶</div>
+      </div>
+      <div class="auto">
+        <div class="aglyph evt">⚡︎</div>
+        <div class="ameta">
+          <div class="aname">approvals-gate</div>
+          <div class="atrig">event · webhook /trade-request</div>
+        </div>
+        <div class="astate">
+          <span class="statepill waiting">waiting</span>
+          <div class="ainfo">last event 12m ago</div>
+        </div>
+        <div class="ctrl">▶</div>
+      </div>
+    </div>
+
+    <div class="sectionlabel">Automations <span class="proj">duck/.flock</span></div>
+    <div class="card">
+      <div class="auto">
+        <div class="aglyph cron">◷</div>
+        <div class="ameta">
+          <div class="aname">release-watch</div>
+          <div class="atrig">cron · 0 */6 * * *</div>
+        </div>
+        <div class="astate">
+          <span class="statepill paused">paused</span>
+          <div class="ainfo">last run failed · 2d ago</div>
+        </div>
+        <div class="ctrl">▶</div>
+      </div>
+    </div>
+
+    <div class="sectionlabel">Recent runs</div>
+    <div class="card">
+      <div class="run">
+        <div class="rstate running"></div>
+        <div class="rmeta">
+          <div class="rname">arm-watch · scanning datacenter capex notes</div>
+          <div class="rsub">running 4m · workspace-write</div>
+        </div>
+        <div class="rtok">18.2k</div>
+      </div>
+      <div class="run">
+        <div class="rstate done"></div>
+        <div class="rmeta">
+          <div class="rname">approvals-gate · queued NVDA trim for approval</div>
+          <div class="rsub">done · 12m ago · 1m 42s</div>
+        </div>
+        <div class="rtok">6.4k</div>
+      </div>
+      <div class="run">
+        <div class="rstate done"></div>
+        <div class="rmeta">
+          <div class="rname">earnings-watch · pre-market scan, 2 flags</div>
+          <div class="rsub">done · 9:02 AM · 4m 10s</div>
+        </div>
+        <div class="rtok">31.7k</div>
+      </div>
+      <div class="run">
+        <div class="rstate failed"></div>
+        <div class="rmeta">
+          <div class="rname">release-watch · gh api rate-limited</div>
+          <div class="rsub">failed · 2d ago · retried 3×</div>
+        </div>
+        <div class="rtok">2.1k</div>
+      </div>
+    </div>
+  </div>
+
+  <nav class="tabbar">
+    <a class="tab" href="01-sessions.html"><span class="ticon">🗂</span>Sessions</a>
+    <a class="tab" href="03-trades.html"><span class="ticon">⇄</span>Trades<span class="nbadge">3</span></a>
+    <a class="tab" href="04-portfolio.html"><span class="ticon">◔</span>Portfolio</a>
+    <a class="tab active" href="05-flock.html"><span class="ticon">𓅮</span>Flock</a>
+  </nav>
+  <div class="homebar"></div>
+</div>
+</body>
+</html>

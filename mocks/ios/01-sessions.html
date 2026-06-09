@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>duck · Sessions</title>
+<style>
+  :root {
+    --bg: #08090b;
+    --screen: #0e1014;
+    --surface: #161a20;
+    --surface2: #1d222a;
+    --border: rgba(255,255,255,.07);
+    --text: #eef0f2;
+    --muted: #878e99;
+    --faint: #5a6069;
+    --coral: #e8694a;
+    --coral-soft: rgba(232,105,74,.14);
+    --green: #30d158;
+    --red: #ff453a;
+    --amber: #ffd60a;
+    --blue: #64a8ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #1a1410 0%, var(--bg) 55%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--text);
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px;
+  }
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--screen);
+    border-radius: 54px;
+    border: 1px solid #2a2e35;
+    box-shadow: 0 0 0 11px #16181c, 0 0 0 12.5px #3a3e46, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  .island {
+    position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+    width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 50;
+  }
+  .statusbar {
+    height: 59px; flex: none;
+    display: flex; align-items: flex-end; justify-content: space-between;
+    padding: 0 32px 8px;
+    font-size: 15px; font-weight: 600;
+  }
+  .statusbar .icons { display: flex; gap: 7px; align-items: center; font-size: 13px; letter-spacing: -.5px; }
+
+  /* ---------- header ---------- */
+  header { padding: 10px 20px 14px; flex: none; }
+  .toprow { display: flex; align-items: center; justify-content: space-between; }
+  .apptitle { font-size: 34px; font-weight: 800; letter-spacing: -.8px; display: flex; align-items: center; gap: 10px; }
+  .apptitle .duckmark { font-size: 26px; }
+  .hubpill {
+    display: flex; align-items: center; gap: 7px;
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 7px 12px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; color: var(--muted);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .subline { margin-top: 6px; font-size: 13px; color: var(--faint); font-weight: 500; }
+  .search {
+    margin-top: 14px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 14px;
+    color: var(--faint); font-size: 15px;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  /* ---------- list ---------- */
+  .scroll { flex: 1; overflow-y: auto; padding: 4px 16px 120px; }
+  .sectionlabel {
+    font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase;
+    color: var(--faint); padding: 16px 6px 8px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 18px; overflow: hidden;
+  }
+  a.row { text-decoration: none; color: inherit; }
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 14px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .card .row:last-child { border-bottom: none; }
+  .glyph {
+    width: 38px; height: 38px; flex: none;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px;
+    background: var(--surface2); color: var(--faint);
+  }
+  .glyph.working { background: var(--coral-soft); color: var(--coral); animation: pulse 1.6s ease-in-out infinite; }
+  .glyph.loop { background: rgba(100,168,255,.12); color: var(--blue); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+  .meta { flex: 1; min-width: 0; }
+  .name { font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 7px; }
+  .badge {
+    font-size: 9.5px; font-weight: 800; letter-spacing: .6px;
+    padding: 2.5px 7px; border-radius: 6px; text-transform: uppercase;
+  }
+  .badge.attached { background: rgba(48,209,88,.15); color: var(--green); }
+  .badge.loop { background: rgba(100,168,255,.13); color: var(--blue); }
+  .task {
+    margin-top: 3px; font-size: 13px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .path {
+    margin-top: 3px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px; color: var(--faint);
+  }
+  .right { flex: none; text-align: right; }
+  .ago { font-size: 12px; color: var(--faint); font-weight: 600; }
+  .chev { color: var(--faint); font-size: 14px; margin-top: 6px; }
+
+  /* swipe-revealed actions on one row, to suggest the gesture */
+  .row.swiped { transform: translateX(-132px); transition: transform .25s; background: var(--surface); z-index: 2; }
+  .rowwrap { position: relative; overflow: hidden; }
+  .rowactions {
+    position: absolute; right: 0; top: 0; bottom: 0; width: 132px;
+    display: flex; z-index: 1;
+  }
+  .rowactions button {
+    flex: 1; border: none; color: #fff; font-size: 11px; font-weight: 700;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  }
+  .rowactions .rename { background: #3a4654; }
+  .rowactions .kill { background: var(--red); }
+
+  /* ---------- FAB ---------- */
+  .fab {
+    position: absolute; right: 20px; bottom: 108px; z-index: 30;
+    width: 56px; height: 56px; border-radius: 50%;
+    background: var(--coral); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; font-weight: 300;
+    box-shadow: 0 8px 24px rgba(232,105,74,.45);
+  }
+
+  /* ---------- tab bar ---------- */
+  .tabbar {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 40;
+    height: 92px; padding: 10px 10px 28px;
+    background: rgba(14,16,20,.85); backdrop-filter: blur(20px);
+    border-top: 1px solid var(--border);
+    display: flex;
+  }
+  .tab {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
+    text-decoration: none; color: var(--faint); font-size: 10px; font-weight: 650;
+    position: relative;
+  }
+  .tab .ticon { font-size: 22px; line-height: 1; }
+  .tab.active { color: var(--coral); }
+  .tab .nbadge {
+    position: absolute; top: -4px; right: 24%;
+    background: var(--red); color: #fff;
+    font-size: 10px; font-weight: 800;
+    min-width: 17px; height: 17px; border-radius: 9px;
+    display: flex; align-items: center; justify-content: center; padding: 0 4px;
+  }
+  .homebar {
+    position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+    width: 140px; height: 5px; border-radius: 3px; background: #fff; opacity: .35; z-index: 60;
+  }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span>9:41</span><span class="icons">●●●● <span>􀙇</span> ▮▮▮▯</span></div>
+
+  <header>
+    <div class="toprow">
+      <div class="apptitle"><span class="duckmark">🦆</span>duck</div>
+      <div class="hubpill"><span class="dot"></span>duck.local</div>
+    </div>
+    <div class="subline">6 sessions on hub · 2 working · 1 looped</div>
+    <div class="search">⌕&nbsp; Search sessions</div>
+  </header>
+
+  <div class="scroll">
+    <div class="sectionlabel">⟳ Looped</div>
+    <div class="card">
+      <a class="row" href="02-chat.html">
+        <div class="glyph loop">∞</div>
+        <div class="meta">
+          <div class="name">babysit-prs <span class="badge loop">loop</span></div>
+          <div class="task">⠂ Watching CI for PR #142 — retry queued</div>
+          <div class="path">~/dev/duck</div>
+        </div>
+        <div class="right"><div class="ago">4m</div><div class="chev">›</div></div>
+      </a>
+    </div>
+
+    <div class="sectionlabel">Sessions</div>
+    <div class="card">
+      <a class="row" href="02-chat.html">
+        <div class="glyph working">✳</div>
+        <div class="meta">
+          <div class="name">duck <span class="badge attached">attached</span></div>
+          <div class="task">✳ Refactoring sync conflict flow</div>
+          <div class="path">~/dev/duck · 3 windows</div>
+        </div>
+        <div class="right"><div class="ago">now</div><div class="chev">›</div></div>
+      </a>
+      <a class="row" href="02-chat.html">
+        <div class="glyph working">✳</div>
+        <div class="meta">
+          <div class="name">flock</div>
+          <div class="task">✳ Adding WebSocket replay buffer tests</div>
+          <div class="path">~/cassandra-stack/flock</div>
+        </div>
+        <div class="right"><div class="ago">2m</div><div class="chev">›</div></div>
+      </a>
+
+      <!-- one row shown mid-swipe to suggest the gesture -->
+      <div class="rowwrap">
+        <div class="rowactions">
+          <button class="rename">✎<br>Rename</button>
+          <button class="kill">⌫<br>Kill</button>
+        </div>
+        <a class="row swiped" href="02-chat.html">
+          <div class="glyph">⠿</div>
+          <div class="meta">
+            <div class="name">cassandra-portal</div>
+            <div class="task">Schwab OAuth callback wired, idle</div>
+            <div class="path">~/cassandra-stack/cassandra-portal</div>
+          </div>
+          <div class="right"><div class="ago">1h</div><div class="chev">›</div></div>
+        </a>
+      </div>
+
+      <a class="row" href="02-chat.html">
+        <div class="glyph">⠿</div>
+        <div class="meta">
+          <div class="name">media-mcp</div>
+          <div class="task">GPU transcription batch finished</div>
+          <div class="path">~/cassandra-stack/cassandra-media-mcp</div>
+        </div>
+        <div class="right"><div class="ago">3h</div><div class="chev">›</div></div>
+      </a>
+      <a class="row" href="02-chat.html">
+        <div class="glyph">⠿</div>
+        <div class="meta">
+          <div class="name">scratch</div>
+          <div class="task">—</div>
+          <div class="path">~/tmp/scratch</div>
+        </div>
+        <div class="right"><div class="ago">2d</div><div class="chev">›</div></div>
+      </a>
+    </div>
+  </div>
+
+  <div class="fab">＋</div>
+
+  <nav class="tabbar">
+    <a class="tab active" href="01-sessions.html"><span class="ticon">🗂</span>Sessions</a>
+    <a class="tab" href="03-trades.html"><span class="ticon">⇄</span>Trades<span class="nbadge">3</span></a>
+    <a class="tab" href="04-portfolio.html"><span class="ticon">◔</span>Portfolio</a>
+    <a class="tab" href="05-flock.html"><span class="ticon">𓅮</span>Flock</a>
+  </nav>
+  <div class="homebar"></div>
+</div>
+</body>
+</html>
