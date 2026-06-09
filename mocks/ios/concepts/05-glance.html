@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>duck · glance</title>
+<!--
+  CONCEPT 05 — "GLANCE": widget-grid control room. Every tile maps to an audited data source.
+
+  UI MODULE -> DATA SOURCE MAP
+  - Portfolio hero tile / expanded chart .......... BROKER: account (total value, cash, buying power) + positions; chart series synthesized from BROKER account history (1D intraday via MARKET DATA intraday_prices rollup)
+  - Day movers tile / all-positions detail ........ BROKER: positions (qty/market_value/average_price) + per-symbol quote (net_change_pct); per-position day P/L (SOON: currentDayProfitLoss)
+  - Approvals tile / swipe deck ................... AGENTS (flock hub): trade proposals with rationale + approve/deny decisions; BROKER: place/preview orders via human approval gate
+  - Flock status tile / agents detail ............. AGENTS: automation status (heartbeat/cron, running/paused) + run events
+  - Next earnings tile / calendar detail .......... EVENTS: earnings_calendar (date, EPS estimate, prior surprise) + economic_calendar (CPI/FOMC) + treasury_auctions
+  - Sector heatmap tile / detail .................. MARKET CONTEXT: sector_performance + index_performance (SPY/QQQ/IWM) + market_overview (VIX)
+  - Macro tile / detail ........................... MACRO: treasury_rates (2Y/10Y/30Y) + economy_indicators (CPI, PCE, unemployment); MARKET CONTEXT: market_overview (VIX)
+  - News tile / headlines detail .................. NEWS & FILINGS: market_news (per-symbol headlines + snippets + source + timestamp)
+  - Crypto & commodities tile / detail ............ MACRO: commodity/crypto/forex quotes
+  - Realized P/L today tile / fills detail ........ BROKER (SOON): transactions feed (fills/dividends, 60d) + order status
+-->
+<style>
+  :root {
+    --paper: #f3f1ea;
+    --tile: #ffffff;
+    --ink: #181b1f;
+    --mut: #757b84;
+    --faint: #a8adb5;
+    --line: #e7e4da;
+    --up: #0b8a5c;
+    --up-soft: rgba(11,138,92,.10);
+    --dn: #d23c3c;
+    --dn-soft: rgba(210,60,60,.09);
+    --agent: #3b5bdb;
+    --agent-soft: rgba(59,91,219,.09);
+    --gold: #b07c10;
+    --shadow: 0 1px 2px rgba(24,27,31,.05), 0 10px 28px rgba(24,27,31,.06);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1100px 700px at 30% -10%, #23262b 0%, #101113 60%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--ink);
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px;
+    user-select: none;
+  }
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--paper);
+    border-radius: 54px; border: 1px solid #2a2e35;
+    box-shadow: 0 0 0 11px #16181c, 0 0 0 12.5px #3a3e46, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  @media (max-width: 500px), (max-height: 940px) and (max-width: 940px) {
+    body { padding: 0; }
+    .phone {
+      width: 100vw; height: 100dvh;
+      border-radius: 0; border: none; box-shadow: none;
+    }
+    .island { display: none; }
+    .statusbar { height: calc(env(safe-area-inset-top, 14px) + 14px) !important; }
+    .statusbar span { display: none; }
+    .homebar { display: none; }
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 90; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; z-index: 85; color: var(--ink); }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #16181c; opacity: .28; z-index: 95; pointer-events: none; }
+
+  .main { flex: 1; position: relative; min-height: 0; display: flex; flex-direction: column; }
+
+  /* ============ header ============ */
+  .ghead { flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 6px 20px 12px; }
+  .wm { font-family: ui-serif, "New York", Georgia, serif; font-style: italic; font-weight: 700; font-size: 32px; letter-spacing: -.5px; line-height: 1; }
+  .wm .duck { font-style: normal; font-size: 15px; vertical-align: 6px; margin-right: 2px; }
+  .wdate { font-size: 12.5px; color: var(--mut); font-weight: 600; margin-top: 5px; }
+  .hright { display: flex; align-items: center; gap: 8px; }
+  .hubpill { display: flex; align-items: center; gap: 6px; background: var(--tile); border: 1px solid var(--line); padding: 6px 11px; border-radius: 999px; font-size: 11.5px; font-weight: 650; color: var(--mut); box-shadow: var(--shadow); }
+  .hdot { width: 7px; height: 7px; border-radius: 50%; background: var(--up); box-shadow: 0 0 7px rgba(11,138,92,.8); }
+  #editbtn {
+    border: 1px solid var(--line); background: var(--tile); color: var(--mut);
+    font-family: inherit; font-size: 12px; font-weight: 750; padding: 7px 13px;
+    border-radius: 999px; cursor: pointer; box-shadow: var(--shadow);
+    transition: background .2s, color .2s, transform .12s;
+  }
+  #editbtn:active { transform: scale(.94); }
+  #editbtn.done { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+  /* ============ grid ============ */
+  .gridscroll { flex: 1; overflow-y: auto; min-height: 0; overscroll-behavior: contain; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 2px 16px 8px; }
+  .tile {
+    position: relative; border-radius: 24px; min-height: 148px;
+    background: var(--tile); border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    cursor: pointer; touch-action: none;
+    animation: tilein .45s cubic-bezier(.32,.72,.27,1) backwards;
+  }
+  @keyframes tilein { from { opacity: 0; transform: translateY(14px) scale(.97); } }
+  .tile.w2 { grid-column: span 2; min-height: 184px; }
+  .tin { padding: 14px 15px 13px; height: 100%; display: flex; flex-direction: column; border-radius: 24px; }
+  .tile:active .tin { transform: scale(.985); transition: transform .15s; }
+  .tlabel { font-size: 10px; font-weight: 800; letter-spacing: 1.1px; text-transform: uppercase; color: var(--faint); display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .tlabel .cnt { background: var(--dn); color: #fff; font-size: 10px; min-width: 17px; height: 17px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; letter-spacing: 0; }
+  .num { font-variant-numeric: tabular-nums; }
+  .up { color: var(--up); } .dn { color: var(--dn); }
+
+  /* jiggle edit mode */
+  @keyframes jig { 0% { transform: rotate(-1.3deg); } 100% { transform: rotate(1.3deg); } }
+  .grid.editing .tile { cursor: grab; }
+  .grid.editing .tile .tin { animation: jig .27s ease-in-out infinite alternate; }
+  .grid.editing .tile:nth-child(even) .tin { animation-delay: -.135s; }
+  .minus {
+    position: absolute; top: -7px; left: -7px; z-index: 5;
+    width: 25px; height: 25px; border-radius: 50%; border: none;
+    background: #43474e; color: #fff; font-size: 16px; line-height: 1;
+    display: none; align-items: center; justify-content: center;
+    cursor: pointer; box-shadow: 0 3px 8px rgba(0,0,0,.3);
+    font-family: inherit;
+  }
+  .grid.editing .minus { display: flex; }
+  .tile.lift { z-index: 40; box-shadow: 0 18px 44px rgba(24,27,31,.28); cursor: grabbing; }
+  .tile.lift .tin { animation: none !important; }
+  .tile.hideout { transition: transform .22s ease, opacity .22s ease; transform: scale(.5); opacity: 0; }
+  .hiddenrow { display: none; margin: 6px 16px 0; }
+  .grid-wrap.editing .hiddenrow.has { display: block; }
+  .hiddenrow button {
+    width: 100%; border: 1.5px dashed var(--faint); background: none; color: var(--mut);
+    border-radius: 18px; padding: 13px; font-family: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer;
+  }
+  .gfoot { text-align: center; font-size: 10.5px; color: var(--faint); font-weight: 600; padding: 16px 0 calc(28px + env(safe-area-inset-bottom, 0px)); }
+
+  /* ---- hero tile ---- */
+  .bigval { font-size: 40px; font-weight: 800; letter-spacing: -1.4px; font-variant-numeric: tabular-nums; margin-top: 8px; line-height: 1.05; }
+  .bigchg { font-size: 14px; font-weight: 750; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .bigchg span { color: var(--faint); font-weight: 600; font-size: 12px; }
+  .hspark { display: block; width: 100%; height: 56px; margin-top: auto; }
+
+  /* ---- movers tile ---- */
+  .mrow { display: flex; align-items: baseline; justify-content: space-between; margin-top: 11px; }
+  .mrow .t { font-size: 17px; font-weight: 800; letter-spacing: -.3px; }
+  .mrow .p { font-size: 15px; font-weight: 750; font-variant-numeric: tabular-nums; }
+  .msub { font-size: 10.5px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 1px; }
+
+  /* ---- approvals tile ---- */
+  .aptop { margin-top: 10px; display: flex; align-items: baseline; gap: 7px; }
+  .aptop .t { font-size: 19px; font-weight: 800; letter-spacing: -.4px; }
+  .apside { font-size: 9.5px; font-weight: 900; letter-spacing: 1px; padding: 2.5px 7px; border-radius: 6px; }
+  .apside.sell { background: var(--dn-soft); color: var(--dn); }
+  .apside.buy { background: var(--up-soft); color: var(--up); }
+  .apline { font-size: 11.5px; color: var(--mut); font-weight: 600; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .apagent { font-size: 10px; color: var(--agent); font-weight: 750; margin-top: 4px; }
+  .qarow { display: flex; gap: 7px; margin-top: auto; }
+  .qa { flex: 1; border: none; border-radius: 11px; padding: 8px 0; font-family: inherit; font-size: 12px; font-weight: 800; cursor: pointer; transition: transform .12s; }
+  .qa:active { transform: scale(.94); }
+  .qa.ok { background: var(--ink); color: var(--paper); }
+  .qa.no { background: #eceae2; color: var(--mut); }
+  .apclear { margin: auto 0; text-align: center; color: var(--faint); font-size: 12px; font-weight: 650; }
+  .apclear .e { font-size: 26px; display: block; margin-bottom: 4px; }
+
+  /* ---- flock tile ---- */
+  .frow { display: flex; align-items: center; gap: 7px; margin-top: 9px; font-size: 12px; font-weight: 700; }
+  .fdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .fdot.live { background: var(--up); box-shadow: 0 0 6px rgba(11,138,92,.7); animation: fpulse 1.8s infinite; }
+  .fdot.wait { background: var(--agent); }
+  .fdot.idle { background: var(--faint); }
+  @keyframes fpulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+  .frow .fs { margin-left: auto; font-size: 9.5px; font-weight: 800; letter-spacing: .6px; color: var(--faint); text-transform: uppercase; }
+  .flast { margin-top: auto; font-size: 10.5px; line-height: 1.45; color: var(--mut); border-top: 1px solid var(--line); padding-top: 8px; }
+  .flast b { color: var(--agent); }
+
+  /* ---- earnings tile ---- */
+  .ebig { display: flex; align-items: baseline; gap: 8px; margin-top: 12px; }
+  .ebig .t { font-size: 26px; font-weight: 800; letter-spacing: -.6px; }
+  .ebig .in { font-size: 15px; font-weight: 800; color: var(--gold); }
+  .esub { font-size: 11px; color: var(--mut); font-weight: 600; margin-top: 4px; line-height: 1.5; }
+  .enext { margin-top: auto; font-size: 10.5px; color: var(--faint); font-weight: 650; border-top: 1px solid var(--line); padding-top: 8px; font-variant-numeric: tabular-nums; }
+
+  /* ---- sector tile ---- */
+  .heat { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-top: 11px; flex: 1; }
+  .hc { border-radius: 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-height: 30px; }
+  .hc .n { font-size: 9px; font-weight: 800; letter-spacing: .2px; }
+  .hc .v { font-size: 9px; font-weight: 700; font-variant-numeric: tabular-nums; opacity: .75; }
+
+  /* ---- macro tile ---- */
+  .y10 { display: flex; align-items: baseline; gap: 7px; margin-top: 11px; }
+  .y10 .v { font-size: 27px; font-weight: 800; letter-spacing: -.6px; font-variant-numeric: tabular-nums; }
+  .y10 .d { font-size: 12px; font-weight: 750; }
+  .mline { font-size: 11px; color: var(--mut); font-weight: 650; margin-top: 5px; font-variant-numeric: tabular-nums; }
+  .mline b { color: var(--ink); }
+
+  /* ---- news tile ---- */
+  .ndots { display: flex; gap: 4px; }
+  .ndots i { width: 4.5px; height: 4.5px; border-radius: 50%; background: var(--line); }
+  .ndots i.on { background: var(--mut); }
+  .nhead { font-size: 12.5px; font-weight: 700; line-height: 1.42; margin-top: 10px; transition: opacity .25s; }
+  .nsrc { margin-top: auto; font-size: 10px; color: var(--faint); font-weight: 700; display: flex; gap: 6px; align-items: center; }
+  .nsrc .tk { color: var(--agent); }
+
+  /* ---- crypto tile ---- */
+  .crow { display: flex; align-items: baseline; justify-content: space-between; margin-top: 8px; font-variant-numeric: tabular-nums; }
+  .crow .n { font-size: 11.5px; font-weight: 750; color: var(--mut); }
+  .crow .v { font-size: 12px; font-weight: 750; }
+  .crow .c { font-size: 10.5px; font-weight: 750; width: 44px; text-align: right; }
+
+  /* ---- realized tile ---- */
+  .rzval { font-size: 27px; font-weight: 800; letter-spacing: -.7px; font-variant-numeric: tabular-nums; margin-top: 12px; }
+  .rzsub { font-size: 11px; color: var(--mut); font-weight: 650; margin-top: 4px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+  .rzfoot { margin-top: auto; font-size: 10.5px; color: var(--faint); font-weight: 650; border-top: 1px solid var(--line); padding-top: 8px; }
+
+  /* ============ detail overlay (FLIP expand) ============ */
+  .detail {
+    position: absolute; inset: 0; z-index: 60;
+    background: var(--paper);
+    display: none; flex-direction: column;
+    transform-origin: 0 0;
+    transition: transform .46s cubic-bezier(.3,.72,.25,1), border-radius .46s cubic-bezier(.3,.72,.25,1);
+    border-radius: 24px; overflow: hidden;
+    will-change: transform;
+  }
+  .detail.show { display: flex; }
+  .detail.open { border-radius: 0; }
+  .dhead { flex: none; display: flex; align-items: center; gap: 4px; padding: 8px 12px 10px; }
+  .dback { border: none; background: none; color: var(--ink); font-size: 30px; line-height: 1; padding: 2px 10px; cursor: pointer; font-family: inherit; }
+  .dtitle { font-size: 19px; font-weight: 800; letter-spacing: -.3px; }
+  .dsub { margin-left: auto; font-size: 11px; color: var(--faint); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .dbody { flex: 1; overflow-y: auto; min-height: 0; padding: 0 18px calc(40px + env(safe-area-inset-bottom, 0px)); opacity: 0; transition: opacity .25s ease .18s; }
+  .detail.open .dbody { opacity: 1; }
+  .dcard { background: var(--tile); border: 1px solid var(--line); border-radius: 20px; box-shadow: var(--shadow); overflow: hidden; }
+  .dlabel { font-size: 10.5px; font-weight: 800; letter-spacing: 1.1px; text-transform: uppercase; color: var(--faint); padding: 18px 4px 8px; }
+
+  /* portfolio detail */
+  .pval { font-size: 44px; font-weight: 800; letter-spacing: -1.6px; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  .pchg { font-size: 15px; font-weight: 750; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .pchg span { color: var(--faint); font-weight: 600; font-size: 12.5px; }
+  .chartwrap { position: relative; margin: 14px -6px 0; touch-action: none; }
+  .chartwrap svg { display: block; width: 100%; height: 224px; }
+  .scrublabel {
+    position: absolute; top: -6px; transform: translateX(-50%);
+    background: var(--ink); color: var(--paper);
+    font-size: 11px; font-weight: 750; font-variant-numeric: tabular-nums;
+    padding: 4px 9px; border-radius: 8px; white-space: nowrap;
+    opacity: 0; pointer-events: none; transition: opacity .15s;
+  }
+  .scrublabel.on { opacity: 1; }
+  .rpills { display: flex; gap: 4px; margin-top: 10px; }
+  .rpills button {
+    flex: 1; border: none; background: none; color: var(--faint);
+    font-size: 11.5px; font-weight: 800; padding: 7px 0; border-radius: 9px;
+    font-family: inherit; cursor: pointer; transition: background .15s, color .15s;
+  }
+  .rpills button.on { background: var(--ink); color: var(--paper); }
+  .statgrid { display: flex; gap: 9px; margin-top: 18px; }
+  .stat { flex: 1; background: var(--tile); border: 1px solid var(--line); border-radius: 16px; padding: 11px 12px; box-shadow: var(--shadow); }
+  .stat .k { font-size: 9.5px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--faint); }
+  .stat .v { font-size: 14.5px; font-weight: 750; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  /* position rows */
+  .prow { display: flex; align-items: center; gap: 12px; padding: 13px 15px; border-bottom: 1px solid var(--line); }
+  .dcard .prow:last-child { border-bottom: none; }
+  .prow .sym { width: 58px; flex: none; }
+  .prow .sym .t { font-size: 15px; font-weight: 800; letter-spacing: -.2px; }
+  .prow .sym .q { font-size: 10px; color: var(--faint); font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .pbar { flex: 1; height: 5px; border-radius: 3px; background: #f0eee6; position: relative; overflow: hidden; }
+  .pbar i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+  .prow .nums { flex: none; text-align: right; width: 116px; }
+  .prow .mv { font-size: 14px; font-weight: 750; font-variant-numeric: tabular-nums; }
+  .prow .pl { font-size: 11px; font-weight: 750; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  /* generic detail rows */
+  .drow { display: flex; align-items: center; gap: 12px; padding: 13px 15px; border-bottom: 1px solid var(--line); }
+  .dcard .drow:last-child { border-bottom: none; }
+  .drow .ic { width: 36px; height: 36px; flex: none; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 15px; background: #f2f0e8; }
+  .drow .bd { flex: 1; min-width: 0; }
+  .drow .ti { font-size: 13.5px; font-weight: 700; line-height: 1.35; }
+  .drow .su { font-size: 11px; color: var(--mut); margin-top: 2px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+  .drow .rt { flex: none; text-align: right; font-variant-numeric: tabular-nums; }
+  .drow .rv { font-size: 13.5px; font-weight: 750; }
+  .drow .rs { font-size: 10px; color: var(--faint); font-weight: 650; margin-top: 2px; }
+
+  /* news detail */
+  .nitem { padding: 14px 15px; border-bottom: 1px solid var(--line); }
+  .dcard .nitem:last-child { border-bottom: none; }
+  .nitem .h { font-size: 13.5px; font-weight: 750; line-height: 1.4; }
+  .nitem .s { font-size: 11.5px; color: var(--mut); line-height: 1.5; margin-top: 5px; }
+  .nitem .m { font-size: 10px; color: var(--faint); font-weight: 750; margin-top: 7px; display: flex; gap: 8px; }
+  .nitem .m .tk { color: var(--agent); }
+
+  /* approvals deck */
+  .deckwrap { position: relative; height: 430px; margin-top: 6px; }
+  .pcard {
+    position: absolute; inset: 0;
+    background: var(--tile); border: 1px solid var(--line); border-radius: 24px;
+    box-shadow: var(--shadow); padding: 18px 18px 16px;
+    display: flex; flex-direction: column;
+    touch-action: none; cursor: grab; overflow: hidden;
+    transition: transform .3s cubic-bezier(.32,.72,.27,1), opacity .3s;
+  }
+  .pcard.dragging { transition: none; cursor: grabbing; }
+  .pcard.b1 { transform: scale(.95) translateY(14px); opacity: .75; z-index: 2; }
+  .pcard.b2 { transform: scale(.90) translateY(28px); opacity: .45; z-index: 1; }
+  .pcard.topc { z-index: 3; }
+  .pcard.fly { transition: transform .4s ease, opacity .35s; opacity: 0; }
+  .pcsym { font-size: 36px; font-weight: 850; letter-spacing: -1.2px; margin-top: 10px; }
+  .pcorder { margin-top: 8px; font-size: 16px; font-weight: 750; font-variant-numeric: tabular-nums; }
+  .pcorder span { color: var(--faint); font-weight: 600; font-size: 13px; }
+  .pcest { font-size: 11.5px; color: var(--mut); font-weight: 650; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .pcwhy { margin-top: 13px; flex: 1; font-size: 12.5px; line-height: 1.55; color: #4c5158; border-left: 3px solid var(--agent); padding-left: 12px; overflow: hidden; }
+  .pcwhy .who { display: block; font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: var(--agent); margin-bottom: 4px; }
+  .pcexp { font-size: 11px; color: var(--faint); font-weight: 650; text-align: center; margin-top: 10px; }
+  .pcexp b { color: var(--gold); }
+  .stamp { position: absolute; top: 64px; font-size: 28px; font-weight: 900; letter-spacing: 2px; padding: 5px 16px; border-radius: 10px; border: 4px solid; opacity: 0; transform: rotate(-12deg); pointer-events: none; }
+  .stamp.yes { left: 18px; color: var(--up); border-color: var(--up); }
+  .stamp.no { right: 18px; color: var(--dn); border-color: var(--dn); transform: rotate(12deg); }
+  .deckbtns { display: flex; justify-content: center; gap: 22px; margin-top: 14px; }
+  .deckbtns button { width: 58px; height: 58px; border-radius: 50%; border: 1px solid var(--line); background: var(--tile); font-size: 23px; cursor: pointer; font-family: inherit; box-shadow: var(--shadow); transition: transform .12s; }
+  .deckbtns button:active { transform: scale(.9); }
+  .deckbtns .y { color: var(--up); } .deckbtns .n { color: var(--dn); }
+  .deckhint { text-align: center; font-size: 10.5px; color: var(--faint); font-weight: 650; margin-top: 10px; }
+  .deckempty { height: 320px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--faint); font-weight: 700; font-size: 14px; }
+  .deckempty .e { font-size: 44px; }
+
+  /* heat detail cells */
+  .heatbig { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .heatbig .hc { min-height: 62px; border-radius: 14px; }
+  .heatbig .hc .n { font-size: 11.5px; }
+  .heatbig .hc .v { font-size: 11px; }
+
+  /* fx + toast */
+  #fx { position: absolute; inset: 0; z-index: 80; pointer-events: none; overflow: hidden; }
+  .cf { position: absolute; width: 7px; height: 10px; border-radius: 2px; }
+  .toasts { position: absolute; top: 64px; left: 0; right: 0; z-index: 75; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+  .toast {
+    background: rgba(24,27,31,.94); color: var(--paper);
+    border-radius: 999px; padding: 10px 18px;
+    font-size: 12.5px; font-weight: 700;
+    box-shadow: 0 12px 32px rgba(0,0,0,.3);
+    animation: toastin .32s cubic-bezier(.32,.72,.27,1);
+    max-width: 86%; text-align: center;
+  }
+  @keyframes toastin { from { opacity: 0; transform: translateY(-14px) scale(.94); } }
+  .toast.out { transition: opacity .25s, transform .25s; opacity: 0; transform: translateY(-10px); }
+
+  .glowpulse { animation: glowp 1.1s ease; }
+  @keyframes glowp { 0% { box-shadow: var(--shadow); } 30% { box-shadow: 0 0 0 3px rgba(11,138,92,.35), 0 10px 30px rgba(11,138,92,.25); } 100% { box-shadow: var(--shadow); } }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span id="clock">9:41</span><span class="icons">●●●●&nbsp; ⌁ &nbsp;▮▮▮▯</span></div>
+
+  <div class="main">
+    <header class="ghead">
+      <div>
+        <div class="wm"><span class="duck">🦆</span>glance</div>
+        <div class="wdate">Tuesday, June 9 · market open</div>
+      </div>
+      <div class="hright">
+        <div class="hubpill"><span class="hdot"></span>duck.local</div>
+        <button id="editbtn">Edit</button>
+      </div>
+    </header>
+
+    <div class="gridscroll grid-wrap" id="gridwrap">
+      <div class="grid" id="grid"></div>
+      <div class="hiddenrow" id="hiddenrow"><button id="restorebtn"></button></div>
+      <div class="gfoot">hub duck.local · 3 agents · synced 9:41:07 AM · long-press a tile to edit</div>
+    </div>
+
+    <div class="detail" id="detail"></div>
+    <div id="fx"></div>
+    <div class="toasts" id="toasts"></div>
+  </div>
+
+  <div class="homebar"></div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+
+/* ================= clock ================= */
+function tickClock() {
+  const d = new Date();
+  const h = d.getHours() % 12 || 12;
+  $("#clock").textContent = h + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+tickClock(); setInterval(tickClock, 10000);
+
+/* ================= formatting ================= */
+const fmt$ = n => "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fsign = n => (n >= 0 ? "+" : "−") + fmt$(n);
+const fpct = n => (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(2) + "%";
+const cls = n => n >= 0 ? "up" : "dn";
+const arrow = n => n >= 0 ? "▲" : "▼";
+
+/* ================= data (BROKER: positions + account) ================= */
+const TOTAL = 284512.40, DAY = 3214.88, DAYPCT = 1.14, PREV = TOTAL - DAY; // 281,297.52
+const CASH = 48210, BP = 96420;
+const POS = [
+  { t: "NVDA",  q: 120, px: 682.92, mv: 81950.40, avg: 612.40, day: -0.61, dps: -4.19, upl: 8462.40,  uplPct: 11.5 },
+  { t: "BRK.B", q: 160, px: 437.75, mv: 70040.00, avg: 398.60, day: 0.31,  dps: 1.35,  upl: 6264.00,  uplPct: 9.8 },
+  { t: "MSFT",  q: 80,  px: 477.80, mv: 38224.00, avg: 421.10, day: 0.52,  dps: 2.47,  upl: 4536.00,  uplPct: 13.5 },
+  { t: "AAPL",  q: 145, px: 198.40, mv: 28768.00, avg: 182.40, day: 0.84,  dps: 1.65,  upl: 2320.00,  uplPct: 8.8 },
+  { t: "TLT",   q: 200, px: 86.60,  mv: 17320.00, avg: 94.10,  day: 0.40,  dps: 0.35,  upl: -1500.00, uplPct: -8.0 },
+];
+const BEST = POS.reduce((a, b) => b.day > a.day ? b : a);
+const WORST = POS.reduce((a, b) => b.day < a.day ? b : a);
+
+/* AGENTS: trade proposals via approvals-gate */
+let proposals = [
+  { sym: "NVDA", side: "SELL", qty: 15, px: 684.00, est: 10260.00, agent: "earnings-watch", exp: "4:00 PM",
+    why: "NVDA is 28.8% of the portfolio against your 25% single-name cap, with earnings Thursday and 30-day IV at 58%. Trimming 15sh (~$10.3k) takes you back inside the cap while keeping the full core lot." },
+  { sym: "ARM", side: "BUY", qty: 40, px: 142.80, est: 5712.00, agent: "arm-watch", exp: "4:00 PM",
+    why: "ARM reclaimed its 50-day with RSI at 61; short interest is down to 2.1% of float and the FQ4 transcript shows royalty mix improving. Starter 40sh is 2.0% of the book." },
+  { sym: "TLT", side: "BUY", qty: 50, px: 86.55, est: 4327.50, agent: "earnings-watch", exp: "Thu 4:00 PM",
+    why: "10Y at 4.32% into a likely soft May CPI print tomorrow and FOMC on Jun 17. Adds 50sh against the underwater 94.10 lot; duration stays under 8% of the book." },
+];
+let decided = [
+  { txt: "✓ NVDA sell 10 · filled 9:47 AM", ok: true },
+  { txt: "✕ MSTR buy 10 · yesterday", ok: false },
+];
+
+/* NEWS & FILINGS: market_news */
+const NEWS = [
+  { h: "Nvidia’s Rubin platform shipping to hyperscalers ahead of schedule, Morgan Stanley says", src: "Reuters", t: "8:42 AM", tk: "NVDA",
+    s: "Supply-chain checks point to Rubin rack systems landing at two hyperscalers this month, six weeks early. MS lifts its target to $780, seeing “no digestion period” in AI capex through 2027." },
+  { h: "Treasuries rally as traders position for a cool May CPI ahead of next week’s FOMC", src: "WSJ", t: "9:18 AM", tk: "TLT",
+    s: "The 10-year yield slipped 3bp to 4.32% as swaps priced a 62% chance of a September cut. Tomorrow’s CPI is expected at 2.8% headline, down from 2.9%." },
+  { h: "Apple’s WWDC reveal: on-device agents headline iOS 27 as Siri learns to act across apps", src: "Bloomberg", t: "Yesterday", tk: "AAPL",
+    s: "Apple showed agents that chain actions across apps entirely on-device. Analysts called it the strongest upgrade-cycle argument since the iPhone 12." },
+  { h: "Microsoft signs 1.2GW nuclear PPA to power Azure AI buildout in the Midwest", src: "CNBC", t: "7:05 AM", tk: "MSFT",
+    s: "The 20-year deal with a restarted Illinois plant is Microsoft’s third nuclear agreement, locking in carbon-free baseload for its 2027 datacenter cohort." },
+  { h: "Berkshire’s cash pile tops $360B as Buffett stays patient on “silly” valuations", src: "Barron’s", t: "Yesterday", tk: "BRK.B",
+    s: "The quarterly filing shows net selling for an eighth straight quarter. Bill Stone of Glenview Trust: “the cash is the position.”" },
+];
+
+/* MARKET CONTEXT: sector_performance */
+const SECTORS = [
+  ["Tech", 1.4], ["Comm", 0.9], ["Util", 0.7], ["Disc", 0.6],
+  ["RE", 0.5], ["Fin", 0.4], ["Ind", 0.3], ["Mat", 0.2],
+  ["Stap", -0.1], ["Hlth", -0.2], ["Enrg", -0.8], ["SPY", 1.1],
+];
+
+/* MACRO: commodity/crypto quotes */
+const CRYPTO = [
+  ["BTC", "$118,240", 2.1], ["ETH", "$6,418", 1.4], ["SOL", "$212.40", 3.2],
+  ["Gold", "$3,488", 0.4], ["Silver", "$41.85", 0.9], ["WTI", "$71.20", -1.1],
+  ["NatGas", "$3.14", 2.4], ["DXY", "101.82", -0.3],
+];
+
+/* ================= chart series (BROKER account history) ================= */
+function rng(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const RCFG = {
+  "1D":  { start: PREV,      n: 79,  seed: 7,  vol: 520,   lbl: "today" },
+  "1W":  { start: 286900.00, n: 110, seed: 21, vol: 1100,  lbl: "past week" },
+  "1M":  { start: 272410.00, n: 130, seed: 33, vol: 2400,  lbl: "past month" },
+  "3M":  { start: 263150.00, n: 130, seed: 48, vol: 3600,  lbl: "past 3 months" },
+  "YTD": { start: 251840.00, n: 140, seed: 59, vol: 4600,  lbl: "year to date" },
+  "ALL": { start: 118400.00, n: 160, seed: 64, vol: 15000, lbl: "past 5 years" },
+};
+const SERIES = {};
+for (const k in RCFG) {
+  const c = RCFG[k], r = rng(c.seed), w = [0];
+  for (let i = 1; i < c.n; i++) w.push(w[i - 1] + (r() - 0.5));
+  const w0 = w[0], wn = w[c.n - 1];
+  SERIES[k] = w.map((v, i) => {
+    const t = i / (c.n - 1);
+    const det = v - (w0 + (wn - w0) * t);
+    return c.start + (TOTAL - c.start) * t + det * c.vol;
+  });
+}
+function tlabel(range, t) {
+  if (range === "1D") {
+    const m = 570 + Math.round(t * 390);
+    const h = Math.floor(m / 60), mm = m % 60, h12 = ((h + 11) % 12) + 1;
+    return h12 + ":" + String(mm).padStart(2, "0") + (h >= 12 ? " PM" : " AM");
+  }
+  const spans = { "1W": 7, "1M": 30, "3M": 91, "YTD": 159, "ALL": 1826 };
+  const d = new Date(2026, 5, 9);
+  d.setDate(d.getDate() - Math.round((1 - t) * spans[range]));
+  const mo = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()];
+  return mo + " " + d.getDate() + (range === "ALL" ? " ’" + String(d.getFullYear()).slice(2) : "");
+}
+function pathFrom(series, W, H, pad) {
+  const min = Math.min(...series), max = Math.max(...series), span = max - min || 1;
+  const pts = series.map((v, i) => [i / (series.length - 1) * W, pad + (max - v) / span * (H - pad * 2)]);
+  const line = "M" + pts.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join("L");
+  const area = line + "L" + W + " " + H + "L0 " + H + "Z";
+  return { line, area, pts };
+}
+
+/* ================= toast / confetti ================= */
+function toast(msg, ms) {
+  const t = el("div", "toast", msg);
+  $("#toasts").appendChild(t);
+  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 260); }, ms || 2800);
+}
+function confetti(x, y) {
+  const fx = $("#fx");
+  const colors = ["#0b8a5c", "#3b5bdb", "#e3a008", "#d23c3c", "#181b1f"];
+  for (let i = 0; i < 30; i++) {
+    const p = el("div", "cf");
+    p.style.background = colors[i % colors.length];
+    p.style.left = x + "px"; p.style.top = y + "px";
+    fx.appendChild(p);
+    const a = Math.random() * Math.PI * 2, v = 50 + Math.random() * 130;
+    const dx = Math.cos(a) * v, dy = Math.sin(a) * v - 90;
+    p.animate(
+      [{ transform: "translate(0,0) rotate(0deg)", opacity: 1 },
+       { transform: "translate(" + dx + "px," + (dy + 170) + "px) rotate(" + (300 + Math.random() * 420) + "deg)", opacity: 0 }],
+      { duration: 950 + Math.random() * 550, easing: "cubic-bezier(.2,.7,.3,1)" }
+    ).onfinish = () => p.remove();
+  }
+}
+
+/* ================= tiles ================= */
+function heatColor(v) {
+  if (v >= 0) return "rgba(11,138,92," + Math.min(.16 + v * .26, .85) + ")";
+  return "rgba(210,60,60," + Math.min(.16 + Math.abs(v) * .3, .85) + ")";
+}
+function sparkSvg(series, w, h, color, grad) {
+  const p = pathFrom(series, w, h, 4);
+  return '<svg class="hspark" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none">'
+    + '<path d="' + p.area + '" fill="' + grad + '"/>'
+    + '<path d="' + p.line + '" fill="none" stroke="' + color + '" stroke-width="2.2" stroke-linecap="round"/></svg>';
+}
+
+const TILES = {
+  hero: { w: 2, title: "Portfolio", render() {
+    return '<div class="tlabel"><span>Portfolio · Schwab ····8841</span><span class="num" style="letter-spacing:0">' + fmt$(CASH).replace(".00", "") + " cash</span></div>"
+      + '<div class="bigval num" id="heroval">' + fmt$(TOTAL) + "</div>"
+      + '<div class="bigchg up num">' + arrow(DAY) + " " + fsign(DAY).slice(1) + " (" + fpct(DAYPCT) + ") <span>today</span></div>"
+      + sparkSvg(SERIES["1D"], 320, 56, "var(--up)", "rgba(11,138,92,.10)");
+  }},
+  approvals: { w: 1, title: "Approvals", render() {
+    if (!proposals.length) {
+      return '<div class="tlabel"><span>Approvals</span></div><div class="apclear"><span class="e">✓</span>queue clear</div>';
+    }
+    const p = proposals[0];
+    return '<div class="tlabel"><span>Approvals</span><span class="cnt">' + proposals.length + "</span></div>"
+      + '<div class="aptop"><span class="t">' + p.sym + '</span><span class="apside ' + p.side.toLowerCase() + '">' + p.side + "</span></div>"
+      + '<div class="apline num">' + p.qty + " sh · " + fmt$(p.px) + " limit</div>"
+      + '<div class="apagent">' + p.agent + "</div>"
+      + '<div class="qarow"><button class="qa no" data-act="deny">Deny</button><button class="qa ok" data-act="approve">Approve</button></div>';
+  }},
+  movers: { w: 1, title: "Day movers", render() {
+    return '<div class="tlabel"><span>Day movers</span></div>'
+      + '<div class="mrow"><span class="t">' + BEST.t + '</span><span class="p up num">' + arrow(1) + " " + fpct(BEST.day) + "</span></div>"
+      + '<div class="msub">' + fsign(BEST.dps) + "/sh · " + fsign(BEST.dps * BEST.q) + " today</div>"
+      + '<div class="mrow"><span class="t">' + WORST.t + '</span><span class="p dn num">' + arrow(-1) + " " + fpct(WORST.day) + "</span></div>"
+      + '<div class="msub">' + fsign(WORST.dps) + "/sh · " + fsign(WORST.dps * WORST.q) + " today</div>";
+  }},
+  flock: { w: 1, title: "Flock", render() {
+    return '<div class="tlabel"><span>Flock</span><span>2 live</span></div>'
+      + '<div class="frow"><span class="fdot live"></span>arm-watch<span class="fs">live</span></div>'
+      + '<div class="frow"><span class="fdot live"></span>earnings-watch<span class="fs">live</span></div>'
+      + '<div class="frow"><span class="fdot wait"></span>approvals-gate<span class="fs">3 held</span></div>'
+      + '<div class="flast"><b>earnings-watch</b> flagged NVDA at 28.8% of book · 12m ago</div>';
+  }},
+  earnings: { w: 1, title: "Earnings", render() {
+    return '<div class="tlabel"><span>Next earnings</span></div>'
+      + '<div class="ebig"><span class="t">NVDA</span><span class="in">in 2d</span></div>'
+      + '<div class="esub">Thu Jun 11 · after close<br>est EPS <b class="num">$1.42</b> · prior beat +6.2%</div>'
+      + '<div class="enext">then AVGO Fri · ORCL Jun 16</div>';
+  }},
+  sectors: { w: 1, title: "Sectors", render() {
+    let cells = "";
+    for (const s of SECTORS) {
+      cells += '<div class="hc" style="background:' + heatColor(s[1]) + '"><span class="n">' + s[0] + '</span><span class="v num">' + (s[1] >= 0 ? "+" : "") + s[1].toFixed(1) + "</span></div>";
+    }
+    return '<div class="tlabel"><span>Sectors</span><span>day %</span></div><div class="heat">' + cells + "</div>";
+  }},
+  macro: { w: 1, title: "Macro", render() {
+    return '<div class="tlabel"><span>Macro</span></div>'
+      + '<div class="y10"><span class="v num">4.32%</span><span class="d up num">▾ 3bp</span></div>'
+      + '<div class="mline">10Y treasury · 2Y <b class="num">4.61%</b></div>'
+      + '<div class="mline">CPI <b class="num">2.9%</b> · May print Wed 8:30a</div>'
+      + '<div class="mline">VIX <b class="num">14.8</b> · FOMC Jun 17</div>';
+  }},
+  news: { w: 1, title: "News", render() {
+    const n = NEWS[state.newsIdx % NEWS.length];
+    let dots = "";
+    for (let i = 0; i < NEWS.length; i++) dots += "<i" + (i === state.newsIdx % NEWS.length ? ' class="on"' : "") + "></i>";
+    return '<div class="tlabel"><span>News</span><span class="ndots">' + dots + "</span></div>"
+      + '<div class="nhead" id="newsline">' + n.h + "</div>"
+      + '<div class="nsrc"><span class="tk">' + n.tk + "</span><span>" + n.src + "</span><span>" + n.t + "</span></div>";
+  }},
+  crypto: { w: 1, title: "Crypto & commodities", render() {
+    let rows = "";
+    for (const c of CRYPTO.slice(0, 4)) {
+      rows += '<div class="crow"><span class="n">' + c[0] + '</span><span class="v num">' + c[1] + '</span><span class="c num ' + cls(c[2]) + '">' + fpct(c[2]).replace(".00", ".0").slice(0, 5) + "</span></div>";
+    }
+    return '<div class="tlabel"><span>Crypto · Cmdty</span></div>' + rows;
+  }},
+  realized: { w: 1, title: "Realized today", render() {
+    return '<div class="tlabel"><span>Realized today</span></div>'
+      + '<div class="rzval up num">+$769.00</div>'
+      + '<div class="rzsub">1 fill · NVDA trim 10sh<br>@ $689.30 · 9:47 AM</div>'
+      + '<div class="rzfoot">+$160.85 dividends this month</div>';
+  }},
+};
+
+const state = {
+  order: ["hero", "approvals", "movers", "flock", "earnings", "sectors", "macro", "news", "crypto", "realized"],
+  hidden: [],
+  editing: false,
+  newsIdx: 0,
+  counted: false,
+};
+
+/* ================= grid render ================= */
+const grid = $("#grid");
+function renderGrid() {
+  grid.innerHTML = "";
+  let idx = 0;
+  for (const id of state.order) {
+    if (state.hidden.includes(id)) continue;
+    const cfg = TILES[id];
+    const tile = el("div", "tile" + (cfg.w === 2 ? " w2" : ""));
+    tile.dataset.id = id;
+    tile.style.animationDelay = (idx++ * 35) + "ms";
+    tile.appendChild(el("div", "tin", cfg.render()));
+    const minus = el("button", "minus", "−");
+    minus.addEventListener("pointerdown", e => e.stopPropagation());
+    minus.onclick = e => { e.stopPropagation(); hideTile(id); };
+    tile.appendChild(minus);
+    attachTile(tile, id);
+    grid.appendChild(tile);
+  }
+  // quick approve/deny on approvals tile
+  grid.querySelectorAll(".qa").forEach(b => {
+    b.addEventListener("pointerdown", e => e.stopPropagation());
+    b.onclick = e => {
+      e.stopPropagation();
+      const r = b.getBoundingClientRect(), m = $(".main").getBoundingClientRect();
+      decide(b.dataset.act === "approve", r.left - m.left + r.width / 2, r.top - m.top);
+    };
+  });
+  updateHiddenRow();
+  if (!state.counted) { state.counted = true; countUpHero(); }
+}
+function updateHiddenRow() {
+  const row = $("#hiddenrow");
+  row.classList.toggle("has", state.hidden.length > 0);
+  $("#restorebtn").textContent = "Restore " + state.hidden.length + " hidden tile" + (state.hidden.length === 1 ? "" : "s");
+}
+$("#restorebtn").onclick = () => { state.hidden = []; renderGrid(); toast("All tiles restored"); };
+
+function hideTile(id) {
+  const t = grid.querySelector('.tile[data-id="' + id + '"]');
+  if (!t) return;
+  t.classList.add("hideout");
+  setTimeout(() => { state.hidden.push(id); renderGrid(); }, 200);
+}
+
+function countUpHero() {
+  const elv = $("#heroval");
+  if (!elv) return;
+  const t0 = performance.now(), dur = 950;
+  function step(now) {
+    const t = Math.min(1, (now - t0) / dur);
+    const ease = 1 - Math.pow(1 - t, 3);
+    elv.textContent = fmt$(PREV + DAY * ease);
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+/* ================= approve / deny (shared) ================= */
+function decide(ok, fxX, fxY) {
+  if (!proposals.length) return;
+  const p = proposals.shift();
+  decided.unshift({ txt: (ok ? "✓ " : "✕ ") + p.sym + " " + p.side.toLowerCase() + " " + p.qty + " · just now", ok });
+  if (ok) {
+    confetti(fxX || 196, fxY || 300);
+    toast("Order sent to Schwab · " + p.sym + " " + p.side + " " + p.qty + " @ " + fmt$(p.px) + " limit");
+    const hero = grid.querySelector('.tile[data-id="hero"]');
+    if (hero) { hero.classList.remove("glowpulse"); void hero.offsetWidth; hero.classList.add("glowpulse"); }
+  } else {
+    toast("Denied · " + p.agent + " notified");
+  }
+  renderGrid();
+  if (currentDetail === "approvals") renderDeck($("#deckhost"));
+}
+
+/* ================= edit mode + drag reorder ================= */
+function enterEdit() {
+  if (state.editing) return;
+  state.editing = true;
+  grid.classList.add("editing");
+  $("#gridwrap").classList.add("editing");
+  const b = $("#editbtn"); b.textContent = "Done"; b.classList.add("done");
+}
+function exitEdit() {
+  state.editing = false;
+  grid.classList.remove("editing");
+  $("#gridwrap").classList.remove("editing");
+  const b = $("#editbtn"); b.textContent = "Edit"; b.classList.remove("done");
+}
+$("#editbtn").onclick = () => state.editing ? exitEdit() : enterEdit();
+
+function tileEls() { return Array.from(grid.querySelectorAll(".tile")); }
+
+function applyOrderFLIP(draggedEl) {
+  const before = new Map();
+  tileEls().forEach(t => before.set(t, t.getBoundingClientRect()));
+  for (const id of state.order) {
+    const t = grid.querySelector('.tile[data-id="' + id + '"]');
+    if (t) grid.appendChild(t);
+  }
+  tileEls().forEach(t => {
+    if (t === draggedEl) return;
+    const b = before.get(t), a = t.getBoundingClientRect();
+    const dx = b.left - a.left, dy = b.top - a.top;
+    if (dx || dy) {
+      t.style.transition = "none";
+      t.style.transform = "translate(" + dx + "px," + dy + "px)";
+      requestAnimationFrame(() => {
+        t.style.transition = "transform .28s cubic-bezier(.32,.72,.27,1)";
+        t.style.transform = "";
+        setTimeout(() => { t.style.transition = ""; }, 300);
+      });
+    }
+  });
+  return before.get(draggedEl);
+}
+
+function attachTile(tile, id) {
+  tile.addEventListener("pointerdown", e => {
+    if (e.button !== undefined && e.button !== 0) return;
+    const sx = e.clientX, sy = e.clientY;
+    let moved = false, dragging = false, lpFired = false;
+    let baseRect = null, offX = 0, offY = 0;
+    const lp = state.editing ? null : setTimeout(() => { lpFired = true; enterEdit(); }, 520);
+    try { tile.setPointerCapture(e.pointerId); } catch (err) {}
+
+    const onMove = ev => {
+      const dx = ev.clientX - sx, dy = ev.clientY - sy;
+      if (!moved && Math.hypot(dx, dy) > 8) {
+        moved = true;
+        if (lp) clearTimeout(lp);
+        if (state.editing) {
+          dragging = true;
+          baseRect = tile.getBoundingClientRect();
+          tile.classList.add("lift");
+          tile.style.transition = "none";
+        }
+      }
+      if (!dragging) return;
+      ev.preventDefault();
+      tile.style.transform = "translate(" + (dx + offX) + "px," + (dy + offY) + "px) scale(1.05)";
+      // hit-test against other tiles
+      for (const other of tileEls()) {
+        if (other === tile) continue;
+        const r = other.getBoundingClientRect();
+        if (ev.clientX > r.left && ev.clientX < r.right && ev.clientY > r.top && ev.clientY < r.bottom) {
+          const from = state.order.indexOf(id);
+          const to = state.order.indexOf(other.dataset.id);
+          if (from !== to && to !== -1) {
+            state.order.splice(from, 1);
+            state.order.splice(to, 0, id);
+            applyOrderFLIP(tile);
+            const nr = tile.getBoundingClientRect();
+            // nr includes current transform; compute pure layout shift via offset reset
+            tile.style.transform = "";
+            const lr = tile.getBoundingClientRect();
+            offX += baseRect.left - lr.left;
+            offY += baseRect.top - lr.top;
+            baseRect = lr;
+            tile.style.transform = "translate(" + (dx + offX) + "px," + (dy + offY) + "px) scale(1.05)";
+            void nr;
+          }
+          break;
+        }
+      }
+    };
+    const finish = ev => {
+      if (lp) clearTimeout(lp);
+      tile.removeEventListener("pointermove", onMove);
+      tile.removeEventListener("pointerup", finish);
+      tile.removeEventListener("pointercancel", finish);
+      if (dragging) {
+        tile.style.transition = "transform .3s cubic-bezier(.32,.72,.27,1)";
+        tile.style.transform = "";
+        setTimeout(() => { tile.classList.remove("lift"); tile.style.transition = ""; }, 310);
+        return;
+      }
+      if (!moved && !lpFired && ev.type === "pointerup" && !state.editing) openDetail(id);
+    };
+    tile.addEventListener("pointermove", onMove);
+    tile.addEventListener("pointerup", finish);
+    tile.addEventListener("pointercancel", finish);
+  });
+}
+
+/* ================= detail overlay (FLIP expand) ================= */
+let currentDetail = null;
+let closingTimer = null;
+
+function openDetail(id) {
+  const cfg = TILES[id];
+  const builder = DETAILS[id];
+  if (!cfg || !builder) return;
+  if (closingTimer) { clearTimeout(closingTimer); closingTimer = null; }
+  const overlay = $("#detail");
+  overlay.innerHTML = '<div class="dhead"><button class="dback">‹</button><div class="dtitle">' + cfg.title + '</div><div class="dsub">' + (builder.sub || "") + '</div></div><div class="dbody"></div>';
+  builder.build(overlay.querySelector(".dbody"));
+  overlay.querySelector(".dback").onclick = closeDetail;
+
+  const main = $(".main").getBoundingClientRect();
+  const tile = grid.querySelector('.tile[data-id="' + id + '"]');
+  if (tile) {
+    const r = tile.getBoundingClientRect();
+    overlay.style.transition = "none";
+    overlay.style.transform = "translate(" + (r.left - main.left) + "px," + (r.top - main.top) + "px) scale(" + (r.width / main.width) + "," + (r.height / main.height) + ")";
+  } else {
+    overlay.style.transform = "translate(0," + main.height + "px)";
+  }
+  overlay.classList.add("show");
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    overlay.style.transition = "";
+    overlay.classList.add("open");
+    overlay.style.transform = "";
+  }));
+  currentDetail = id;
+}
+function closeDetail() {
+  const overlay = $("#detail");
+  const id = currentDetail;
+  currentDetail = null;
+  const main = $(".main").getBoundingClientRect();
+  const tile = grid.querySelector('.tile[data-id="' + id + '"]');
+  overlay.classList.remove("open");
+  if (tile) {
+    const r = tile.getBoundingClientRect();
+    overlay.style.transform = "translate(" + (r.left - main.left) + "px," + (r.top - main.top) + "px) scale(" + (r.width / main.width) + "," + (r.height / main.height) + ")";
+  } else {
+    overlay.style.transform = "translate(0," + main.height + "px)";
+  }
+  closingTimer = setTimeout(() => {
+    overlay.classList.remove("show");
+    overlay.style.transform = "";
+    overlay.innerHTML = "";
+    closingTimer = null;
+  }, 470);
+}
+
+/* ================= detail builders ================= */
+function posRows() {
+  const maxMv = Math.max(...POS.map(p => p.mv));
+  let html = '<div class="dcard">';
+  for (const p of POS) {
+    html += '<div class="prow">'
+      + '<div class="sym"><div class="t">' + p.t + '</div><div class="q">' + p.q + " sh · " + fmt$(p.avg) + "</div></div>"
+      + '<div class="pbar"><i style="left:0;width:' + (p.mv / maxMv * 100).toFixed(1) + "%;background:" + (p.upl >= 0 ? "var(--up)" : "var(--dn)") + ';opacity:.55"></i></div>'
+      + '<div class="nums"><div class="mv num">' + fmt$(p.mv) + '</div><div class="pl num ' + cls(p.day) + '">' + fpct(p.day) + " today · " + fsign(p.upl) + "</div></div>"
+      + "</div>";
+  }
+  return html + "</div>";
+}
+
+const DETAILS = {
+  /* ---------- portfolio: the Robinhood moment ---------- */
+  hero: { sub: "Schwab ····8841", build(host) {
+    host.innerHTML =
+      '<div class="pval num" id="dval">' + fmt$(TOTAL) + "</div>"
+      + '<div class="pchg up num" id="dchg">' + arrow(1) + " " + fsign(DAY).slice(1) + " (" + fpct(DAYPCT) + ") <span>today</span></div>"
+      + '<div class="chartwrap" id="cwrap">'
+      +   '<div class="scrublabel" id="slabel"></div>'
+      +   '<svg id="csvg" viewBox="0 0 360 210" preserveAspectRatio="none">'
+      +     "<defs>"
+      +     '<linearGradient id="gu" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#0b8a5c" stop-opacity=".18"/><stop offset="1" stop-color="#0b8a5c" stop-opacity="0"/></linearGradient>'
+      +     '<linearGradient id="gd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d23c3c" stop-opacity=".16"/><stop offset="1" stop-color="#d23c3c" stop-opacity="0"/></linearGradient>'
+      +     "</defs>"
+      +     '<path id="carea" d="" fill="url(#gu)"/>'
+      +     '<path id="cline" d="" fill="none" stroke="#0b8a5c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>'
+      +     '<line id="cross" y1="0" y2="210" stroke="#181b1f" stroke-width="1" stroke-dasharray="3 3" opacity="0"/>'
+      +     '<circle id="cdot" r="4.5" fill="#0b8a5c" opacity="0"/>'
+      +   "</svg>"
+      + "</div>"
+      + '<div class="rpills" id="rpills"></div>'
+      + '<div class="statgrid">'
+      +   '<div class="stat"><div class="k">Cash</div><div class="v num">' + fmt$(CASH).replace(".00", "") + "</div></div>"
+      +   '<div class="stat"><div class="k">Buying power</div><div class="v num">' + fmt$(BP).replace(".00", "") + "</div></div>"
+      +   '<div class="stat"><div class="k">Day P/L</div><div class="v num up">+$3,214.88</div></div>'
+      + "</div>"
+      + '<div class="dlabel">Positions · 5</div>' + posRows();
+
+    const W = 360, H = 210;
+    let range = "1D", series = SERIES[range], pts = [];
+    const sv = host.querySelector("#csvg"), lineEl = host.querySelector("#cline"),
+      areaEl = host.querySelector("#carea"), crossEl = host.querySelector("#cross"),
+      dotEl = host.querySelector("#cdot"), label = host.querySelector("#slabel"),
+      dval = host.querySelector("#dval"), dchg = host.querySelector("#dchg"),
+      wrap = host.querySelector("#cwrap");
+
+    function setChg(value, base, lbl) {
+      const d = value - base, pct = d / base * 100;
+      dchg.className = "pchg num " + cls(d);
+      dchg.innerHTML = arrow(d) + " " + fsign(d).slice(1) + " (" + fpct(pct) + ") <span>" + lbl + "</span>";
+    }
+    function draw() {
+      series = SERIES[range];
+      const p = pathFrom(series, W, H, 14);
+      pts = p.pts;
+      const upRange = series[series.length - 1] >= series[0];
+      lineEl.setAttribute("d", p.line);
+      areaEl.setAttribute("d", p.area);
+      lineEl.setAttribute("stroke", upRange ? "#0b8a5c" : "#d23c3c");
+      areaEl.setAttribute("fill", upRange ? "url(#gu)" : "url(#gd)");
+      dotEl.setAttribute("fill", upRange ? "#0b8a5c" : "#d23c3c");
+      dval.textContent = fmt$(series[series.length - 1]);
+      setChg(series[series.length - 1], series[0], RCFG[range].lbl);
+      lineEl.style.opacity = "0"; areaEl.style.opacity = "0";
+      requestAnimationFrame(() => {
+        lineEl.style.transition = "opacity .3s"; areaEl.style.transition = "opacity .3s";
+        lineEl.style.opacity = "1"; areaEl.style.opacity = "1";
+      });
+    }
+    const pills = host.querySelector("#rpills");
+    for (const r of ["1D", "1W", "1M", "3M", "YTD", "ALL"]) {
+      const b = el("button", r === range ? "on" : "", r);
+      b.onclick = () => {
+        range = r;
+        pills.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+        draw();
+      };
+      pills.appendChild(b);
+    }
+    draw();
+
+    function scrub(clientX) {
+      const r = sv.getBoundingClientRect();
+      const fx = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+      const i = Math.round(fx * (series.length - 1));
+      const xvb = i / (series.length - 1) * W;
+      crossEl.setAttribute("x1", xvb); crossEl.setAttribute("x2", xvb);
+      crossEl.setAttribute("opacity", ".45");
+      dotEl.setAttribute("cx", pts[i][0]); dotEl.setAttribute("cy", pts[i][1]);
+      dotEl.setAttribute("opacity", "1");
+      const xpx = i / (series.length - 1) * r.width;
+      label.style.left = Math.max(46, Math.min(r.width - 46, xpx)) + "px";
+      label.textContent = fmt$(series[i]) + " · " + tlabel(range, i / (series.length - 1));
+      label.classList.add("on");
+      dval.textContent = fmt$(series[i]);
+      setChg(series[i], series[0], RCFG[range].lbl);
+    }
+    function release() {
+      crossEl.setAttribute("opacity", "0");
+      dotEl.setAttribute("opacity", "0");
+      label.classList.remove("on");
+      dval.textContent = fmt$(series[series.length - 1]);
+      setChg(series[series.length - 1], series[0], RCFG[range].lbl);
+    }
+    wrap.addEventListener("pointerdown", e => {
+      wrap.setPointerCapture(e.pointerId);
+      scrub(e.clientX);
+      const mv = ev => { ev.preventDefault(); scrub(ev.clientX); };
+      const up = () => {
+        release();
+        wrap.removeEventListener("pointermove", mv);
+        wrap.removeEventListener("pointerup", up);
+        wrap.removeEventListener("pointercancel", up);
+      };
+      wrap.addEventListener("pointermove", mv);
+      wrap.addEventListener("pointerup", up);
+      wrap.addEventListener("pointercancel", up);
+    });
+  }},
+
+  /* ---------- movers -> all positions ---------- */
+  movers: { sub: "day change", build(host) {
+    host.innerHTML = '<div class="dlabel">All positions · by day move</div>';
+    const sorted = [...POS].sort((a, b) => b.day - a.day);
+    let html = '<div class="dcard">';
+    for (const p of sorted) {
+      html += '<div class="drow">'
+        + '<div class="ic" style="background:' + (p.day >= 0 ? "var(--up-soft)" : "var(--dn-soft)") + '">' + (p.day >= 0 ? "▲" : "▼") + "</div>"
+        + '<div class="bd"><div class="ti">' + p.t + '</div><div class="su num">' + p.q + " sh · mark " + fmt$(p.px) + " · avg " + fmt$(p.avg) + "</div></div>"
+        + '<div class="rt"><div class="rv num ' + cls(p.day) + '">' + fpct(p.day) + '</div><div class="rs num">' + fsign(p.dps * p.q) + " today</div></div>"
+        + "</div>";
+    }
+    html += "</div>"
+      + '<div class="dlabel">Unrealized P/L</div><div class="dcard">';
+    for (const p of [...POS].sort((a, b) => b.upl - a.upl)) {
+      html += '<div class="drow">'
+        + '<div class="bd"><div class="ti">' + p.t + '</div><div class="su num">cost ' + fmt$(p.avg * p.q) + "</div></div>"
+        + '<div class="rt"><div class="rv num ' + cls(p.upl) + '">' + fsign(p.upl) + '</div><div class="rs num">' + fpct(p.uplPct) + "</div></div>"
+        + "</div>";
+    }
+    host.innerHTML += html + "</div>";
+  }},
+
+  /* ---------- approvals -> swipe deck ---------- */
+  approvals: { sub: "approvals-gate", build(host) {
+    host.innerHTML = '<div id="deckhost"></div>';
+    renderDeck(host.querySelector("#deckhost"));
+  }},
+
+  /* ---------- flock agents ---------- */
+  flock: { sub: "hub :8787", build(host) {
+    const agents = [
+      { n: "arm-watch", st: "live", dot: "live", sub: "watching ARM order book · cron */5 · heartbeat 18s ago" },
+      { n: "earnings-watch", st: "live", dot: "live", sub: "scanning Jun 11 NVDA setup · next sweep 4:45 PM" },
+      { n: "approvals-gate", st: "waiting", dot: "wait", sub: "3 proposals held for you · oldest 12m" },
+    ];
+    let html = '<div class="dlabel">Agents</div><div class="dcard">';
+    for (const a of agents) {
+      html += '<div class="drow"><div class="ic"><span class="fdot ' + a.dot + '"></span></div>'
+        + '<div class="bd"><div class="ti">' + a.n + '</div><div class="su">' + a.sub + "</div></div>"
+        + '<div class="rt"><div class="rs" style="text-transform:uppercase;letter-spacing:.8px;font-weight:800">' + a.st + "</div></div></div>";
+    }
+    html += "</div>" + '<div class="dlabel">Recent runs</div><div class="dcard">';
+    const runs = [
+      ["⚠", "earnings-watch flagged NVDA at 28.8% of book", "queued trim proposal · 12m ago"],
+      ["✓", "approvals-gate executed NVDA sell 10 @ 689.30", "realized +$769.00 · 9:47 AM"],
+      ["▸", "arm-watch: short interest down to 2.1% of float", "queued ARM starter buy · 8:55 AM"],
+      ["▸", "earnings-watch: CPI tomorrow — TLT add staged", "8:21 AM"],
+      ["✓", "heartbeats ok · 3/3 agents reporting", "9:41 AM"],
+    ];
+    for (const r of runs) {
+      html += '<div class="drow"><div class="ic">' + r[0] + '</div><div class="bd"><div class="ti">' + r[1] + '</div><div class="su">' + r[2] + "</div></div></div>";
+    }
+    host.innerHTML = html + "</div>";
+  }},
+
+  /* ---------- earnings calendar ---------- */
+  earnings: { sub: "next 6 weeks", build(host) {
+    let html = '<div class="dlabel">Earnings · holdings & watchlist</div><div class="dcard">';
+    const rows = [
+      ["NVDA", "Thu Jun 11 · after close · held 120 sh", "$1.42 est", "prior +6.2%"],
+      ["AVGO", "Fri Jun 12 · after close", "$1.89 est", "prior +3.1%"],
+      ["ORCL", "Tue Jun 16 · after close", "$1.70 est", "prior +1.8%"],
+      ["LEN", "Wed Jun 17 · before open", "$3.10 est", "prior −0.9%"],
+      ["AAPL", "Thu Jul 30 · after close · held 145 sh", "$1.78 est", "prior +4.4%"],
+    ];
+    for (const r of rows) {
+      html += '<div class="drow"><div class="bd"><div class="ti">' + r[0] + '</div><div class="su">' + r[1] + "</div></div>"
+        + '<div class="rt"><div class="rv num">' + r[2] + '</div><div class="rs num">' + r[3] + "</div></div></div>";
+    }
+    html += "</div>" + '<div class="dlabel">Economic calendar</div><div class="dcard">';
+    const econ = [
+      ["May CPI", "Wed Jun 10 · 8:30 AM · consensus 2.8% y/y"],
+      ["10Y note auction", "Thu Jun 11 · 1:00 PM · $39B"],
+      ["FOMC decision", "Wed Jun 17 · 2:00 PM · 62% odds of Sept cut"],
+      ["TLT ex-dividend", "Mon Jul 1 · est $0.29/sh"],
+    ];
+    for (const r of econ) {
+      html += '<div class="drow"><div class="ic">◆</div><div class="bd"><div class="ti">' + r[0] + '</div><div class="su">' + r[1] + "</div></div></div>";
+    }
+    host.innerHTML = html + "</div>";
+  }},
+
+  /* ---------- sectors ---------- */
+  sectors: { sub: "day performance", build(host) {
+    let cells = "";
+    const full = [
+      ["Technology", 1.4], ["Comm Services", 0.9], ["Utilities", 0.7],
+      ["Cons Discret", 0.6], ["Real Estate", 0.5], ["Financials", 0.4],
+      ["Industrials", 0.3], ["Materials", 0.2], ["Cons Staples", -0.1],
+      ["Health Care", -0.2], ["Energy", -0.8],
+    ];
+    for (const s of full) {
+      cells += '<div class="hc" style="background:' + heatColor(s[1]) + '"><span class="n">' + s[0] + '</span><span class="v num">' + (s[1] >= 0 ? "+" : "") + s[1].toFixed(1) + "%</span></div>";
+    }
+    let html = '<div class="dlabel">Sectors · today</div><div class="heatbig">' + cells + "</div>"
+      + '<div class="dlabel">Indexes</div><div class="dcard">';
+    const idx = [["SPY", "612.84", 1.1], ["QQQ", "548.20", 1.5], ["IWM", "238.46", 0.6]];
+    for (const r of idx) {
+      html += '<div class="drow"><div class="bd"><div class="ti">' + r[0] + '</div></div><div class="rt"><div class="rv num">$' + r[1] + '</div><div class="rs num ' + cls(r[2]) + '">' + fpct(r[2]) + "</div></div></div>";
+    }
+    html += "</div>" + '<div class="dlabel">Market internals</div><div class="dcard">'
+      + '<div class="drow"><div class="bd"><div class="ti">VIX</div></div><div class="rt"><div class="rv num">14.8</div><div class="rs num dn">−0.9</div></div></div>'
+      + '<div class="drow"><div class="bd"><div class="ti">Advances / declines</div></div><div class="rt"><div class="rv num">2,184 / 1,012</div></div></div>'
+      + '<div class="drow"><div class="bd"><div class="ti">Put/call ratio</div></div><div class="rt"><div class="rv num">0.82</div></div></div>';
+    host.innerHTML = html + "</div>";
+  }},
+
+  /* ---------- macro ---------- */
+  macro: { sub: "rates & prints", build(host) {
+    let html = '<div class="dlabel">Treasury curve</div><div class="dcard">';
+    const rates = [["2Y", "4.61%", "−2bp"], ["10Y", "4.32%", "−3bp"], ["30Y", "4.55%", "−2bp"]];
+    for (const r of rates) {
+      html += '<div class="drow"><div class="bd"><div class="ti">' + r[0] + '</div></div><div class="rt"><div class="rv num">' + r[1] + '</div><div class="rs num up">' + r[2] + "</div></div></div>";
+    }
+    html += '<div class="drow"><div class="bd"><div class="ti">2s10s spread</div><div class="su">inverted since Mar ’25</div></div><div class="rt"><div class="rv num dn">−29bp</div></div></div>'
+      + "</div>" + '<div class="dlabel">Economy</div><div class="dcard">';
+    const econ = [
+      ["CPI y/y", "2.9%", "Apr · May print Wed 8:30 AM"],
+      ["Core PCE y/y", "2.6%", "Apr"],
+      ["Unemployment", "4.1%", "May jobs · +148k payrolls"],
+      ["Fed funds", "4.25–4.50%", "FOMC Jun 17 · hold expected"],
+    ];
+    for (const r of econ) {
+      html += '<div class="drow"><div class="bd"><div class="ti">' + r[0] + '</div><div class="su">' + r[2] + '</div></div><div class="rt"><div class="rv num">' + r[1] + "</div></div></div>";
+    }
+    host.innerHTML = html + "</div>";
+  }},
+
+  /* ---------- news ---------- */
+  news: { sub: "your symbols", build(host) {
+    let html = '<div class="dlabel">Headlines · holdings</div><div class="dcard">';
+    for (const n of NEWS) {
+      html += '<div class="nitem"><div class="h">' + n.h + '</div><div class="s">' + n.s + '</div><div class="m"><span class="tk">' + n.tk + "</span><span>" + n.src + "</span><span>" + n.t + "</span></div></div>";
+    }
+    host.innerHTML = html + "</div>";
+  }},
+
+  /* ---------- crypto / commodities ---------- */
+  crypto: { sub: "spot", build(host) {
+    let html = '<div class="dlabel">Crypto</div><div class="dcard">';
+    for (const c of CRYPTO.slice(0, 3)) {
+      html += '<div class="drow"><div class="bd"><div class="ti">' + c[0] + '</div></div><div class="rt"><div class="rv num">' + c[1] + '</div><div class="rs num ' + cls(c[2]) + '">' + fpct(c[2]) + "</div></div></div>";
+    }
+    html += "</div>" + '<div class="dlabel">Commodities & FX</div><div class="dcard">';
+    for (const c of CRYPTO.slice(3)) {
+      html += '<div class="drow"><div class="bd"><div class="ti">' + c[0] + '</div></div><div class="rt"><div class="rv num">' + c[1] + '</div><div class="rs num ' + cls(c[2]) + '">' + fpct(c[2]) + "</div></div></div>";
+    }
+    host.innerHTML = html + "</div>";
+  }},
+
+  /* ---------- realized / transactions ---------- */
+  realized: { sub: "60-day feed", build(host) {
+    let html = '<div class="dlabel">Today</div><div class="dcard">'
+      + '<div class="drow"><div class="ic" style="background:var(--up-soft)">✓</div>'
+      + '<div class="bd"><div class="ti">SELL 10 NVDA @ $689.30</div><div class="su">earnings-watch trim · approved by you · filled 9:47 AM</div></div>'
+      + '<div class="rt"><div class="rv num up">+$769.00</div><div class="rs">realized</div></div></div>'
+      + "</div>" + '<div class="dlabel">Past 60 days</div><div class="dcard">';
+    const tx = [
+      ["✓", "BUY 25 AAPL @ $191.20", "approved · filled Jun 2 · 10:14 AM", "−$4,780.00", ""],
+      ["¢", "TLT dividend", "Jun 4 · 200 sh × $0.291", "+$58.20", "up"],
+      ["¢", "MSFT dividend", "May 21 · 80 sh × $0.83", "+$66.40", "up"],
+      ["¢", "AAPL dividend", "May 15 · 145 sh × $0.25", "+$36.25", "up"],
+      ["✓", "SELL 20 TLT @ $93.85", "stop trim · filled Apr 28", "−$5.00 realized", "dn"],
+      ["✓", "BUY 40 BRK.B @ $431.10", "approved · filled Apr 17", "−$17,244.00", ""],
+    ];
+    for (const r of tx) {
+      html += '<div class="drow"><div class="ic">' + r[0] + '</div><div class="bd"><div class="ti">' + r[1] + '</div><div class="su">' + r[2] + '</div></div><div class="rt"><div class="rv num ' + r[4] + '">' + r[3] + "</div></div></div>";
+    }
+    host.innerHTML = html + "</div>";
+  }},
+};
+
+/* ================= approvals deck ================= */
+function renderDeck(hostEl) {
+  if (!hostEl) return;
+  if (!proposals.length) {
+    hostEl.innerHTML = '<div class="deckempty"><span class="e">✓</span>Queue clear — nothing pending<span style="font-size:11px;font-weight:600">new proposals from the flock land here</span></div>'
+      + histChips();
+    return;
+  }
+  let html = '<div class="deckwrap" id="deckwrap">';
+  const show = proposals.slice(0, 3);
+  for (let i = show.length - 1; i >= 0; i--) {
+    const p = show[i];
+    const layer = i === 0 ? "topc" : i === 1 ? "b1" : "b2";
+    html += '<div class="pcard ' + layer + '" data-i="' + i + '">'
+      + '<div class="tlabel"><span class="apside ' + p.side.toLowerCase() + '">' + p.side + '</span><span style="color:var(--agent);letter-spacing:.4px">' + p.agent + "</span></div>"
+      + '<div class="pcsym">' + p.sym + "</div>"
+      + '<div class="pcorder num">' + p.qty + " sh <span>@</span> " + fmt$(p.px) + " <span>limit</span></div>"
+      + '<div class="pcest num">est ' + fmt$(p.est) + (p.side === "BUY" ? " · leaves " + fmt$(CASH - p.est).replace(".00", "") + " cash" : " proceeds") + "</div>"
+      + '<div class="pcwhy"><span class="who">' + p.agent + " · rationale</span>" + p.why + "</div>"
+      + '<div class="pcexp">expires <b>' + p.exp + "</b> · then auto-cancel</div>"
+      + '<div class="stamp yes">APPROVE</div><div class="stamp no">DENY</div>'
+      + "</div>";
+  }
+  html += "</div>"
+    + '<div class="deckbtns"><button class="n" id="dk-no">✕</button><button class="y" id="dk-yes">✓</button></div>'
+    + '<div class="deckhint">swipe right to approve · left to deny · ' + proposals.length + " pending</div>"
+    + histChips();
+  hostEl.innerHTML = html;
+
+  const top = hostEl.querySelector(".pcard.topc");
+  const fxAt = () => {
+    const r = hostEl.getBoundingClientRect(), m = $(".main").getBoundingClientRect();
+    return [r.left - m.left + r.width / 2, r.top - m.top + 160];
+  };
+  function fly(ok) {
+    top.classList.add("fly");
+    top.style.transform = "translateX(" + (ok ? 480 : -480) + "px) rotate(" + (ok ? 18 : -18) + "deg)";
+    const [fx, fy] = fxAt();
+    setTimeout(() => decide(ok, fx, fy), 240);
+  }
+  hostEl.querySelector("#dk-yes").onclick = () => fly(true);
+  hostEl.querySelector("#dk-no").onclick = () => fly(false);
+
+  top.addEventListener("pointerdown", e => {
+    top.setPointerCapture(e.pointerId);
+    const sx = e.clientX;
+    let dx = 0;
+    top.classList.add("dragging");
+    const yes = top.querySelector(".stamp.yes"), no = top.querySelector(".stamp.no");
+    const mv = ev => {
+      dx = ev.clientX - sx;
+      top.style.transform = "translateX(" + dx + "px) rotate(" + dx * 0.055 + "deg)";
+      yes.style.opacity = Math.max(0, Math.min(1, dx / 90));
+      no.style.opacity = Math.max(0, Math.min(1, -dx / 90));
+    };
+    const up = () => {
+      top.removeEventListener("pointermove", mv);
+      top.removeEventListener("pointerup", up);
+      top.removeEventListener("pointercancel", up);
+      top.classList.remove("dragging");
+      if (Math.abs(dx) > 110) { fly(dx > 0); }
+      else { top.style.transform = ""; yes.style.opacity = 0; no.style.opacity = 0; }
+    };
+    top.addEventListener("pointermove", mv);
+    top.addEventListener("pointerup", up);
+    top.addEventListener("pointercancel", up);
+  });
+}
+function histChips() {
+  let html = '<div class="dlabel">Decided</div><div class="dcard">';
+  for (const d of decided.slice(0, 5)) {
+    html += '<div class="drow"><div class="bd"><div class="ti" style="font-weight:650;color:' + (d.ok ? "var(--up)" : "var(--mut)") + '">' + d.txt + "</div></div></div>";
+  }
+  return html + "</div>";
+}
+
+/* ================= news rotation ================= */
+setInterval(() => {
+  if (state.editing || currentDetail) return;
+  const line = grid.querySelector("#newsline");
+  if (!line) return;
+  line.style.opacity = "0";
+  setTimeout(() => {
+    state.newsIdx = (state.newsIdx + 1) % NEWS.length;
+    const tile = grid.querySelector('.tile[data-id="news"] .tin');
+    if (tile) tile.innerHTML = TILES.news.render();
+  }, 260);
+}, 5200);
+
+/* ================= boot ================= */
+renderGrid();
+setTimeout(() => {
+  toast("🦆 earnings-watch queued a NVDA trim — 3 approvals waiting", 3600);
+}, 1400);
+</script>
+</body>
+</html>

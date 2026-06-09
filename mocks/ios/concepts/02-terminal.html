@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>duck · TERMINAL</title>
+<!--
+  CONCEPT 02 — "TERMINAL" · research-desk power tool
+  UI MODULE -> DATA SOURCE MAP (audited stack only)
+  ───────────────────────────────────────────────────
+  market strip (SPY/QQQ/IWM/VIX/10Y/PC/ADV)  -> MARKET CONTEXT index_performance + market_overview + MACRO treasury_rates
+  hero equity figure + scrub chart + ranges  -> BROKER account (total value) + intraday_prices/price_history (MARKET DATA)
+  desk position table (qty/last/day%/P-L)    -> BROKER positions + per-symbol quote (mark, net_change_pct)
+  cash / buying power / day P-L stats        -> BROKER account; day P/L (SOON: currentDayProfitLoss)
+  dossier quote grid (bid/ask/rng/52wk/vol)  -> BROKER per-symbol quote
+  dossier chart                              -> MARKET DATA intraday_prices + price_history
+  [SI]  short interest gauge + trend         -> RESEARCH EDGE short_interest (% float + history)
+  [INS] insider ledger (last 5)              -> RESEARCH EDGE insider_activity
+  [CGR] congress trades                      -> RESEARCH EDGE senate_trading
+  [TGT] analyst consensus + target bar       -> RESEARCH EDGE analyst_consensus
+  [VAL] P/E vs 5y history band               -> RESEARCH EDGE valuation_history
+  [ERN] next earnings + est + implied move   -> EVENTS earnings_calendar (+ options OI implied move)
+  [RTS] rates & auctions (TLT only)          -> MACRO treasury_rates + EVENTS treasury_auctions + economic_calendar
+  [DIV] distributions (TLT only)             -> EVENTS dividends_calendar
+  MACRO tab: indices / internals / curve     -> index_performance + market_overview + treasury_rates
+  MACRO tab: sector heat list                -> MARKET CONTEXT sector_performance
+  MACRO tab: event week                      -> EVENTS economic_calendar + earnings_calendar + treasury_auctions
+  CMD sheet actions + approval + fill        -> AGENTS flock hub (run events, proposals, approve/deny) + BROKER order status
+-->
+<style>
+  :root {
+    --bg: #030404;
+    --screen: #070908;
+    --panel: #0c0f0d;
+    --panel2: #11150f;
+    --line: rgba(235,227,200,.08);
+    --line2: rgba(255,176,66,.16);
+    --text: #e6e2d6;
+    --muted: #8d917f;
+    --faint: #5b5f51;
+    --amber: #ffb042;
+    --amber-dim: rgba(255,176,66,.12);
+    --green: #3fe07c;
+    --green-dim: rgba(63,224,124,.1);
+    --red: #ff5d52;
+    --red-dim: rgba(255,93,82,.1);
+    --cyan: #5fd4e8;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1100px 760px at 30% -12%, #0d1209 0%, var(--bg) 58%);
+    font-family: var(--mono);
+    color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px;
+    user-select: none;
+  }
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--screen);
+    border-radius: 54px; border: 1px solid #232820;
+    box-shadow: 0 0 0 11px #131611, 0 0 0 12.5px #343a30, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  @media (max-width: 500px), (max-height: 940px) and (max-width: 940px) {
+    body { padding: 0; }
+    .phone { width: 100vw; height: 100dvh; border-radius: 0; border: none; box-shadow: none; }
+    .island { display: none; }
+    .statusbar { height: calc(env(safe-area-inset-top, 14px) + 14px) !important; }
+    .statusbar span { display: none; }
+    .tabbar { padding-bottom: calc(env(safe-area-inset-bottom, 18px) + 8px) !important; height: auto !important; }
+    .homebar { display: none; }
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 90; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 14px; font-weight: 700; z-index: 85; }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 12px; color: var(--muted); }
+  .main { flex: 1; position: relative; min-height: 0; }
+
+  /* ── views ───────────────────────── */
+  .view { position: absolute; inset: 0; display: flex; flex-direction: column; opacity: 0; pointer-events: none; transform: translateX(12px); transition: opacity .2s ease, transform .2s ease; }
+  .view.active { opacity: 1; pointer-events: auto; transform: none; }
+  #view-dossier { z-index: 45; background: var(--screen); transform: translateX(100%); opacity: 1; transition: transform .3s cubic-bezier(.32,.72,.27,1); }
+  #view-dossier.active { transform: none; }
+
+  /* ── market strip ────────────────── */
+  .strip { flex: none; overflow: hidden; border-bottom: 1px solid var(--line2); background: #0a0c08; touch-action: pan-y; position: relative; }
+  .striptrack { display: inline-flex; white-space: nowrap; padding: 7px 0; animation: tickscroll 26s linear infinite; will-change: transform; }
+  @keyframes tickscroll { to { transform: translateX(-50%); } }
+  .strip.held .striptrack { animation-play-state: paused; }
+  .strip.held::after { content: "HELD"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 8px; letter-spacing: 1.5px; color: var(--amber); background: #0a0c08; padding: 2px 6px; border: 1px solid var(--line2); border-radius: 4px; }
+  .tkitem { display: inline-flex; gap: 6px; align-items: baseline; padding: 0 14px; font-size: 11px; border-right: 1px solid var(--line); }
+  .tkitem .tk { color: var(--amber); font-weight: 700; }
+  .tkitem .tv { color: var(--text); font-weight: 600; }
+  .up { color: var(--green); } .dn { color: var(--red); }
+
+  /* ── header ──────────────────────── */
+  header.vhead { padding: 10px 18px 6px; flex: none; display: flex; align-items: center; justify-content: space-between; }
+  .apptitle { font-size: 17px; font-weight: 800; letter-spacing: 2.5px; color: var(--amber); }
+  .apptitle small { color: var(--faint); letter-spacing: 1px; font-weight: 600; font-size: 10px; display: block; margin-top: 2px; }
+  .hubchip { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; display: flex; align-items: center; gap: 6px; }
+  .ldot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px var(--green); animation: lpulse 2.2s infinite; }
+  @keyframes lpulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+  .scroll { flex: 1; overflow-y: auto; padding: 0 14px 116px; }
+
+  /* ── hero ────────────────────────── */
+  .hero { border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(178deg, #0e120d 0%, #0a0d09 80%); margin-top: 8px; padding: 14px 14px 4px; }
+  .hlabel { font-size: 9px; letter-spacing: 2px; color: var(--faint); display: flex; justify-content: space-between; }
+  .hlabel b { color: var(--amber); font-weight: 700; }
+  .heroval { font-size: 37px; font-weight: 800; letter-spacing: -1px; font-variant-numeric: tabular-nums; margin-top: 5px; transition: color .2s; }
+  .herochg { font-size: 12px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; min-height: 16px; }
+  .herochg .when { color: var(--faint); font-weight: 600; font-size: 10px; letter-spacing: 1px; }
+  .chartwrap { position: relative; margin-top: 8px; height: 120px; touch-action: none; cursor: crosshair; }
+  .chartwrap svg { display: block; width: 100%; height: 100%; }
+  .cline { fill: none; stroke-width: 1.8; vector-effect: non-scaling-stroke; }
+  .cxlabel { position: absolute; top: -4px; transform: translateX(-50%); font-size: 9px; letter-spacing: 1px; color: var(--amber); background: #0a0c08; border: 1px solid var(--line2); border-radius: 4px; padding: 2px 6px; pointer-events: none; display: none; white-space: nowrap; }
+  .ranges { display: flex; gap: 4px; padding: 8px 0 10px; }
+  .ranges button { flex: 1; border: 1px solid transparent; background: none; color: var(--faint); font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 6px 0; border-radius: 7px; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+  .ranges .on { color: var(--amber); border-color: var(--line2); background: var(--amber-dim); }
+
+  .statline { display: flex; border: 1px solid var(--line); border-radius: 12px; margin-top: 10px; background: var(--panel); }
+  .statline .st { flex: 1; padding: 9px 12px; border-right: 1px solid var(--line); }
+  .statline .st:last-child { border-right: none; }
+  .st .k { font-size: 8.5px; letter-spacing: 1.5px; color: var(--faint); }
+  .st .v { font-size: 13.5px; font-weight: 750; margin-top: 3px; font-variant-numeric: tabular-nums; transition: color .3s; }
+  .st .v.flash { color: var(--green); }
+
+  /* ── desk table ──────────────────── */
+  .seclbl { font-size: 9px; letter-spacing: 2px; color: var(--faint); padding: 14px 4px 6px; display: flex; justify-content: space-between; }
+  .seclbl span { color: var(--amber); }
+  .tbl { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }
+  .thead { display: grid; grid-template-columns: 66px 64px 52px 1fr 76px; gap: 8px; padding: 7px 12px; font-size: 8.5px; letter-spacing: 1.2px; color: var(--faint); border-bottom: 1px solid var(--line2); background: #0a0d09; }
+  .thead .r { text-align: right; }
+  .trow { display: grid; grid-template-columns: 66px 64px 52px 1fr 76px; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background .12s; position: relative; }
+  .trow:last-child { border-bottom: none; }
+  .trow:active { background: var(--panel2); }
+  .trow .sym { font-size: 13.5px; font-weight: 800; letter-spacing: .3px; }
+  .trow .qty { font-size: 9px; color: var(--faint); margin-top: 2px; }
+  .trow .num { font-size: 12px; font-weight: 650; text-align: right; font-variant-numeric: tabular-nums; }
+  .trow .pct { font-size: 11px; font-weight: 750; text-align: right; font-variant-numeric: tabular-nums; }
+  .trow .pl { text-align: right; font-variant-numeric: tabular-nums; }
+  .trow .pl .a { font-size: 11.5px; font-weight: 750; }
+  .trow .pl .b { font-size: 9px; color: var(--faint); margin-top: 1px; }
+  .rspark { width: 100%; height: 24px; display: block; }
+  .deskfoot { font-size: 9px; color: var(--faint); letter-spacing: 1px; padding: 10px 6px 0; line-height: 1.7; }
+  .deskfoot b { color: var(--muted); }
+
+  /* ── dossier ─────────────────────── */
+  .dnav { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 12px 10px; border-bottom: 1px solid var(--line2); background: rgba(7,9,8,.85); backdrop-filter: blur(18px); }
+  .back { color: var(--amber); font-size: 24px; background: none; border: none; padding: 0 8px; cursor: pointer; font-family: var(--mono); line-height: 1; }
+  .dmeta { flex: 1; min-width: 0; }
+  .dsym { font-size: 17px; font-weight: 800; letter-spacing: .5px; }
+  .dsym small { font-size: 10px; color: var(--faint); font-weight: 600; margin-left: 7px; letter-spacing: .5px; }
+  .dquote { font-size: 11px; margin-top: 2px; font-variant-numeric: tabular-nums; font-weight: 700; }
+  .cmdmini { flex: none; border: 1px solid var(--line2); background: var(--amber-dim); color: var(--amber); font-family: var(--mono); font-size: 10px; font-weight: 800; letter-spacing: 1px; border-radius: 7px; padding: 8px 10px; cursor: pointer; transition: transform .12s; }
+  .cmdmini:active { transform: scale(.93); }
+  .dhero { border: 1px solid var(--line); border-radius: 14px; background: linear-gradient(178deg, #0e120d, #0a0d09); margin-top: 10px; padding: 12px 12px 2px; }
+  .dprice { font-size: 30px; font-weight: 800; letter-spacing: -.8px; font-variant-numeric: tabular-nums; }
+  .dchg { font-size: 11.5px; font-weight: 700; margin-top: 2px; min-height: 15px; font-variant-numeric: tabular-nums; }
+  .qgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-top: 10px; }
+  .qcell { background: var(--panel); padding: 8px 10px; }
+  .qcell .k { font-size: 8px; letter-spacing: 1.5px; color: var(--faint); }
+  .qcell .v { font-size: 11.5px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .holdline { margin-top: 10px; font-size: 10px; color: var(--muted); border: 1px dashed var(--line2); border-radius: 10px; padding: 8px 11px; letter-spacing: .4px; font-variant-numeric: tabular-nums; }
+  .holdline b { color: var(--amber); }
+
+  /* intel modules */
+  .mod { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); margin-top: 8px; overflow: hidden; }
+  .modhead { display: flex; align-items: center; gap: 9px; padding: 11px 12px; cursor: pointer; }
+  .modhead:active { background: var(--panel2); }
+  .modtag { font-size: 9px; font-weight: 800; letter-spacing: 1px; color: var(--amber); border: 1px solid var(--line2); border-radius: 5px; padding: 3px 6px; flex: none; }
+  .modsum { flex: 1; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .modsum b { color: var(--text); font-weight: 700; }
+  .modchev { color: var(--faint); font-size: 11px; transition: transform .35s cubic-bezier(.34,1.4,.64,1); flex: none; }
+  .mod.open .modchev { transform: rotate(90deg); }
+  .modbody { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .42s cubic-bezier(.34,1.25,.64,1); }
+  .mod.open .modbody { grid-template-rows: 1fr; }
+  .modinner { overflow: hidden; min-height: 0; }
+  .modpad { padding: 2px 12px 12px; }
+
+  .ledger { font-size: 10.5px; }
+  .lrow { display: flex; gap: 8px; align-items: baseline; padding: 6px 0; border-bottom: 1px dashed var(--line); font-variant-numeric: tabular-nums; }
+  .lrow:last-child { border-bottom: none; }
+  .lside { flex: none; width: 34px; font-weight: 800; letter-spacing: 1px; font-size: 9px; }
+  .lwho { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+  .lwho small { color: var(--faint); }
+  .lamt { flex: none; text-align: right; color: var(--muted); }
+  .lamt b { color: var(--text); display: block; font-size: 10.5px; }
+
+  .gauge { display: flex; align-items: flex-end; gap: 5px; height: 44px; margin-top: 6px; }
+  .gbar { flex: 1; background: linear-gradient(180deg, rgba(255,176,66,.55), rgba(255,176,66,.12)); border-radius: 3px 3px 0 0; position: relative; min-height: 4px; }
+  .gbar.cur { background: linear-gradient(180deg, var(--green), rgba(63,224,124,.15)); }
+  .gcap { display: flex; gap: 5px; margin-top: 4px; }
+  .gcap span { flex: 1; text-align: center; font-size: 7.5px; color: var(--faint); letter-spacing: .5px; }
+  .modnote { font-size: 9.5px; color: var(--faint); margin-top: 8px; line-height: 1.6; letter-spacing: .3px; }
+  .modnote b { color: var(--muted); }
+
+  .band { position: relative; height: 26px; border-radius: 7px; background: linear-gradient(90deg, rgba(255,93,82,.22), rgba(255,176,66,.18), rgba(63,224,124,.22)); margin-top: 12px; }
+  .band.flat { background: linear-gradient(90deg, rgba(63,224,124,.2), rgba(255,176,66,.16), rgba(255,93,82,.2)); }
+  .mark { position: absolute; top: -7px; bottom: -7px; width: 2px; transform: translateX(-1px); border-radius: 2px; }
+  .mark::after { content: attr(data-l); position: absolute; top: -13px; left: 50%; transform: translateX(-50%); font-size: 8px; letter-spacing: .5px; white-space: nowrap; }
+  .mark.px { background: #fff; } .mark.px::after { color: #fff; }
+  .mark.pt { background: var(--cyan); top: auto; height: 40px; } .mark.pt::after { color: var(--cyan); top: auto; bottom: -13px; }
+  .bandlbl { display: flex; justify-content: space-between; font-size: 8.5px; color: var(--faint); margin-top: 16px; letter-spacing: .5px; font-variant-numeric: tabular-nums; }
+  .distbar { display: flex; height: 9px; border-radius: 5px; overflow: hidden; margin-top: 12px; }
+  .distbar .db { height: 100%; } .db.buy { background: var(--green); } .db.hold { background: var(--amber); } .db.sell { background: var(--red); }
+  .distlbl { display: flex; justify-content: space-between; font-size: 9px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+  .erngrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+  .erncell { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; background: #0a0d09; }
+  .erncell .k { font-size: 8px; letter-spacing: 1.5px; color: var(--faint); }
+  .erncell .v { font-size: 12px; font-weight: 750; margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+  /* ── macro view ──────────────────── */
+  .mgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px; }
+  .mcell { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 11px 12px; }
+  .mcell .k { font-size: 8.5px; letter-spacing: 1.5px; color: var(--faint); }
+  .mcell .v { font-size: 17px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .mcell .s { font-size: 10px; font-weight: 700; margin-top: 2px; }
+  .sectorrow { display: flex; align-items: center; gap: 9px; padding: 7px 12px; border-bottom: 1px solid var(--line); font-size: 10.5px; }
+  .sectorrow:last-child { border-bottom: none; }
+  .sectorrow .sn { width: 102px; flex: none; color: var(--muted); }
+  .sbarwrap { flex: 1; height: 8px; position: relative; }
+  .sbarwrap::before { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line2); }
+  .sbar { position: absolute; top: 0; height: 100%; border-radius: 4px; }
+  .sectorrow .sv { width: 48px; flex: none; text-align: right; font-weight: 750; font-variant-numeric: tabular-nums; font-size: 10.5px; }
+  .evrow { display: flex; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .evrow:last-child { border-bottom: none; }
+  .evd { flex: none; width: 58px; font-size: 9.5px; color: var(--amber); font-weight: 700; letter-spacing: .5px; }
+  .evt { flex: 1; font-size: 11px; color: var(--text); line-height: 1.45; }
+  .evt small { color: var(--faint); display: block; font-size: 9px; margin-top: 1px; }
+
+  /* ── tab bar ─────────────────────── */
+  .tabbar { position: absolute; bottom: 0; left: 0; right: 0; z-index: 40; height: 88px; padding: 10px 14px 28px; background: rgba(7,9,8,.88); backdrop-filter: blur(20px); border-top: 1px solid var(--line2); display: flex; gap: 8px; }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: none; border: 1px solid transparent; border-radius: 11px; color: var(--faint); font-size: 9px; font-weight: 800; letter-spacing: 2px; cursor: pointer; font-family: var(--mono); transition: color .15s, border-color .15s, background .15s; }
+  .tab .ti { font-size: 15px; line-height: 1; }
+  .tab.active { color: var(--amber); border-color: var(--line2); background: var(--amber-dim); }
+  .tab.cmdtab { color: var(--green); }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #fff; opacity: .3; z-index: 60; pointer-events: none; }
+
+  /* ── command sheet ───────────────── */
+  .sheetdim { position: absolute; inset: 0; z-index: 80; background: rgba(0,0,0,.55); opacity: 0; pointer-events: none; transition: opacity .25s; }
+  .sheetdim.show { opacity: 1; pointer-events: auto; }
+  .sheet { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 81; background: #0b0e0a; border: 1px solid var(--line2); border-radius: 22px; padding: 18px 16px calc(16px + env(safe-area-inset-bottom, 8px)); transform: translateY(115%); transition: transform .34s cubic-bezier(.32,.72,.27,1); box-shadow: 0 -16px 50px rgba(0,0,0,.6); }
+  .sheet.show { transform: none; }
+  .sheet h3 { font-size: 12px; font-weight: 800; letter-spacing: 3px; color: var(--amber); display: flex; justify-content: space-between; align-items: baseline; }
+  .sheet h3 small { color: var(--faint); letter-spacing: 1px; font-size: 9px; }
+  .cmdtarget { display: flex; gap: 5px; margin-top: 12px; }
+  .cmdtarget button { flex: 1; border: 1px solid var(--line); background: none; color: var(--faint); font-family: var(--mono); font-size: 10px; font-weight: 800; padding: 7px 0; border-radius: 8px; cursor: pointer; transition: all .15s; }
+  .cmdtarget button.on { color: var(--amber); border-color: var(--line2); background: var(--amber-dim); }
+  .cmdlist { margin-top: 10px; }
+  .cmdact { display: flex; align-items: center; gap: 10px; width: 100%; border: none; background: none; color: var(--text); font-family: var(--mono); font-size: 11.5px; text-align: left; padding: 11px 6px; border-bottom: 1px dashed var(--line); cursor: pointer; transition: background .12s; border-radius: 6px; }
+  .cmdact:active { background: var(--panel2); }
+  .cmdact .pre { color: var(--green); flex: none; }
+  .cmdact .agent { margin-left: auto; flex: none; font-size: 8.5px; letter-spacing: 1px; color: var(--cyan); border: 1px solid rgba(95,212,232,.25); border-radius: 4px; padding: 2px 5px; }
+  .cmdlog { margin-top: 10px; background: #060807; border: 1px solid var(--line); border-radius: 10px; padding: 10px 11px; font-size: 10px; line-height: 1.8; min-height: 58px; max-height: 130px; overflow-y: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cmdlog .ok { color: var(--green); } .cmdlog .am { color: var(--amber); } .cmdlog .cy { color: var(--cyan); }
+  .cmdlog div { animation: login .2s ease; }
+  @keyframes login { from { opacity: 0; transform: translateY(4px); } }
+  .approvebtns { display: flex; gap: 8px; margin-top: 6px; }
+  .approvebtns button { flex: 1; border: none; border-radius: 9px; padding: 11px; font-family: var(--mono); font-size: 11px; font-weight: 800; letter-spacing: 1.5px; cursor: pointer; transition: transform .12s; }
+  .approvebtns button:active { transform: scale(.95); }
+  .ap-yes { background: var(--green); color: #03130a; }
+  .ap-no { background: var(--panel2); color: var(--muted); border: 1px solid var(--line) !important; }
+
+  /* ── toast + fill celebration ────── */
+  .toasts { position: absolute; top: 64px; left: 0; right: 0; z-index: 75; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+  .toast { background: rgba(12,15,12,.96); border: 1px solid var(--line2); border-radius: 10px; padding: 9px 16px; font-size: 11px; font-weight: 700; color: var(--text); box-shadow: 0 10px 30px rgba(0,0,0,.5); animation: toastin .3s cubic-bezier(.32,.72,.27,1); max-width: 86%; letter-spacing: .3px; }
+  @keyframes toastin { from { opacity: 0; transform: translateY(-12px) scale(.96); } }
+  .toast.out { transition: opacity .25s, transform .25s; opacity: 0; transform: translateY(-10px); }
+  .toast .am { color: var(--amber); } .toast .ok { color: var(--green); }
+
+  .fillwrap { position: absolute; inset: 0; z-index: 95; display: none; align-items: center; justify-content: center; pointer-events: none; }
+  .fillwrap.show { display: flex; }
+  .fillcard { position: relative; background: #0a0e0a; border: 1px solid rgba(63,224,124,.5); border-radius: 18px; padding: 22px 26px; text-align: center; box-shadow: 0 0 0 6px rgba(63,224,124,.08), 0 0 60px rgba(63,224,124,.25), 0 24px 70px rgba(0,0,0,.7); animation: fillpop .5s cubic-bezier(.3,1.45,.5,1); }
+  @keyframes fillpop { from { transform: scale(.6); opacity: 0; } }
+  .fillcard .fl { font-size: 10px; letter-spacing: 4px; color: var(--green); font-weight: 800; }
+  .fillcard .fs { font-size: 19px; font-weight: 800; margin-top: 8px; letter-spacing: .5px; }
+  .fillcard .fp { font-size: 26px; font-weight: 800; color: var(--green); margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .fillcard .fn { font-size: 9px; color: var(--faint); margin-top: 8px; letter-spacing: 1px; }
+  .pt2 { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; border-radius: 1px; pointer-events: none; animation: boom .9s cubic-bezier(.1,.8,.4,1) forwards; }
+  @keyframes boom { from { transform: translate(0,0) rotate(0); opacity: 1; } to { transform: translate(var(--dx), var(--dy)) rotate(280deg) scale(.3); opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span id="clock">9:41</span><span class="icons">DUCK.LOCAL ▮▮▮▯</span></div>
+
+  <div class="main">
+
+    <!-- ════════ DESK ════════ -->
+    <section class="view active" id="view-desk">
+      <header class="vhead">
+        <div class="apptitle">DUCK/TERM<small>SCHWAB ····8841 · TUE JUN 09 2026</small></div>
+        <div class="hubchip"><span class="ldot"></span>FLOCK 3/3</div>
+      </header>
+      <div class="strip" id="strip"><div class="striptrack" id="striptrack"></div></div>
+      <div class="scroll">
+        <div class="hero">
+          <div class="hlabel"><span>NET LIQUIDATION VALUE</span><b id="hero-rangelbl">1D</b></div>
+          <div class="heroval" id="heroval">$284,512.40</div>
+          <div class="herochg" id="herochg"></div>
+          <div class="chartwrap" id="herochart"></div>
+          <div class="ranges" id="heroranges"></div>
+        </div>
+        <div class="statline">
+          <div class="st"><div class="k">CASH</div><div class="v" id="st-cash">$48,210.00</div></div>
+          <div class="st"><div class="k">BUY PWR</div><div class="v" id="st-bp">$96,420.00</div></div>
+          <div class="st"><div class="k">DAY P/L</div><div class="v up">+$3,214.88</div></div>
+        </div>
+        <div class="seclbl"><span>POSITIONS · 5</span><span style="color:var(--faint)">TAP = DOSSIER · HOLD = CMD</span></div>
+        <div class="tbl">
+          <div class="thead"><div>SYM</div><div class="r">LAST</div><div class="r">DAY%</div><div style="text-align:center">5D</div><div class="r">OPEN P/L</div></div>
+          <div id="desk-rows"></div>
+        </div>
+        <div class="deskfoot">SRC <b>schwab-broker</b> positions/quotes · refreshed 09:41:52 ET · day P/L via currentDayProfitLoss<br>flock: <b>arm-watch</b> live · <b>earnings-watch</b> idle (next 16:10) · <b>approvals-gate</b> armed</div>
+      </div>
+    </section>
+
+    <!-- ════════ MACRO ════════ -->
+    <section class="view" id="view-macro">
+      <header class="vhead">
+        <div class="apptitle">MACRO<small>MARKET CONTEXT · 09:41 ET</small></div>
+        <div class="hubchip"><span class="ldot"></span>FMP LIVE</div>
+      </header>
+      <div class="strip held-clone"><div class="striptrack" id="striptrack2"></div></div>
+      <div class="scroll">
+        <div class="mgrid">
+          <div class="mcell"><div class="k">SPY</div><div class="v">612.48</div><div class="s up">+0.74%</div></div>
+          <div class="mcell"><div class="k">QQQ</div><div class="v">549.12</div><div class="s up">+1.02%</div></div>
+          <div class="mcell"><div class="k">VIX</div><div class="v">13.86</div><div class="s dn">−4.2% · calm</div></div>
+          <div class="mcell"><div class="k">PUT/CALL</div><div class="v">0.84</div><div class="s" style="color:var(--muted)">ADV/DEC 2.1 : 1</div></div>
+        </div>
+        <div class="seclbl"><span>TREASURY CURVE</span><span style="color:var(--faint)">treasury_rates</span></div>
+        <div class="tbl" style="padding:12px">
+          <div class="sectorrow" style="border:none;padding:4px 0"><div class="sn">2Y</div><div class="sbarwrap"><div class="sbar" style="left:50%;width:39%;background:var(--amber)"></div></div><div class="sv">3.92%</div></div>
+          <div class="sectorrow" style="border:none;padding:4px 0"><div class="sn">10Y</div><div class="sbarwrap"><div class="sbar" style="left:50%;width:42%;background:var(--amber)"></div></div><div class="sv">4.18%</div></div>
+          <div class="sectorrow" style="border:none;padding:4px 0"><div class="sn">30Y</div><div class="sbarwrap"><div class="sbar" style="left:50%;width:46%;background:var(--amber)"></div></div><div class="sv">4.62%</div></div>
+          <div class="modnote" style="margin-top:6px">2s10s +26bp · curve steepened 3bp this week · 10Y +2bp today ahead of CPI</div>
+        </div>
+        <div class="seclbl"><span>SECTORS · TODAY</span><span style="color:var(--faint)">sector_performance</span></div>
+        <div class="tbl" id="sectors"></div>
+        <div class="seclbl"><span>EVENT WEEK</span><span style="color:var(--faint)">economic + earnings + auctions</span></div>
+        <div class="tbl" id="events"></div>
+      </div>
+    </section>
+
+    <!-- ════════ DOSSIER (pushed) ════════ -->
+    <section class="view" id="view-dossier">
+      <div class="dnav">
+        <button class="back" id="dossier-back">‹</button>
+        <div class="dmeta">
+          <div class="dsym" id="d-sym">NVDA<small>NVIDIA CORP</small></div>
+          <div class="dquote" id="d-quoteline"></div>
+        </div>
+        <button class="cmdmini" id="d-cmd">⌘ CMD</button>
+      </div>
+      <div class="scroll" id="dossier-scroll">
+        <div class="dhero">
+          <div class="hlabel"><span id="d-pricelabel">LAST</span><b id="d-rangelbl">1D</b></div>
+          <div class="dprice" id="d-price"></div>
+          <div class="dchg" id="d-chg"></div>
+          <div class="chartwrap" id="d-chart" style="height:108px"></div>
+          <div class="ranges" id="d-ranges"></div>
+        </div>
+        <div class="qgrid" id="d-qgrid"></div>
+        <div class="holdline" id="d-hold"></div>
+        <div id="d-mods"></div>
+        <div class="deskfoot" id="d-foot"></div>
+      </div>
+    </section>
+
+  </div>
+
+  <nav class="tabbar">
+    <button class="tab active" data-tab="desk"><span class="ti">▤</span>DESK</button>
+    <button class="tab" data-tab="macro"><span class="ti">◈</span>MACRO</button>
+    <button class="tab cmdtab" id="tab-cmd"><span class="ti">⌘</span>CMD</button>
+  </nav>
+  <div class="homebar"></div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <div class="sheetdim" id="sheetdim"></div>
+  <div class="sheet" id="sheet">
+    <h3>COMMAND<small id="cmd-sub">→ flock @ duck.local:8787</small></h3>
+    <div class="cmdtarget" id="cmd-target"></div>
+    <div class="cmdlist" id="cmd-list"></div>
+    <div class="cmdlog" id="cmd-log"><div style="color:var(--faint)">// flock command bus — actions route to agents, fills need your approval</div></div>
+  </div>
+
+  <div class="fillwrap" id="fillwrap"></div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (t, c, h) => { const e = document.createElement(t); if (c) e.className = c; if (h != null) e.innerHTML = h; return e; };
+const fmt = (n, d = 2) => n.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+const sgn = n => (n >= 0 ? "+" : "−") + fmt(Math.abs(n));
+const sgnP = n => (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(2) + "%";
+const cls = n => n >= 0 ? "up" : "dn";
+
+/* ── clock ── */
+function tickClock() {
+  const d = new Date(); const h = d.getHours() % 12 || 12;
+  $("#clock").textContent = h + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+tickClock(); setInterval(tickClock, 10000);
+
+/* ── toast ── */
+function toast(html, ms = 3200) {
+  const t = el("div", "toast", html);
+  $("#toasts").appendChild(t);
+  setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 260); }, ms);
+}
+
+/* ── seeded series gen ── */
+function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+function genSeries(seed, n, startV, endV, vol) {
+  const r = rng(seed), pts = []; let v = startV;
+  for (let i = 0; i < n; i++) { pts.push(v); v += (r() - 0.485) * vol * startV; }
+  const last = pts[n - 1];
+  for (let i = 0; i < n; i++) pts[i] += (endV - last) * (i / (n - 1));
+  pts[0] = startV; pts[n - 1] = endV;
+  return pts;
+}
+const N = 80;
+function timeLabels(range) {
+  if (range === "1D") return Array.from({ length: N }, (_, i) => {
+    const m = 570 + 390 * i / (N - 1), h = Math.floor(m / 60), mm = Math.round(m % 60);
+    return (((h + 11) % 12) + 1) + ":" + String(mm).padStart(2, "0") + (h < 12 ? " AM" : " PM") + " ET";
+  });
+  const days = { "1W": 7, "1M": 30, "3M": 91, "YTD": 159, "ALL": 1825 }[range];
+  return Array.from({ length: N }, (_, i) => {
+    const d = new Date(2026, 5, 9); d.setDate(d.getDate() - Math.round(days * (1 - i / (N - 1))));
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: range === "ALL" || range === "YTD" ? "numeric" : undefined });
+  });
+}
+const RANGES = ["1D", "1W", "1M", "3M", "YTD", "ALL"];
+const VOL = { "1D": 0.0012, "1W": 0.004, "1M": 0.007, "3M": 0.011, "YTD": 0.014, "ALL": 0.028 };
+
+/* ── chart factory (inline SVG + pointer scrub) ── */
+function makeChart(host, prefix, onScrub, onRelease) {
+  host.innerHTML = `
+    <svg viewBox="0 0 360 110" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id="${prefix}gu" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3fe07c" stop-opacity=".22"/><stop offset="1" stop-color="#3fe07c" stop-opacity="0"/></linearGradient>
+        <linearGradient id="${prefix}gd" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff5d52" stop-opacity=".2"/><stop offset="1" stop-color="#ff5d52" stop-opacity="0"/></linearGradient>
+      </defs>
+      <path class="cfill" d=""/>
+      <path class="cline" d=""/>
+      <line class="base" x1="0" x2="360" stroke="rgba(235,227,200,.14)" stroke-dasharray="2 4" vector-effect="non-scaling-stroke"/>
+      <g class="cx" style="display:none">
+        <line y1="0" y2="110" stroke="rgba(255,176,66,.6)" vector-effect="non-scaling-stroke"/>
+        <circle r="3.4" fill="#ffb042"/>
+      </g>
+      <circle class="enddot" r="3"/>
+    </svg>
+    <div class="cxlabel"></div>`;
+  const svg = host.querySelector("svg"), lineEl = host.querySelector(".cline"), fillEl = host.querySelector(".cfill"),
+    cx = host.querySelector(".cx"), cxL = cx.querySelector("line"), cxC = cx.querySelector("circle"),
+    endDot = host.querySelector(".enddot"), baseL = host.querySelector(".base"), lbl = host.querySelector(".cxlabel");
+  let xs = [], ys = [], pts = [], labels = [], scrub = false;
+
+  function render(series, labs, up) {
+    pts = series; labels = labs;
+    const mn = Math.min(...pts), mx = Math.max(...pts), pad = (mx - mn) * 0.12 || 1;
+    xs = pts.map((_, i) => i / (pts.length - 1) * 360);
+    ys = pts.map(v => 104 - (v - (mn - pad)) / ((mx + pad) - (mn - pad)) * 98);
+    const col = up ? "#3fe07c" : "#ff5d52";
+    lineEl.setAttribute("stroke", col);
+    lineEl.setAttribute("d", "M" + xs.map((x, i) => x.toFixed(1) + " " + ys[i].toFixed(1)).join(" L"));
+    fillEl.setAttribute("fill", `url(#${prefix}${up ? "gu" : "gd"})`);
+    fillEl.setAttribute("d", "M0 110 L" + xs.map((x, i) => x.toFixed(1) + " " + ys[i].toFixed(1)).join(" L") + " L360 110 Z");
+    const by = 104 - (pts[0] - (mn - pad)) / ((mx + pad) - (mn - pad)) * 98;
+    baseL.setAttribute("y1", by); baseL.setAttribute("y2", by);
+    endDot.setAttribute("cx", 360); endDot.setAttribute("cy", ys[ys.length - 1]); endDot.setAttribute("fill", col);
+  }
+  function move(e) {
+    const r = host.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    const i = Math.round(f * (pts.length - 1));
+    cx.style.display = "";
+    cxL.setAttribute("x1", xs[i]); cxL.setAttribute("x2", xs[i]);
+    cxC.setAttribute("cx", xs[i]); cxC.setAttribute("cy", ys[i]);
+    lbl.style.display = "block";
+    lbl.style.left = Math.max(34, Math.min(r.width - 34, f * r.width)) + "px";
+    lbl.textContent = labels[i];
+    onScrub(pts[i], pts[0], i);
+  }
+  host.addEventListener("pointerdown", e => { scrub = true; host.setPointerCapture(e.pointerId); move(e); });
+  host.addEventListener("pointermove", e => { if (scrub) move(e); });
+  const release = () => { if (!scrub) return; scrub = false; cx.style.display = "none"; lbl.style.display = "none"; onRelease(); };
+  host.addEventListener("pointerup", release);
+  host.addEventListener("pointercancel", release);
+  return { render };
+}
+function rangePills(host, onPick) {
+  RANGES.forEach((r, i) => {
+    const b = el("button", i === 0 ? "on" : "", r);
+    b.onclick = () => { host.querySelectorAll("button").forEach(x => x.classList.remove("on")); b.classList.add("on"); onPick(r); };
+    host.appendChild(b);
+  });
+}
+
+/* ════════ DATA ════════ */
+const ACCT = { total: 284512.40, dayAmt: 3214.88, dayPct: 1.14, cash: 48210.00, bp: 96420.00 };
+const PORT_PCT = { "1D": null, "1W": 2.08, "1M": 3.82, "3M": 9.41, "YTD": 12.64, "ALL": 41.18 };
+
+const SYMS = {
+  NVDA: { name: "NVIDIA CORP", mark: 682.92, qty: 120, avg: 612.40, day: -0.61, seed: 11,
+    q: { bid: "682.88", ask: "682.97", rng: "678.10–691.46", w52: "404.21–745.80", vol: "31.2M", pe: "41.2", mcap: "1.68T" },
+    pct: { "1W": 2.41, "1M": 5.84, "3M": 18.22, "YTD": 24.63, "ALL": 212.4 },
+    si: { v: 1.12, dtc: 1.1, trend: [1.61, 1.48, 1.38, 1.30, 1.21, 1.12], asof: "May 29 settle" },
+    insider: [
+      { s: "SELL", w: "HUANG J", r: "CEO", sh: "120,000", px: "668.14", d: "JUN 03", note: "10b5-1" },
+      { s: "SELL", w: "KRESS C", r: "CFO", sh: "24,000", px: "671.02", d: "MAY 27", note: "10b5-1" },
+      { s: "SELL", w: "PURI A", r: "EVP", sh: "15,000", px: "655.80", d: "MAY 20" },
+      { s: "BUY", w: "STEVENS M", r: "DIR", sh: "4,000", px: "641.20", d: "MAY 14" },
+      { s: "SELL", w: "SHOQUIST D", r: "EVP", sh: "8,800", px: "638.45", d: "MAY 08", note: "10b5-1" }],
+    insiderSum: "net −163.8K sh / 30d · 1 open-mkt buy",
+    congress: [
+      { s: "BUY", w: "M. GREEN", r: "HOUSE", amt: "$50K–100K", d: "MAY 18", disc: "disc JUN 02" },
+      { s: "SELL", w: "R. BLUMENTHAL", r: "SENATE", amt: "$15K–50K", d: "MAY 22", disc: "disc JUN 04" },
+      { s: "BUY", w: "J. GOTTHEIMER", r: "HOUSE", amt: "$1K–15K", d: "MAY 11", disc: "disc MAY 29" }],
+    analyst: { n: 64, buy: 50, hold: 12, sell: 2, avg: 748, lo: 520, hi: 880 },
+    val: { pe: 41.2, lo: 24.6, hi: 96.3, med: 54.1, note: "24% below 5y median — cheapest since Oct 2024" },
+    earn: { d: "WED AUG 26 · AMC", est: "$1.42", prior: "+8.4% beat", move: "±7.1%" } },
+  BRKB: { name: "BERKSHIRE HATH B", tick: "BRK.B", mark: 442.50, qty: 160, avg: 398.25, day: 0.31, seed: 23,
+    q: { bid: "442.41", ask: "442.58", rng: "440.02–443.65", w52: "388.40–451.10", vol: "2.9M", pe: "23.8", mcap: "954B" },
+    pct: { "1W": 0.82, "1M": 1.94, "3M": 5.12, "YTD": 7.91, "ALL": 64.2 },
+    si: { v: 0.92, dtc: 2.0, trend: [1.08, 1.04, 1.01, 0.98, 0.95, 0.92], asof: "May 29 settle" },
+    insider: [
+      { s: "BUY", w: "ABEL G", r: "CEO", sh: "2,400", px: "438.10", d: "MAY 27" },
+      { s: "BUY", w: "JAIN A", r: "VCHR", sh: "1,000", px: "431.55", d: "MAY 15" },
+      { s: "BUY", w: "WITMER M", r: "DIR", sh: "500", px: "428.90", d: "MAY 08" },
+      { s: "SELL", w: "COMBS T", r: "EXEC", sh: "3,000", px: "435.60", d: "APR 29" }],
+    insiderSum: "net +900 sh / 30d · 3 open-mkt buys",
+    congress: [{ s: "BUY", w: "J. BOOZMAN", r: "SENATE", amt: "$15K–50K", d: "MAY 20", disc: "disc JUN 03" }],
+    analyst: { n: 12, buy: 7, hold: 5, sell: 0, avg: 472, lo: 410, hi: 520 },
+    val: { pe: 23.8, lo: 18.2, hi: 26.4, med: 22.0, note: "8% above 5y median — premium to book at 1.6x" },
+    earn: { d: "SAT AUG 01 · BMO", est: "$5.21", prior: "+3.2% beat", move: "±2.1%" } },
+  MSFT: { name: "MICROSOFT CORP", mark: 470.05, qty: 80, avg: 411.90, day: 0.52, seed: 37,
+    q: { bid: "469.98", ask: "470.12", rng: "466.30–471.84", w52: "392.18–489.62", vol: "14.8M", pe: "35.4", mcap: "3.49T" },
+    pct: { "1W": 1.21, "1M": 3.05, "3M": 8.94, "YTD": 10.82, "ALL": 88.6 },
+    si: { v: 0.64, dtc: 1.2, trend: [0.81, 0.77, 0.74, 0.70, 0.66, 0.64], asof: "May 29 settle" },
+    insider: [
+      { s: "SELL", w: "NADELLA S", r: "CEO", sh: "78,000", px: "461.20", d: "JUN 01", note: "10b5-1" },
+      { s: "SELL", w: "HOOD A", r: "CFO", sh: "20,000", px: "455.90", d: "MAY 22", note: "10b5-1" },
+      { s: "BUY", w: "HOFFMAN R", r: "DIR", sh: "1,200", px: "449.05", d: "MAY 15" },
+      { s: "SELL", w: "SMITH B", r: "VCHR", sh: "30,000", px: "452.10", d: "MAY 09" },
+      { s: "SELL", w: "ALTHOFF J", r: "EVP", sh: "9,500", px: "447.70", d: "MAY 01", note: "10b5-1" }],
+    insiderSum: "net −136.3K sh / 30d · routine 10b5-1 heavy",
+    congress: [
+      { s: "SELL", w: "S. WHITEHOUSE", r: "SENATE", amt: "$15K–50K", d: "MAY 21", disc: "disc JUN 05" },
+      { s: "BUY", w: "V. SPARTZ", r: "HOUSE", amt: "$1K–15K", d: "MAY 13", disc: "disc MAY 30" }],
+    analyst: { n: 55, buy: 47, hold: 8, sell: 0, avg: 512, lo: 420, hi: 600 },
+    val: { pe: 35.4, lo: 24.8, hi: 39.6, med: 32.1, note: "10% above 5y median — Azure AI premium holding" },
+    earn: { d: "TUE JUL 28 · AMC", est: "$3.62", prior: "+4.9% beat", move: "±4.2%" } },
+  AAPL: { name: "APPLE INC", mark: 196.00, qty: 145, avg: 182.40, day: 0.84, seed: 41,
+    q: { bid: "195.96", ask: "196.04", rng: "193.88–196.72", w52: "168.27–229.84", vol: "44.6M", pe: "28.9", mcap: "2.93T" },
+    pct: { "1W": 1.64, "1M": 2.88, "3M": 6.41, "YTD": -3.21, "ALL": 41.7 },
+    si: { v: 0.78, dtc: 1.4, trend: [0.92, 0.89, 0.85, 0.83, 0.80, 0.78], asof: "May 29 settle" },
+    insider: [
+      { s: "SELL", w: "COOK T", r: "CEO", sh: "200,000", px: "192.10", d: "MAY 28", note: "10b5-1" },
+      { s: "SELL", w: "PAREKH K", r: "CFO", sh: "38,000", px: "190.55", d: "MAY 21", note: "10b5-1" },
+      { s: "BUY", w: "LOZANO M", r: "DIR", sh: "2,500", px: "186.30", d: "MAY 12" },
+      { s: "SELL", w: "WILLIAMS J", r: "COO", sh: "55,000", px: "188.92", d: "MAY 06" },
+      { s: "SELL", w: "ADAMS K", r: "GC", sh: "11,000", px: "187.40", d: "APR 30", note: "10b5-1" }],
+    insiderSum: "net −301.5K sh / 30d · 1 director buy",
+    congress: [
+      { s: "BUY", w: "N. PELOSI", r: "HOUSE", amt: "$250K–500K", d: "MAY 30", disc: "disc JUN 08 · calls" },
+      { s: "SELL", w: "M. McCAUL", r: "HOUSE", amt: "$15K–50K", d: "MAY 19", disc: "disc JUN 02" }],
+    analyst: { n: 48, buy: 30, hold: 15, sell: 3, avg: 218, lo: 165, hi: 260 },
+    val: { pe: 28.9, lo: 20.1, hi: 37.8, med: 28.2, note: "in line with 5y median — services mix re-rating" },
+    earn: { d: "THU JUL 30 · AMC", est: "$1.48", prior: "+2.1% beat", move: "±3.8%" } },
+  TLT: { name: "ISHARES 20+Y TREAS", mark: 87.64, qty: 200, avg: 94.10, day: 0.40, seed: 53, etf: true,
+    q: { bid: "87.62", ask: "87.65", rng: "87.21–87.80", w52: "84.92–101.64", vol: "28.4M", pe: "—", mcap: "48.2B AUM" },
+    pct: { "1W": 0.91, "1M": -1.42, "3M": -3.85, "YTD": -5.94, "ALL": -28.4 },
+    si: { v: 3.42, dtc: 2.8, trend: [4.10, 3.95, 3.81, 3.70, 3.55, 3.42], asof: "May 29 settle" },
+    congress: [{ s: "BUY", w: "T. TUBERVILLE", r: "SENATE", amt: "$100K–250K", d: "MAY 26", disc: "disc JUN 05" }],
+    rates: true, div: { ex: "WED JUL 01", amt: "$0.312/sh", yld: "4.31% TTM", recv: "you collect $62.40" } },
+};
+const ORDER = ["NVDA", "BRKB", "MSFT", "AAPL", "TLT"];
+const tick = k => SYMS[k].tick || k;
+
+/* ════════ MARKET STRIP ════════ */
+const STRIP = [
+  ["SPY", "612.48", "+0.74%", 1], ["QQQ", "549.12", "+1.02%", 1], ["IWM", "231.84", "+0.38%", 1],
+  ["VIX", "13.86", "−4.2%", 0], ["10Y", "4.18%", "+2bp", 0], ["2Y", "3.92%", "−1bp", 1],
+  ["P/C", "0.84", "neutral", 2], ["A/D", "2.1:1", "broad", 1], ["WTI", "71.18", "+0.6%", 1], ["BTC", "118,420", "+1.8%", 1],
+];
+function buildStrip(host) {
+  const mk = () => STRIP.map(([k, v, c, u]) =>
+    `<span class="tkitem"><span class="tk">${k}</span><span class="tv">${v}</span><span class="${u === 1 ? "up" : u === 0 ? "dn" : ""}" ${u === 2 ? 'style="color:var(--faint)"' : ""}>${c}</span></span>`).join("");
+  host.innerHTML = mk() + mk();
+}
+buildStrip($("#striptrack")); buildStrip($("#striptrack2"));
+const strip = $("#strip");
+strip.addEventListener("pointerdown", () => strip.classList.add("held"));
+["pointerup", "pointercancel", "pointerleave"].forEach(ev => strip.addEventListener(ev, () => strip.classList.remove("held")));
+
+/* ════════ HERO CHART ════════ */
+let heroRange = "1D", heroPts = [];
+const heroChart = makeChart($("#herochart"), "h",
+  (v, v0) => {
+    $("#heroval").textContent = "$" + fmt(v);
+    const d = v - v0, p = d / v0 * 100;
+    $("#herochg").className = "herochg " + cls(d);
+    $("#herochg").innerHTML = `${d >= 0 ? "▲" : "▼"} ${sgn(d)} (${sgnP(p)}) <span class="when">SCRUB</span>`;
+  },
+  () => setHeroResting());
+function heroSeries(r) {
+  const start = r === "1D" ? ACCT.total - ACCT.dayAmt : ACCT.total / (1 + PORT_PCT[r] / 100);
+  return genSeries(7 + RANGES.indexOf(r) * 13, N, start, ACCT.total, VOL[r]);
+}
+function setHeroResting() {
+  $("#heroval").textContent = "$" + fmt(ACCT.total);
+  const d = ACCT.total - heroPts[0], p = d / heroPts[0] * 100;
+  $("#herochg").className = "herochg " + cls(d);
+  $("#herochg").innerHTML = heroRange === "1D"
+    ? `▲ +$${fmt(ACCT.dayAmt)} (+${ACCT.dayPct.toFixed(2)}%) <span class="when">TODAY</span>`
+    : `${d >= 0 ? "▲" : "▼"} ${sgn(d)} (${sgnP(p)}) <span class="when">${heroRange}</span>`;
+}
+function drawHero(r) {
+  heroRange = r; $("#hero-rangelbl").textContent = r;
+  heroPts = heroSeries(r);
+  heroChart.render(heroPts, timeLabels(r), heroPts[N - 1] >= heroPts[0]);
+  setHeroResting();
+}
+rangePills($("#heroranges"), drawHero);
+drawHero("1D");
+
+/* ════════ DESK TABLE ════════ */
+function sparkSVG(seed, up) {
+  const pts = genSeries(seed, 28, 100, up ? 104 : 96.4, 0.012);
+  const mn = Math.min(...pts), mx = Math.max(...pts), sp = mx - mn || 1;
+  const d = pts.map((v, i) => (i / 27 * 64).toFixed(1) + " " + (22 - (v - mn) / sp * 20).toFixed(1)).join(" L");
+  return `<svg class="rspark" viewBox="0 0 64 24" preserveAspectRatio="none"><path d="M${d}" fill="none" stroke="${up ? "#3fe07c" : "#ff5d52"}" stroke-width="1.4" vector-effect="non-scaling-stroke"/></svg>`;
+}
+function renderDesk() {
+  const host = $("#desk-rows"); host.innerHTML = "";
+  ORDER.forEach(k => {
+    const s = SYMS[k], pl = (s.mark - s.avg) * s.qty, plp = (s.mark / s.avg - 1) * 100;
+    const row = el("div", "trow", `
+      <div><div class="sym">${tick(k)}</div><div class="qty">${s.qty} SH</div></div>
+      <div class="num">${fmt(s.mark)}</div>
+      <div class="pct ${cls(s.day)}">${sgnP(s.day)}</div>
+      <div>${sparkSVG(s.seed + 5, s.pct["1W"] >= 0)}</div>
+      <div class="pl"><div class="a ${cls(pl)}">${sgn(pl)}</div><div class="b">${sgnP(plp)}</div></div>`);
+    // tap → dossier, long-press → cmd sheet
+    let lpTimer = null, lpFired = false, sx = 0, sy = 0;
+    row.addEventListener("pointerdown", e => {
+      lpFired = false; sx = e.clientX; sy = e.clientY;
+      lpTimer = setTimeout(() => { lpFired = true; openCmd(k); }, 450);
+    });
+    row.addEventListener("pointermove", e => {
+      if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) > 9) { clearTimeout(lpTimer); }
+    });
+    ["pointerup", "pointercancel", "pointerleave"].forEach(ev => row.addEventListener(ev, () => clearTimeout(lpTimer)));
+    row.addEventListener("click", () => { if (!lpFired) openDossier(k); });
+    host.appendChild(row);
+  });
+}
+renderDesk();
+
+/* ════════ MACRO ════════ */
+const SECTORS = [["INFO TECH", 1.42], ["COMM SVCS", 0.91], ["CONS DISC", 0.66], ["INDUSTRIALS", 0.48], ["FINANCIALS", 0.37], ["HEALTH CARE", 0.12], ["MATERIALS", -0.18], ["UTILITIES", -0.31], ["REAL ESTATE", -0.52], ["ENERGY", -0.84]];
+$("#sectors").innerHTML = SECTORS.map(([n, v]) => {
+  const w = Math.min(46, Math.abs(v) * 30);
+  const bar = v >= 0 ? `style="left:50%;width:${w}%;background:var(--green)"` : `style="right:50%;width:${w}%;background:var(--red)"`;
+  return `<div class="sectorrow"><div class="sn">${n}</div><div class="sbarwrap"><div class="sbar" ${bar}></div></div><div class="sv ${cls(v)}">${sgnP(v)}</div></div>`;
+}).join("");
+const EVENTS = [
+  ["WED 6/10", "CPI · May", "8:30 ET · core est +0.2% m/m — TLT + rate-sensitives in play"],
+  ["WED 6/10", "ORCL earnings AMC", "est $1.92 · last surprise +5.1% · earnings-watch armed"],
+  ["THU 6/11", "30Y treasury auction", "$22B reopening · 1:00 ET · watch 4.62% stop-through"],
+  ["THU 6/11", "Initial jobless claims", "8:30 ET · est 224K"],
+  ["FRI 6/12", "ADBE earnings AMC", "est $5.34 · IV elevated, ±8.9% implied"],
+  ["TUE 6/16", "FOMC begins", "decision WED 6/17 14:00 ET · fed funds futures: 78% hold"],
+  ["WED 7/01", "TLT ex-dividend", "$0.312/sh · you collect $62.40 on 200 sh"],
+];
+$("#events").innerHTML = EVENTS.map(([d, t, s]) => `<div class="evrow"><div class="evd">${d}</div><div class="evt">${t}<small>${s}</small></div></div>`).join("");
+
+/* ════════ DOSSIER ════════ */
+let dKey = "NVDA", dRange = "1D", dPts = [];
+const dChart = makeChart($("#d-chart"), "d",
+  (v, v0) => {
+    $("#d-price").textContent = fmt(v);
+    const d = v - v0, p = d / v0 * 100;
+    $("#d-chg").className = "dchg " + cls(d);
+    $("#d-chg").textContent = `${d >= 0 ? "▲" : "▼"} ${sgn(d)} (${sgnP(p)}) · scrubbing`;
+  },
+  () => setDosResting());
+function dSeries(s, r) {
+  const pct = r === "1D" ? s.day : s.pct[r];
+  return genSeries(s.seed + RANGES.indexOf(r) * 7, N, s.mark / (1 + pct / 100), s.mark, VOL[r]);
+}
+function setDosResting() {
+  const s = SYMS[dKey], d = s.mark - dPts[0], p = d / dPts[0] * 100;
+  $("#d-price").textContent = fmt(s.mark);
+  $("#d-chg").className = "dchg " + cls(d);
+  $("#d-chg").textContent = `${d >= 0 ? "▲" : "▼"} ${sgn(d)} (${sgnP(p)}) · ${dRange === "1D" ? "today" : dRange}`;
+}
+function drawDossier(r) {
+  dRange = r; $("#d-rangelbl").textContent = r;
+  const s = SYMS[dKey];
+  dPts = dSeries(s, r);
+  dChart.render(dPts, timeLabels(r), dPts[N - 1] >= dPts[0]);
+  setDosResting();
+}
+rangePills($("#d-ranges"), drawDossier);
+
+function mod(tag, sum, body, open) {
+  const m = el("div", "mod" + (open ? " open" : ""));
+  m.innerHTML = `<div class="modhead"><span class="modtag">${tag}</span><span class="modsum">${sum}</span><span class="modchev">›</span></div>
+    <div class="modbody"><div class="modinner"><div class="modpad">${body}</div></div></div>`;
+  m.querySelector(".modhead").onclick = () => m.classList.toggle("open");
+  return m;
+}
+const pcd = (lo, hi, v) => Math.max(2, Math.min(98, (v - lo) / (hi - lo) * 100));
+
+function buildMods(k) {
+  const s = SYMS[k], host = $("#d-mods"); host.innerHTML = "";
+
+  // SHORT INTEREST
+  const mxT = Math.max(...s.si.trend);
+  host.appendChild(mod("SI", `short interest <b>${s.si.v.toFixed(2)}% float</b> · ${s.si.trend[0] > s.si.v ? "↓ falling" : "↑ rising"} · DTC ${s.si.dtc}`,
+    `<div class="gauge">${s.si.trend.map((v, i) => `<div class="gbar${i === 5 ? " cur" : ""}" style="height:${(v / mxT * 100).toFixed(0)}%"></div>`).join("")}</div>
+     <div class="gcap"><span>JAN</span><span>FEB</span><span>MAR</span><span>APR</span><span>MAY</span><span>NOW</span></div>
+     <div class="modnote">6 bi-weekly reports · ${s.si.asof} · peak ${mxT.toFixed(2)}% → now <b>${s.si.v.toFixed(2)}%</b> · days-to-cover ${s.si.dtc} — ${s.si.v < 2 ? "no squeeze fuel, shorts capitulating" : "elevated for an ETF; rate-cut bets crowding"}</div>`, true));
+
+  // INSIDER
+  if (s.insider) host.appendChild(mod("INS", `insiders · <b>${s.insiderSum.split(" · ")[0]}</b>`,
+    `<div class="ledger">${s.insider.map(t => `<div class="lrow">
+        <span class="lside ${t.s === "BUY" ? "up" : "dn"}">${t.s}</span>
+        <span class="lwho">${t.w} <small>· ${t.r}${t.note ? " · " + t.note : ""}</small></span>
+        <span class="lamt"><b>${t.sh} @ ${t.px}</b>${t.d}</span></div>`).join("")}</div>
+     <div class="modnote">last 5 Form-4 filings · ${s.insiderSum}</div>`));
+
+  // CONGRESS
+  if (s.congress) host.appendChild(mod("CGR", `congress · <b>${s.congress.length} disclosed trade${s.congress.length > 1 ? "s" : ""}</b> / 30d`,
+    `<div class="ledger">${s.congress.map(t => `<div class="lrow">
+        <span class="lside ${t.s === "BUY" ? "up" : "dn"}">${t.s}</span>
+        <span class="lwho">${t.w} <small>· ${t.r}</small></span>
+        <span class="lamt"><b>${t.amt}</b>${t.d} · ${t.disc}</span></div>`).join("")}</div>
+     <div class="modnote">STOCK Act disclosures lag 30–45d · sizes are reported ranges, not exact</div>`));
+
+  // ANALYST TARGETS
+  if (s.analyst) {
+    const a = s.analyst, bw = a.buy / a.n * 100, hw = a.hold / a.n * 100, sw = a.sell / a.n * 100;
+    host.appendChild(mod("TGT", `street · <b>$${a.avg} avg PT</b> · ${(a.avg / s.mark - 1) * 100 >= 0 ? "+" : ""}${((a.avg / s.mark - 1) * 100).toFixed(1)}% vs last`,
+      `<div class="band">
+         <div class="mark px" style="left:${pcd(a.lo, a.hi, s.mark)}%" data-l="${fmt(s.mark, 0)}"></div>
+         <div class="mark pt" style="left:${pcd(a.lo, a.hi, a.avg)}%" data-l="PT ${a.avg}"></div>
+       </div>
+       <div class="bandlbl"><span>LOW ${a.lo}</span><span>HIGH ${a.hi}</span></div>
+       <div class="distbar"><div class="db buy" style="width:${bw}%"></div><div class="db hold" style="width:${hw}%"></div><div class="db sell" style="width:${sw}%"></div></div>
+       <div class="distlbl"><span class="up">BUY ${a.buy}</span><span style="color:var(--amber)">HOLD ${a.hold}</span><span class="dn">SELL ${a.sell}</span></div>
+       <div class="modnote">${a.n} analysts · white tick = last price, cyan = mean target</div>`, true));
+  }
+
+  // VALUATION
+  if (s.val) {
+    const v = s.val;
+    host.appendChild(mod("VAL", `valuation · <b>${v.pe}x P/E</b> vs 5y med ${v.med}x`,
+      `<div class="band flat">
+         <div class="mark px" style="left:${pcd(v.lo, v.hi, v.pe)}%" data-l="${v.pe}x"></div>
+         <div class="mark pt" style="left:${pcd(v.lo, v.hi, v.med)}%" data-l="MED ${v.med}x"></div>
+       </div>
+       <div class="bandlbl"><span>5Y LOW ${v.lo}x</span><span>5Y HIGH ${v.hi}x</span></div>
+       <div class="modnote">${v.note}</div>`));
+  }
+
+  // RATES & AUCTIONS (TLT)
+  if (s.rates) host.appendChild(mod("RTS", `rates · <b>10Y 4.18%</b> +2bp · 30Y auction THU`,
+    `<div class="ledger">
+       <div class="lrow"><span class="lside up">2Y</span><span class="lwho">3.92% <small>−1bp today</small></span><span class="lamt"><b>−14bp</b>30d</span></div>
+       <div class="lrow"><span class="lside dn">10Y</span><span class="lwho">4.18% <small>+2bp today</small></span><span class="lamt"><b>+9bp</b>30d</span></div>
+       <div class="lrow"><span class="lside dn">30Y</span><span class="lwho">4.62% <small>+3bp today</small></span><span class="lamt"><b>+12bp</b>30d</span></div>
+     </div>
+     <div class="modnote"><b>THU 6/11</b> $22B 30Y reopening, 1:00 ET — weak tail = TLT downside · <b>WED 6/10</b> May CPI 8:30 ET, core est +0.2%</div>`, true));
+
+  // DIVIDEND (TLT)
+  if (s.div) host.appendChild(mod("DIV", `distribution · <b>${s.div.yld}</b> · ex ${s.div.ex}`,
+    `<div class="erngrid">
+       <div class="erncell"><div class="k">EX-DATE</div><div class="v">${s.div.ex}</div></div>
+       <div class="erncell"><div class="k">RATE</div><div class="v">${s.div.amt}</div></div>
+       <div class="erncell"><div class="k">TTM YIELD</div><div class="v">${s.div.yld}</div></div>
+       <div class="erncell"><div class="k">YOUR 200 SH</div><div class="v up">${s.div.recv.replace("you collect ", "")}</div></div>
+     </div><div class="modnote">monthly payer · 12 distributions TTM · ${s.div.recv}</div>`));
+
+  // EARNINGS
+  if (s.earn) host.appendChild(mod("ERN", `next earnings · <b>${s.earn.d.split(" · ")[0]}</b> · est ${s.earn.est}`,
+    `<div class="erngrid">
+       <div class="erncell"><div class="k">REPORT</div><div class="v">${s.earn.d}</div></div>
+       <div class="erncell"><div class="k">EPS EST</div><div class="v">${s.earn.est}</div></div>
+       <div class="erncell"><div class="k">PRIOR QTR</div><div class="v up">${s.earn.prior}</div></div>
+       <div class="erncell"><div class="k">IMPLIED MOVE</div><div class="v" style="color:var(--amber)">${s.earn.move}</div></div>
+     </div><div class="modnote">implied move from ATM straddle (options_chain) · earnings-watch will flag transcript within 20 min of the call</div>`));
+}
+
+function openDossier(k) {
+  dKey = k;
+  const s = SYMS[k];
+  $("#d-sym").innerHTML = `${tick(k)}<small>${s.name}</small>`;
+  $("#d-quoteline").innerHTML = `<span class="${cls(s.day)}">${fmt(s.mark)} ${sgnP(s.day)}</span> <span style="color:var(--faint)">· VOL ${s.q.vol} · ${s.etf ? "AUM " + s.q.mcap : "P/E " + s.q.pe}</span>`;
+  $("#d-qgrid").innerHTML = [
+    ["BID × ASK", s.q.bid + " × " + s.q.ask], ["DAY RNG", s.q.rng], ["VOLUME", s.q.vol],
+    ["52WK", s.q.w52], [s.etf ? "AUM" : "MKT CAP", s.q.mcap], [s.etf ? "P/E" : "P/E TTM", s.q.pe],
+  ].map(([k2, v]) => `<div class="qcell"><div class="k">${k2}</div><div class="v">${v}</div></div>`).join("");
+  const pl = (s.mark - s.avg) * s.qty, plp = (s.mark / s.avg - 1) * 100;
+  $("#d-hold").innerHTML = `HOLDING <b>${s.qty} SH</b> @ ${fmt(s.avg)} avg → MV $${fmt(s.mark * s.qty)} · open P/L <span class="${cls(pl)}">${sgn(pl)} (${sgnP(plp)})</span>`;
+  $("#d-foot").innerHTML = `SRC <b>short_interest · insider_activity · senate_trading · analyst_consensus · valuation_history · earnings_calendar</b> via market-research MCP · quotes via schwab-broker`;
+  buildMods(k);
+  $("#d-ranges").querySelectorAll("button").forEach((b, i) => b.classList.toggle("on", i === 0));
+  drawDossier("1D");
+  $("#dossier-scroll").scrollTop = 0;
+  $("#view-dossier").classList.add("active");
+}
+$("#dossier-back").onclick = () => $("#view-dossier").classList.remove("active");
+$("#d-cmd").onclick = () => openCmd(dKey);
+
+/* ════════ TABS ════════ */
+document.querySelectorAll(".tab[data-tab]").forEach(t => t.onclick = () => {
+  $("#view-dossier").classList.remove("active");
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + t.dataset.tab));
+  document.querySelectorAll(".tab[data-tab]").forEach(x => x.classList.toggle("active", x === t));
+});
+
+/* ════════ COMMAND SHEET ════════ */
+let cmdKey = "NVDA";
+const CMDS = [
+  { pre: "▸", label: k => `ask arm-watch: thesis check on ${tick(k)}`, agent: "arm-watch", run: k => cmdAsk(k) },
+  { pre: "▸", label: k => `queue trim proposal — ${tick(k)} ${k === "NVDA" ? "20" : "10"} sh`, agent: "approvals-gate", run: k => cmdTrim(k) },
+  { pre: "▸", label: k => `pull options chain ${tick(k)} · JUN 19`, agent: "market-mcp", run: k => cmdChain(k) },
+  { pre: "▸", label: () => "snooze earnings-watch until open", agent: "earnings-watch", run: () => cmdSnooze() },
+  { pre: "▸", label: k => `alert me if ${tick(k)} short interest > 2%`, agent: "flock-cron", run: k => cmdAlert(k) },
+];
+function renderCmdTargets() {
+  const host = $("#cmd-target"); host.innerHTML = "";
+  ORDER.forEach(k => {
+    const b = el("button", k === cmdKey ? "on" : "", tick(k));
+    b.onclick = () => { cmdKey = k; renderCmdTargets(); renderCmdList(); };
+    host.appendChild(b);
+  });
+}
+function renderCmdList() {
+  const host = $("#cmd-list"); host.innerHTML = "";
+  CMDS.forEach(c => {
+    const b = el("button", "cmdact", `<span class="pre">${c.pre}</span><span>${c.label(cmdKey)}</span><span class="agent">${c.agent}</span>`);
+    b.onclick = () => c.run(cmdKey);
+    host.appendChild(b);
+  });
+}
+function clog(html) {
+  const log = $("#cmd-log");
+  log.appendChild(el("div", null, html));
+  log.scrollTop = log.scrollHeight;
+}
+function openCmd(k) {
+  if (k && SYMS[k]) cmdKey = k;
+  renderCmdTargets(); renderCmdList();
+  $("#sheetdim").classList.add("show"); $("#sheet").classList.add("show");
+}
+function closeCmd() { $("#sheetdim").classList.remove("show"); $("#sheet").classList.remove("show"); }
+$("#sheetdim").onclick = closeCmd;
+$("#tab-cmd").onclick = () => openCmd();
+
+function cmdAsk(k) {
+  clog(`<span class="am">09:41:58</span> → arm-watch: thesis check ${tick(k)}`);
+  setTimeout(() => clog(`<span class="cy">arm-watch</span> on it — pulling ${tick(k)} quote + news + SI…`), 700);
+  setTimeout(() => clog(`<span class="cy">arm-watch</span> ${k === "NVDA"
+    ? "thesis intact. P/E 41x = 24% below 5y median, SI 1.12% and falling, street PT $748 (+9.5%). Watch: AUG 26 print, ±7.1% implied. Position 28.8% of equity — that's the real risk, not the name."
+    : `${tick(k)} steady — no thesis-relevant events in 7d window. Full readout posted to flock log.`}`), 2300);
+}
+function cmdTrim(k) {
+  const qty = k === "NVDA" ? 20 : 10;
+  const px = SYMS[k].mark + 0.19;
+  clog(`<span class="am">09:42:03</span> → approvals-gate: SELL ${qty} ${tick(k)} @ LMT ${fmt(px)}`);
+  setTimeout(() => {
+    clog(`<span class="cy">approvals-gate</span> proposal queued · est proceeds $${fmt(qty * px)} · needs your sign-off:`);
+    const wrap = el("div", "approvebtns");
+    const yes = el("button", "ap-yes", "APPROVE");
+    const no = el("button", "ap-no", "DENY");
+    wrap.append(no, yes);
+    $("#cmd-log").appendChild(wrap); $("#cmd-log").scrollTop = 1e4;
+    no.onclick = () => { wrap.remove(); clog(`<span class="dn">✕ denied</span> — proposal cancelled, nothing sent to Schwab`); };
+    yes.onclick = () => {
+      wrap.remove();
+      clog(`<span class="ok">✓ approved</span> — routing to Schwab…`);
+      setTimeout(() => { closeCmd(); doFill(k, qty, px); }, 900);
+    };
+  }, 800);
+}
+function cmdChain(k) {
+  clog(`<span class="am">09:42:10</span> → market-mcp: options_chain ${tick(k)} 2026-06-19`);
+  setTimeout(() => clog(`<span class="cy">market-mcp</span> ${tick(k)} JUN19: ATM IV ${k === "NVDA" ? "38.4%" : "24.1%"} · skew −2.1 · top OI ${k === "NVDA" ? "700C 41.2K" : "ATM straddle"} · full chain in flock log`), 1400);
+}
+function cmdSnooze() {
+  clog(`<span class="am">09:42:14</span> → earnings-watch: snooze until 09:30 ET`);
+  setTimeout(() => { clog(`<span class="cy">earnings-watch</span> paused · auto-resume WED 6/10 09:30 ET (before ORCL AMC)`); toast(`<span class="am">earnings-watch</span> snoozed until open`); }, 700);
+}
+function cmdAlert(k) {
+  clog(`<span class="am">09:42:18</span> → flock-cron: watch short_interest ${tick(k)} > 2.0%`);
+  setTimeout(() => clog(`<span class="cy">flock-cron</span> registered · checks bi-weekly FINRA settle · current ${SYMS[k].si.v.toFixed(2)}%`), 700);
+}
+
+/* ════════ FILL CELEBRATION ════════ */
+function countUp(elm, from, to, ms, prefix) {
+  const t0 = performance.now();
+  const step = now => {
+    const f = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - f, 3);
+    elm.textContent = prefix + fmt(from + (to - from) * e);
+    if (f < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function doFill(k, qty, px) {
+  const proceeds = qty * px;
+  const wrap = $("#fillwrap"); wrap.innerHTML = ""; wrap.classList.add("show");
+  const card = el("div", "fillcard", `
+    <div class="fl">● ORDER FILLED</div>
+    <div class="fs">SELL ${qty} ${tick(k)} @ ${fmt(px)}</div>
+    <div class="fp" id="fillamt">+$0.00</div>
+    <div class="fn">APPROVALS-GATE → SCHWAB ····8841 · 09:42:31 ET</div>`);
+  wrap.appendChild(card);
+  const colors = ["#3fe07c", "#ffb042", "#5fd4e8", "#e6e2d6"];
+  for (let i = 0; i < 26; i++) {
+    const p = el("div", "pt2");
+    const a = Math.random() * Math.PI * 2, dist = 90 + Math.random() * 130;
+    p.style.setProperty("--dx", Math.cos(a) * dist + "px");
+    p.style.setProperty("--dy", Math.sin(a) * dist - 40 + "px");
+    p.style.background = colors[i % 4];
+    p.style.animationDelay = (Math.random() * .15) + "s";
+    wrap.appendChild(p);
+  }
+  countUp(card.querySelector("#fillamt"), 0, proceeds, 1100, "+$");
+  // settle cash + buying power
+  ACCT.cash += proceeds; ACCT.bp += proceeds * 2;
+  if (k === "NVDA") { SYMS.NVDA.qty -= qty; }
+  setTimeout(() => {
+    wrap.classList.remove("show");
+    const c = $("#st-cash"), b = $("#st-bp");
+    c.classList.add("flash"); b.classList.add("flash");
+    countUp(c, ACCT.cash - proceeds, ACCT.cash, 900, "$");
+    countUp(b, ACCT.bp - proceeds * 2, ACCT.bp, 900, "$");
+    setTimeout(() => { c.classList.remove("flash"); b.classList.remove("flash"); }, 2400);
+    renderDesk();
+    toast(`<span class="ok">✓ FILLED</span> SELL ${qty} ${tick(k)} @ ${fmt(px)} · <span class="am">+$${fmt(proceeds)}</span> to cash`, 4200);
+  }, 2100);
+}
+</script>
+</body>
+</html>

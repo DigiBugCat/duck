@@ -1,0 +1,1082 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>duck — PULSE</title>
+<!--
+  CONCEPT 01 — "PULSE" · silent luxury, Robinhood-minimal
+  ═══════════════════════════════════════════════════════
+  DATA SOURCE MAP (every module maps to an audited source):
+  · Hero balance + day change ............ BROKER: account (cash, total value) + positions (market_value)
+  · Portfolio chart (1D..ALL) ............ MARKET DATA: intraday_prices (1m-4h) + price_history (5y OHLC), aggregated over positions
+  · Positions list + micro-sparklines .... BROKER: positions (qty/avg) + per-symbol quote (mark, net_change_pct); sparkline = intraday_prices
+  · Buying power row ..................... BROKER: account (cash, buying power)
+  · "3 proposals waiting" pill ........... AGENTS: flock hub trade proposals queue
+  · Approval screen (proposal cards) ..... AGENTS: trade proposals with rationale (arm-watch / earnings-watch), routed via approvals-gate
+  · Slide-to-approve → fill .............. BROKER (SOON): place/preview orders via human approval gate, order status, fills
+  · Stock detail price + chart ........... MARKET DATA: quote + intraday_prices + price_history
+  · Key stats grid ....................... MARKET DATA: quote (day range, 52wk, volume, mcap, P/E) + FUNDAMENTALS: company_overview (div yield)
+  · Analyst consensus bar ................ RESEARCH EDGE: analyst_consensus (ratings distribution, avg price target)
+  · News (3 headlines + snippets) ........ NEWS & FILINGS: market_news (per-symbol headlines, 300-char snippets, source, timestamp)
+  · Position card ("you own N shares") ... BROKER: positions (qty/average_price) + quote (mark) → equity, total return, day P/L
+  · Flock status dot (header) ............ AGENTS: automation status (heartbeat, running/paused)
+-->
+<style>
+  :root {
+    --bg: #030404;
+    --screen: #060808;
+    --surface: #0d1110;
+    --surface2: #131817;
+    --border: rgba(255,255,255,.065);
+    --hairline: rgba(255,255,255,.09);
+    --text: #f2f5f3;
+    --muted: #7e8884;
+    --faint: #4c5552;
+    --up: #2bdc96;
+    --dn: #ff5d73;
+    --acc: var(--up);
+    --acc-soft: rgba(43,220,150,.12);
+  }
+  .up { --acc: var(--up); --acc-soft: rgba(43,220,150,.12); }
+  .dn { --acc: var(--dn); --acc-soft: rgba(255,93,115,.12); }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1100px 700px at 50% -15%, #0b1410 0%, var(--bg) 60%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px;
+    user-select: none; -webkit-user-select: none;
+  }
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--screen);
+    border-radius: 54px; border: 1px solid #232826;
+    box-shadow: 0 0 0 11px #121514, 0 0 0 12.5px #343a37, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  @media (max-width: 500px), (max-height: 940px) and (max-width: 940px) {
+    body { padding: 0; }
+    .phone {
+      width: 100vw; height: 100dvh;
+      border-radius: 0; border: none; box-shadow: none;
+    }
+    .island { display: none; }
+    .statusbar { height: calc(env(safe-area-inset-top, 14px) + 14px) !important; }
+    .statusbar span { display: none; }
+    .tabbar { padding-bottom: calc(env(safe-area-inset-bottom, 18px) + 8px) !important; height: auto !important; }
+    .homebar { display: none; }
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 90; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; z-index: 85; }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+  .main { flex: 1; position: relative; min-height: 0; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #fff; opacity: .3; z-index: 60; pointer-events: none; }
+
+  /* ============ views ============ */
+  .view { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--screen); }
+  #view-home { z-index: 1; }
+  #view-approve {
+    z-index: 46; transform: translateY(100%);
+    transition: transform .34s cubic-bezier(.32,.72,.27,1);
+  }
+  #view-approve.active { transform: none; }
+  #view-detail {
+    z-index: 50; transform: translateX(100%);
+    transition: transform .3s cubic-bezier(.32,.72,.27,1);
+  }
+  #view-detail.active { transform: none; }
+
+  .scroll { flex: 1; overflow-y: auto; min-height: 0; padding-bottom: 110px; }
+  num, .num { font-variant-numeric: tabular-nums; }
+
+  /* ============ home ============ */
+  .homehead { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 8px 24px 2px; }
+  .wordmark { font-size: 13px; font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase; color: var(--faint); }
+  .flock { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .4px; }
+  .flock .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--up); box-shadow: 0 0 7px var(--up); animation: heartbeat 2.4s ease-in-out infinite; }
+  @keyframes heartbeat { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+  .hero { padding: 18px 24px 4px; }
+  .herolabel { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .3px; }
+  .heronum {
+    font-size: 44px; font-weight: 650; letter-spacing: -1.6px; line-height: 1.12;
+    font-variant-numeric: tabular-nums; cursor: pointer;
+    transition: filter .3s ease;
+  }
+  .heronum.masked { filter: blur(14px); }
+  .herochg {
+    margin-top: 3px; font-size: 14.5px; font-weight: 600;
+    font-variant-numeric: tabular-nums; color: var(--acc);
+    display: flex; align-items: baseline; gap: 7px;
+    transition: color .2s;
+  }
+  .herochg .period { color: var(--faint); font-weight: 500; }
+
+  .chartwrap { position: relative; margin-top: 12px; }
+  .scrubtime {
+    position: absolute; top: -4px; left: 0; font-size: 11.5px; font-weight: 650;
+    color: var(--muted); font-variant-numeric: tabular-nums;
+    opacity: 0; transition: opacity .15s; pointer-events: none; white-space: nowrap;
+    transform: translateX(0);
+  }
+  .chartwrap.scrubbing .scrubtime { opacity: 1; }
+  svg.chart { display: block; width: 100%; height: auto; touch-action: none; cursor: crosshair; }
+  .chartline { fill: none; stroke: var(--acc); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; transition: stroke .2s; }
+  .chartfill { stroke: none; opacity: .9; }
+  .baseline { stroke: var(--faint); stroke-width: 1; stroke-dasharray: 1.5 4.5; opacity: .55; }
+  .xline { stroke: var(--text); stroke-width: 1; opacity: 0; }
+  .xdot { fill: var(--acc); opacity: 0; transition: fill .2s; }
+  .chartwrap.scrubbing .xline { opacity: .35; }
+  .chartwrap.scrubbing .xdot { opacity: 1; }
+  .chartwrap.scrubbing .chartline { opacity: .9; }
+  .drawin { animation: drawfade .45s ease; }
+  @keyframes drawfade { from { opacity: 0; transform: translateY(4px); } }
+
+  .ranges { display: flex; padding: 10px 16px 2px; }
+  .ranges button {
+    flex: 1; border: none; background: none; font-family: inherit;
+    font-size: 12.5px; font-weight: 700; letter-spacing: .6px;
+    color: var(--faint); padding: 8px 0; border-radius: 9px; cursor: pointer;
+    transition: color .18s, background .18s;
+  }
+  .ranges button.on { color: var(--acc); background: var(--acc-soft); }
+
+  .proprow { padding: 18px 24px 4px; }
+  .proppill {
+    width: 100%; display: flex; align-items: center; justify-content: center; gap: 9px;
+    background: none; border: 1px solid var(--hairline); border-radius: 999px;
+    padding: 12px 18px; font-family: inherit; font-size: 13.5px; font-weight: 600;
+    color: var(--text); cursor: pointer; transition: transform .15s ease, border-color .2s, opacity .3s;
+  }
+  .proppill:active { transform: scale(.97); }
+  .proppill .pdot { width: 6px; height: 6px; border-radius: 50%; background: var(--up); box-shadow: 0 0 8px var(--up); animation: heartbeat 2s infinite; }
+  .proppill .chv { color: var(--faint); font-size: 13px; }
+  .proppill.clear { color: var(--faint); border-color: var(--border); }
+  .proppill.clear .pdot { animation: none; background: var(--faint); box-shadow: none; }
+
+  .bprow {
+    margin: 14px 24px 0; padding: 13px 2px; border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 13.5px; font-weight: 600; cursor: pointer;
+  }
+  .bprow .lab { color: var(--muted); }
+  .bprow .val { font-variant-numeric: tabular-nums; display: flex; align-items: center; gap: 8px; }
+  .bprow .chv { color: var(--faint); font-size: 11px; transition: transform .25s ease; }
+  .bprow.open .chv { transform: rotate(90deg); }
+  .bpdetail { margin: 0 24px; overflow: hidden; max-height: 0; transition: max-height .3s ease; }
+  .bpdetail.open { max-height: 80px; }
+  .bpdetail .li { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--faint); font-weight: 500; padding: 3px 2px 9px; font-variant-numeric: tabular-nums; }
+  .bpdetail .li b { color: var(--muted); font-weight: 600; }
+
+  .seclabel { padding: 22px 24px 6px; font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: var(--faint); }
+  .pos {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 24px; cursor: pointer;
+    transition: background .15s;
+  }
+  .pos:active { background: rgba(255,255,255,.03); }
+  .pos .id { width: 86px; flex: none; }
+  .pos .tick { font-size: 15px; font-weight: 700; letter-spacing: -.2px; }
+  .pos .sh { font-size: 11.5px; color: var(--faint); margin-top: 2px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .pos .spark { flex: 1; display: flex; justify-content: center; }
+  .pos .spark svg { width: 68px; height: 24px; }
+  .pos .rt { flex: none; text-align: right; min-width: 96px; }
+  .pos .mv { font-size: 14.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .pos .dp { font-size: 12px; font-weight: 650; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .pos .dp.u { color: var(--up); } .pos .dp.d { color: var(--dn); }
+  .cashrow { display: flex; justify-content: space-between; padding: 14px 24px; border-top: 1px solid var(--border); margin-top: 4px; font-size: 14px; font-weight: 600; }
+  .cashrow .lab { color: var(--muted); }
+  .cashrow .val { font-variant-numeric: tabular-nums; }
+
+  /* ============ detail ============ */
+  .navrow { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 6px 14px 8px; }
+  .backbtn { background: none; border: none; color: var(--text); font-size: 24px; font-family: inherit; padding: 4px 10px; cursor: pointer; line-height: 1; }
+  .navtick { font-size: 14px; font-weight: 700; letter-spacing: .6px; color: var(--muted); opacity: 0; transition: opacity .2s; }
+  .navtick.show { opacity: 1; }
+  .ownpill { font-size: 11px; font-weight: 700; color: var(--muted); border: 1px solid var(--hairline); padding: 6px 11px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+
+  .dhero { padding: 4px 24px 0; }
+  .dname { font-size: 13px; font-weight: 600; color: var(--muted); }
+  .dnum { font-size: 38px; font-weight: 650; letter-spacing: -1.2px; font-variant-numeric: tabular-nums; line-height: 1.15; margin-top: 2px; }
+  .dchg { margin-top: 2px; font-size: 13.5px; font-weight: 600; color: var(--acc); font-variant-numeric: tabular-nums; transition: color .2s; }
+  .dchg .period { color: var(--faint); font-weight: 500; }
+
+  .dsec { padding: 24px 24px 0; }
+  .dsec h3 { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: var(--faint); margin-bottom: 12px; }
+
+  .poscard { border: 1px solid var(--border); border-radius: 18px; padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px 10px; }
+  .pc .k { font-size: 11px; font-weight: 600; color: var(--faint); letter-spacing: .3px; }
+  .pc .v { font-size: 15px; font-weight: 650; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .pc .v.u { color: var(--up); } .pc .v.d { color: var(--dn); }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px; }
+  .stat { display: flex; justify-content: space-between; align-items: baseline; padding: 9px 0; border-bottom: 1px solid var(--border); }
+  .stat .k { font-size: 12.5px; color: var(--faint); font-weight: 600; }
+  .stat .v { font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  .consensus .bar { display: flex; height: 7px; border-radius: 4px; overflow: hidden; background: var(--surface2); }
+  .consensus .seg { transform-origin: left; transform: scaleX(0); transition: transform .7s cubic-bezier(.22,.9,.3,1); }
+  .consensus.animate .seg { transform: scaleX(1); }
+  .consensus .seg.b { background: var(--up); }
+  .consensus .seg.h { background: #8b958f; }
+  .consensus .seg.s { background: var(--dn); }
+  .conlegend { display: flex; gap: 16px; margin-top: 10px; font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .conlegend i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 5px; }
+  .pt { margin-top: 12px; font-size: 13px; color: var(--muted); font-weight: 550; font-variant-numeric: tabular-nums; }
+  .pt b { color: var(--text); font-weight: 700; }
+  .etfnote { font-size: 13px; color: var(--faint); line-height: 1.5; font-weight: 500; }
+
+  .news { border-bottom: 1px solid var(--border); padding: 13px 0; cursor: pointer; }
+  .news:first-of-type { border-top: 1px solid var(--border); }
+  .news .src { font-size: 11px; font-weight: 700; color: var(--faint); letter-spacing: .4px; }
+  .news .src .ago { font-weight: 500; }
+  .news h4 { font-size: 14px; font-weight: 650; line-height: 1.35; margin-top: 4px; letter-spacing: -.1px; }
+  .news .snippet { max-height: 0; overflow: hidden; transition: max-height .3s ease, margin .3s ease; font-size: 12.5px; line-height: 1.5; color: var(--muted); font-weight: 500; }
+  .news.open .snippet { max-height: 120px; margin-top: 7px; }
+
+  /* ============ approvals ============ */
+  .ahead { flex: none; padding: 8px 24px 4px; display: flex; align-items: center; justify-content: space-between; }
+  .ahead h2 { font-size: 21px; font-weight: 750; letter-spacing: -.4px; }
+  .ahead .count { font-size: 12px; font-weight: 700; color: var(--faint); font-variant-numeric: tabular-nums; letter-spacing: 1px; text-transform: uppercase; }
+  .closebtn { background: none; border: none; color: var(--muted); font-size: 21px; font-family: inherit; cursor: pointer; padding: 4px 8px; line-height: 1; }
+  .asub { padding: 0 24px; font-size: 12px; color: var(--faint); font-weight: 550; }
+
+  .pstage { flex: 1; min-height: 0; position: relative; padding: 16px 22px 12px; display: flex; }
+  .pcard {
+    flex: 1; border: 1px solid var(--border); border-radius: 26px;
+    background: linear-gradient(180deg, #0c100f 0%, #080b0a 100%);
+    padding: 24px 22px 18px; display: flex; flex-direction: column;
+    position: relative; overflow: hidden;
+    animation: cardin .4s cubic-bezier(.32,.72,.27,1);
+  }
+  @keyframes cardin { from { opacity: 0; transform: translateY(22px) scale(.97); } }
+  .pcard.leaving { transition: opacity .3s ease, transform .3s ease; opacity: 0; transform: translateY(-14px) scale(.97); }
+  .agent { font-size: 10.5px; font-weight: 800; letter-spacing: 1.8px; text-transform: uppercase; color: var(--faint); display: flex; align-items: center; gap: 8px; }
+  .agent .adot { width: 5px; height: 5px; border-radius: 50%; background: var(--up); }
+  .pside { margin-top: 16px; font-size: 12px; font-weight: 800; letter-spacing: 2.2px; }
+  .pside.buy { color: var(--up); } .pside.sell { color: var(--dn); }
+  .porder { font-size: 36px; font-weight: 700; letter-spacing: -1.2px; margin-top: 4px; line-height: 1.1; }
+  .plimit { margin-top: 6px; font-size: 14px; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .plimit b { color: var(--text); font-weight: 650; }
+  .pholding { margin-top: 14px; font-size: 12px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .prationale { margin-top: 16px; flex: 1; min-height: 0; font-size: 13.5px; line-height: 1.6; color: #b9c2bd; font-weight: 480; overflow: hidden; }
+  .pmeta { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; padding-top: 12px; }
+  .pmeta b { color: var(--muted); font-weight: 700; }
+
+  .slidewrap { flex: none; padding: 4px 22px 8px; }
+  .slide {
+    position: relative; height: 62px; border-radius: 31px;
+    border: 1px solid var(--hairline); background: var(--surface);
+    overflow: hidden; touch-action: none;
+  }
+  .sfill { position: absolute; inset: 0; background: var(--acc-soft); transform-origin: left; transform: scaleX(0); }
+  .slabel {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 650; letter-spacing: .4px; color: var(--muted);
+    background: linear-gradient(90deg, #7e8884 40%, #e9efec 50%, #7e8884 60%);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; animation: shimmer 2.6s linear infinite;
+    pointer-events: none; transition: opacity .2s;
+  }
+  @keyframes shimmer { from { background-position: 180% 0; } to { background-position: -80% 0; } }
+  .sthumb {
+    position: absolute; top: 3px; left: 3px; width: 54px; height: 54px;
+    border-radius: 50%; background: var(--up); color: #04130c;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 21px; font-weight: 700; cursor: grab;
+    box-shadow: 0 4px 18px rgba(43,220,150,.35);
+    will-change: transform;
+  }
+  .sthumb:active { cursor: grabbing; }
+  .slide.done .sthumb { background: var(--up); }
+  .denyrow { text-align: center; padding: 12px 0 16px; flex: none; }
+  .denybtn { background: none; border: none; font-family: inherit; font-size: 13px; font-weight: 650; color: var(--faint); cursor: pointer; padding: 8px 22px; letter-spacing: .3px; transition: color .15s; }
+  .denybtn:active { color: var(--dn); }
+
+  .fillover {
+    position: absolute; inset: 0; z-index: 5; border-radius: 26px;
+    background: rgba(6,9,8,.97);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    opacity: 0; pointer-events: none; transition: opacity .25s;
+  }
+  .fillover.show { opacity: 1; pointer-events: auto; }
+  .fillcheck {
+    width: 64px; height: 64px; border-radius: 50%; border: 1.5px solid var(--up);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--up); font-size: 27px; margin-bottom: 12px;
+    box-shadow: 0 0 34px rgba(43,220,150,.25), inset 0 0 18px rgba(43,220,150,.1);
+  }
+  .fillover.show .fillcheck { animation: checkpop .55s cubic-bezier(.32,1.6,.4,1); }
+  @keyframes checkpop { from { transform: scale(.4); opacity: 0; } }
+  .filltitle { font-size: 12px; font-weight: 800; letter-spacing: 2.4px; text-transform: uppercase; color: var(--up); }
+  .fillorder { font-size: 19px; font-weight: 700; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+  .fillcount { margin-top: 14px; font-size: 12.5px; color: var(--muted); font-weight: 600; }
+  .fillcount b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; font-size: 14px; }
+  .particles { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+  .pt-dot {
+    position: absolute; left: 50%; top: 46%; width: 5px; height: 5px; border-radius: 50%;
+    background: var(--up); opacity: 0;
+    animation: burst .9s cubic-bezier(.16,.8,.3,1) forwards;
+  }
+  @keyframes burst {
+    0% { opacity: 1; transform: translate(0,0) scale(1); }
+    100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(.2); }
+  }
+
+  .allclear { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding-bottom: 90px; }
+  .allclear .acdot { width: 8px; height: 8px; border-radius: 50%; background: var(--up); box-shadow: 0 0 12px var(--up); animation: heartbeat 2.4s infinite; }
+  .allclear h3 { font-size: 17px; font-weight: 700; letter-spacing: -.2px; }
+  .allclear p { font-size: 13px; color: var(--faint); font-weight: 550; }
+
+  /* ============ tab bar ============ */
+  .tabbar {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 40;
+    height: 88px; padding: 12px 26px 30px;
+    background: rgba(6,8,8,.82); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-top: 1px solid var(--border); display: flex;
+  }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; background: none; border: none; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .8px; position: relative; cursor: pointer; font-family: inherit; transition: color .18s; text-transform: uppercase; }
+  .tab svg { width: 23px; height: 23px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+  .tab.active { color: var(--text); }
+  .tab .nbadge { position: absolute; top: -3px; right: 26%; background: var(--up); color: #04130c; font-size: 10px; font-weight: 800; min-width: 17px; height: 17px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; transition: opacity .3s, transform .3s; }
+  .tab .nbadge.gone { opacity: 0; transform: scale(.5); }
+
+  /* ============ toast ============ */
+  .toasts { position: absolute; top: 70px; left: 0; right: 0; z-index: 75; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+  .toast {
+    background: rgba(17,22,20,.94); backdrop-filter: blur(14px);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 10px 19px; font-size: 13px; font-weight: 600; color: var(--text);
+    box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    animation: toastin .3s cubic-bezier(.32,.72,.27,1); max-width: 86%;
+  }
+  @keyframes toastin { from { opacity: 0; transform: translateY(-14px) scale(.95); } }
+  .toast.out { transition: opacity .25s, transform .25s; opacity: 0; transform: translateY(-10px); }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span id="clock">9:41</span><span class="icons">●●●● 􀙇 ▮▮▮▯</span></div>
+
+  <div class="main">
+
+    <!-- ================= HOME ================= -->
+    <div class="view" id="view-home">
+      <div class="homehead">
+        <span class="wordmark">duck</span>
+        <span class="flock"><span class="dot"></span>flock · 3 live</span>
+      </div>
+      <div class="scroll">
+        <div class="hero up" id="hero">
+          <div class="herolabel">Investing</div>
+          <div class="heronum num" id="heronum" title="Tap to hide">$284,512.40</div>
+          <div class="herochg" id="herochg"><span id="herodelta">▲ $3,214.88 (+1.14%)</span><span class="period" id="heroperiod">Today</span></div>
+          <div class="chartwrap" id="homechartwrap">
+            <div class="scrubtime" id="homescrubtime"></div>
+            <svg class="chart" id="homechart" viewBox="0 0 361 192" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+        <div class="ranges up" id="homeranges"></div>
+
+        <div class="proprow">
+          <button class="proppill" id="proppill">
+            <span class="pdot"></span><span id="proptext">3 proposals waiting</span><span class="chv">›</span>
+          </button>
+        </div>
+
+        <div class="bprow" id="bprow">
+          <span class="lab">Buying power</span>
+          <span class="val"><span class="num" id="bpval">$96,420.00</span><span class="chv">›</span></span>
+        </div>
+        <div class="bpdetail" id="bpdetail">
+          <div class="li"><span>Cash sweep · SWVXX 4.06%</span><b class="num" id="bpcash">$48,210.00</b></div>
+          <div class="li"><span>Margin available</span><b class="num" id="bpmargin">$48,210.00</b></div>
+        </div>
+
+        <div class="seclabel">Positions</div>
+        <div id="poslist"></div>
+        <div class="cashrow"><span class="lab">Cash</span><span class="val num" id="cashval">$48,210.00</span></div>
+      </div>
+    </div>
+
+    <!-- ================= APPROVALS ================= -->
+    <div class="view" id="view-approve">
+      <div class="homehead" style="padding-top:10px">
+        <span class="wordmark">approvals-gate</span>
+        <button class="closebtn" id="approveclose">✕</button>
+      </div>
+      <div class="ahead">
+        <h2>Proposals</h2>
+        <span class="count" id="acount">1 of 3</span>
+      </div>
+      <div class="asub">The flock proposes. You decide. Orders route to Schwab only after you approve.</div>
+      <div class="pstage" id="pstage"></div>
+      <div class="slidewrap" id="slidewrap">
+        <div class="slide up" id="slide">
+          <div class="sfill" id="sfill"></div>
+          <div class="slabel" id="slabel">Slide to approve</div>
+          <div class="sthumb" id="sthumb">›</div>
+        </div>
+      </div>
+      <div class="denyrow"><button class="denybtn" id="denybtn">Deny</button></div>
+    </div>
+
+    <!-- ================= DETAIL ================= -->
+    <div class="view" id="view-detail">
+      <div class="navrow">
+        <button class="backbtn" id="detailback">‹</button>
+        <span class="navtick" id="navtick">NVDA</span>
+        <span class="ownpill num" id="ownpill">120 sh</span>
+      </div>
+      <div class="scroll" id="detailscroll">
+        <div class="dhero up" id="dhero">
+          <div class="dname" id="dname">NVIDIA Corporation · NVDA</div>
+          <div class="dnum num" id="dnum">$682.92</div>
+          <div class="dchg" id="dchg"><span id="ddelta"></span> <span class="period" id="dperiod">Today</span></div>
+          <div class="chartwrap" id="dchartwrap" style="margin-top:14px">
+            <div class="scrubtime" id="dscrubtime"></div>
+            <svg class="chart" id="dchart" viewBox="0 0 361 170" preserveAspectRatio="none"></svg>
+          </div>
+        </div>
+        <div class="ranges up" id="dranges" style="padding-top:8px"></div>
+
+        <div class="dsec">
+          <h3>Your position</h3>
+          <div class="poscard" id="poscard"></div>
+        </div>
+
+        <div class="dsec">
+          <h3>Stats</h3>
+          <div class="stats" id="dstats"></div>
+        </div>
+
+        <div class="dsec">
+          <h3>Analysts</h3>
+          <div id="dconsensus"></div>
+        </div>
+
+        <div class="dsec" style="padding-bottom:24px">
+          <h3>News</h3>
+          <div id="dnews"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- tab bar -->
+  <nav class="tabbar">
+    <button class="tab active" data-tab="home">
+      <svg viewBox="0 0 24 24"><path d="M2 14 L7 14 L10 6 L14 19 L17 11 L22 11"/></svg>
+      Pulse
+    </button>
+    <button class="tab" data-tab="approve">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.4 L11 15.2 L16 9.4"/></svg>
+      Approvals<span class="nbadge" id="tabbadge">3</span>
+    </button>
+  </nav>
+  <div class="homebar"></div>
+
+  <div class="toasts" id="toasts"></div>
+</div>
+
+<script>
+'use strict';
+/* ================= utils ================= */
+const $ = id => document.getElementById(id);
+function rng(seed){ let t = seed >>> 0; return function(){ t += 0x6D2B79F5; let r = Math.imul(t ^ t >>> 15, 1 | t); r = r + Math.imul(r ^ r >>> 7, 61 | r) ^ r; return ((r ^ r >>> 14) >>> 0) / 4294967296; }; }
+function fmtMoney(v, dec){ if (dec === undefined) dec = 2; const neg = v < 0; const s = Math.abs(v).toFixed(dec).replace(/\B(?=(\d{3})+(?!\d))/g, ','); return (neg ? '-$' : '$') + s; }
+function fmtDelta(v, pct){ const up = v >= 0; return (up ? '▲ ' : '▼ ') + fmtMoney(Math.abs(v)) + ' (' + (up ? '+' : '-') + Math.abs(pct).toFixed(2) + '%)'; }
+function toast(msg){ const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; $('toasts').appendChild(t); setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, 2400); }
+function countup(el, from, to, dur, fmt){
+  const t0 = performance.now();
+  function step(now){
+    const p = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - p, 3);
+    el.textContent = fmt(from + (to - from) * e);
+    if (p < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const TODAY = new Date(2026, 5, 9); // Tue Jun 9 2026
+
+/* ================= state (BROKER: account + positions) ================= */
+const S = {
+  cash: 48210.00,
+  masked: false,
+  pos: {
+    NVDA:  { qty: 120, avg: 612.40, mark: 682.92, day: -0.61, name: 'NVIDIA Corporation' },
+    AAPL:  { qty: 145, avg: 182.40, mark: 205.2414, day: +0.84, name: 'Apple Inc.' }, /* 145 sh × 205.2414 → $29,760.00; total $284,512.40 */
+    MSFT:  { qty: 80,  avg: 396.20, mark: 478.30, day: +0.52, name: 'Microsoft Corporation' },
+    'BRK.B': { qty: 160, avg: 388.45, mark: 430.00, day: +0.31, name: 'Berkshire Hathaway Cl B' },
+    TLT:   { qty: 200, avg: 94.10, mark: 87.64, day: +0.40, name: 'iShares 20+ Yr Treasury Bond ETF' }
+  },
+  order: ['NVDA', 'AAPL', 'MSFT', 'BRK.B', 'TLT']
+};
+function totalValue(){ let t = S.cash; for (const k in S.pos) t += S.pos[k].qty * S.pos[k].mark; return t; }
+function buyingPower(){ return S.cash * 2; }
+
+/* range definitions: start values for the portfolio series */
+const PORT_RANGES = {
+  '1D':  { start: 281297.52, span: 0,    n: 79 },
+  '1W':  { start: 279520.10, span: 7,    n: 64 },
+  '1M':  { start: 272210.40, span: 31,   n: 64 },
+  '3M':  { start: 289978.32, span: 92,   n: 64 },
+  'YTD': { start: 259840.00, span: 159,  n: 64 },
+  'ALL': { start: 198400.00, span: 1255, n: 80 }
+};
+const RANGE_KEYS = ['1D','1W','1M','3M','YTD','ALL'];
+
+function genSeries(seed, start, end, n){
+  const r = rng(seed), pts = [];
+  const step = Math.abs(end - start) / n * 2.4 + start * 0.0011;
+  let v = start;
+  for (let i = 0; i < n; i++){ pts.push(v); v += (r() - 0.5) * 2 * step; }
+  const drift = end - pts[n - 1];
+  for (let i = 0; i < n; i++) pts[i] += drift * (i / (n - 1));
+  pts[0] = start; pts[n - 1] = end;
+  return pts;
+}
+function labelFor(rangeKey, span, i, n){
+  if (rangeKey === '1D'){
+    const mins = 570 + (i / (n - 1)) * 390; // 9:30 → 16:00
+    let h = Math.floor(mins / 60), m = Math.round(mins % 60);
+    if (m === 60){ h++; m = 0; }
+    const ap = h >= 12 ? 'PM' : 'AM'; const h12 = h > 12 ? h - 12 : h;
+    return h12 + ':' + String(m).padStart(2, '0') + ' ' + ap + ' ET';
+  }
+  const d = new Date(TODAY.getTime() - (span - (i / (n - 1)) * span) * 864e5);
+  const lab = MONTHS[d.getMonth()] + ' ' + d.getDate();
+  return span > 200 ? lab + ', ' + d.getFullYear() : lab;
+}
+
+/* ================= chart engine (inline SVG + pointer scrubbing) ================= */
+function Chart(svg, wrap, timeEl, H, onScrub){
+  const NS = 'http://www.w3.org/2000/svg';
+  const W = 361, PT = 10, PB = 10;
+  svg.innerHTML = '';
+  const defs = document.createElementNS(NS, 'defs');
+  const gid = 'g' + svg.id;
+  defs.innerHTML = '<linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" stop-color="currentColor" stop-opacity="0.16"/>' +
+    '<stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient>';
+  svg.appendChild(defs);
+  const fill = document.createElementNS(NS, 'path');
+  fill.setAttribute('class', 'chartfill'); fill.setAttribute('fill', 'url(#' + gid + ')');
+  const base = document.createElementNS(NS, 'line'); base.setAttribute('class', 'baseline');
+  const line = document.createElementNS(NS, 'path'); line.setAttribute('class', 'chartline');
+  const xline = document.createElementNS(NS, 'line'); xline.setAttribute('class', 'xline');
+  const xdot = document.createElementNS(NS, 'circle'); xdot.setAttribute('class', 'xdot'); xdot.setAttribute('r', '4');
+  svg.appendChild(fill); svg.appendChild(base); svg.appendChild(line); svg.appendChild(xline); svg.appendChild(xdot);
+  svg.style.color = 'var(--acc)';
+
+  let pts = [], labels = [], lo = 0, hi = 1;
+  const X = i => (i / (pts.length - 1)) * W;
+  const Y = v => PT + (1 - (v - lo) / (hi - lo || 1)) * (H - PT - PB);
+
+  function setData(arr, labs){
+    pts = arr; labels = labs;
+    lo = Math.min.apply(null, arr); hi = Math.max.apply(null, arr);
+    const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
+    let d = '';
+    for (let i = 0; i < arr.length; i++) d += (i ? 'L' : 'M') + X(i).toFixed(2) + ' ' + Y(arr[i]).toFixed(2);
+    line.setAttribute('d', d);
+    fill.setAttribute('d', d + 'L' + W + ' ' + H + 'L0 ' + H + 'Z');
+    const by = Y(arr[0]).toFixed(2);
+    base.setAttribute('x1', 0); base.setAttribute('x2', W);
+    base.setAttribute('y1', by); base.setAttribute('y2', by);
+    xline.setAttribute('y1', 2); xline.setAttribute('y2', H - 2);
+    line.classList.remove('drawin'); fill.classList.remove('drawin');
+    void line.getBoundingClientRect();
+    line.classList.add('drawin'); fill.classList.add('drawin');
+  }
+
+  function moveTo(clientX){
+    const r = svg.getBoundingClientRect();
+    const fx = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    const i = Math.round(fx * (pts.length - 1));
+    const px = X(i);
+    xline.setAttribute('x1', px); xline.setAttribute('x2', px);
+    xdot.setAttribute('cx', px); xdot.setAttribute('cy', Y(pts[i]));
+    const tpx = (px / W) * r.width;
+    timeEl.textContent = labels[i];
+    const tw = timeEl.offsetWidth;
+    timeEl.style.transform = 'translateX(' + Math.max(0, Math.min(r.width - tw, tpx - tw / 2)) + 'px)';
+    onScrub(pts[i], pts[0]);
+  }
+  svg.addEventListener('pointerdown', e => {
+    if (!pts.length) return;
+    svg.setPointerCapture(e.pointerId);
+    wrap.classList.add('scrubbing');
+    moveTo(e.clientX);
+  });
+  svg.addEventListener('pointermove', e => { if (wrap.classList.contains('scrubbing')) moveTo(e.clientX); });
+  function release(){
+    if (!wrap.classList.contains('scrubbing')) return;
+    wrap.classList.remove('scrubbing');
+    onScrub(null, pts[0]);
+  }
+  svg.addEventListener('pointerup', release);
+  svg.addEventListener('pointercancel', release);
+  return { setData: setData };
+}
+
+function buildRangePills(container, onPick){
+  RANGE_KEYS.forEach((k, idx) => {
+    const b = document.createElement('button');
+    b.textContent = k;
+    if (idx === 0) b.classList.add('on');
+    b.addEventListener('click', () => {
+      container.querySelectorAll('button').forEach(x => x.classList.remove('on'));
+      b.classList.add('on');
+      onPick(k);
+    });
+    container.appendChild(b);
+  });
+}
+
+/* ================= home: hero + portfolio chart ================= */
+let homeRange = '1D';
+const homeChart = Chart($('homechart'), $('homechartwrap'), $('homescrubtime'), 192, homeScrub);
+
+function setDirection(els, up){
+  els.forEach(el => { el.classList.toggle('up', up); el.classList.toggle('dn', !up); });
+}
+function heroNumText(v){ return S.masked ? '$•••,•••' : fmtMoney(v); }
+function periodName(k){ return { '1D': 'Today', '1W': 'Past week', '1M': 'Past month', '3M': 'Past 3 months', 'YTD': 'Year to date', 'ALL': 'All time' }[k]; }
+
+function homeScrub(val, start){
+  const end = totalValue();
+  const v = val === null ? end : val;
+  const d = v - start, pct = d / start * 100;
+  $('heronum').textContent = heroNumText(v);
+  $('herodelta').textContent = S.masked ? (d >= 0 ? '▲ ••• ' : '▼ ••• ') + '(' + (d >= 0 ? '+' : '-') + Math.abs(pct).toFixed(2) + '%)' : fmtDelta(d, pct);
+  setDirection([$('hero'), $('homeranges')], d >= 0);
+}
+function setHomeRange(k){
+  homeRange = k;
+  const r = PORT_RANGES[k];
+  const end = totalValue();
+  const pts = genSeries(20260609 + k.length * 7 + k.charCodeAt(0), r.start, end, r.n);
+  const labs = pts.map((_, i) => labelFor(k, r.span, i, r.n));
+  homeChart.setData(pts, labs);
+  $('heroperiod').textContent = periodName(k);
+  homeScrub(null, r.start);
+}
+buildRangePills($('homeranges'), setHomeRange);
+
+$('heronum').addEventListener('click', () => {
+  S.masked = !S.masked;
+  $('heronum').classList.add('masked');
+  setTimeout(() => { homeScrub(null, PORT_RANGES[homeRange].start); $('heronum').classList.remove('masked'); }, 180);
+});
+
+/* buying power expander */
+$('bprow').addEventListener('click', () => {
+  $('bprow').classList.toggle('open');
+  $('bpdetail').classList.toggle('open');
+});
+
+/* ================= positions list + sparklines ================= */
+function sparkSVG(sym, p){
+  const n = 26, r = rng(sym.charCodeAt(0) * 977 + sym.length * 131);
+  const start = p.mark / (1 + p.day / 100);
+  const pts = genSeries(sym.charCodeAt(0) * 31 + 7, start, p.mark, n);
+  let lo = Math.min.apply(null, pts), hi = Math.max.apply(null, pts);
+  const pad = (hi - lo) * 0.1 || 1; lo -= pad; hi += pad;
+  let d = '';
+  for (let i = 0; i < n; i++){
+    d += (i ? 'L' : 'M') + (i / (n - 1) * 68).toFixed(1) + ' ' + (2 + (1 - (pts[i] - lo) / (hi - lo)) * 20).toFixed(1);
+  }
+  const col = p.day >= 0 ? 'var(--up)' : 'var(--dn)';
+  return '<svg viewBox="0 0 68 24"><path d="' + d + '" fill="none" stroke="' + col + '" stroke-width="1.4" stroke-linecap="round" opacity=".85"/></svg>';
+}
+function renderPositions(){
+  const list = $('poslist');
+  list.innerHTML = '';
+  S.order.forEach(sym => {
+    const p = S.pos[sym];
+    const row = document.createElement('div');
+    row.className = 'pos';
+    row.innerHTML =
+      '<div class="id"><div class="tick">' + sym + '</div><div class="sh">' + p.qty + ' shares</div></div>' +
+      '<div class="spark">' + sparkSVG(sym, p) + '</div>' +
+      '<div class="rt"><div class="mv num">' + fmtMoney(p.qty * p.mark) + '</div>' +
+      '<div class="dp ' + (p.day >= 0 ? 'u' : 'd') + ' num">' + (p.day >= 0 ? '+' : '') + p.day.toFixed(2) + '%</div></div>';
+    row.addEventListener('click', () => openDetail(sym));
+    list.appendChild(row);
+  });
+  $('cashval').textContent = fmtMoney(S.cash);
+  $('bpval').textContent = fmtMoney(buyingPower());
+  $('bpcash').textContent = fmtMoney(S.cash);
+  $('bpmargin').textContent = fmtMoney(buyingPower() - S.cash);
+}
+
+/* ================= detail data (MARKET DATA / RESEARCH EDGE / NEWS) ================= */
+const DETAIL = {
+  NVDA: {
+    ranges: { '1W': 668.45, '1M': 642.18, '3M': 701.40, 'YTD': 588.36, 'ALL': 92.40 },
+    stats: [['Open','$688.20'],['Volume','31.2M'],['High','$691.45'],['Avg vol','38.9M'],['Low','$678.31'],['Mkt cap','$1.66T'],['52wk high','$748.92'],['P/E','41.8'],['52wk low','$488.10'],['Div yield','0.04%']],
+    consensus: { buy: 52, hold: 8, sell: 2, pt: 815.00 },
+    news: [
+      ['Reuters','2h','Nvidia’s Rubin Ultra shipments said to outpace supply through Q3','Supply-chain checks suggest Rubin Ultra rack systems are sold out through September, with CoWoS-L allocation at TSMC up 18% sequentially. Two hyperscalers are said to have pre-committed 2027 capacity.'],
+      ['Bloomberg','5h','Hyperscaler capex forecasts climb again as inference demand broadens','Street models now imply $640B of combined 2026 AI infrastructure spend across the big four, up from $565B in March, as inference workloads from consumer agents exceed internal projections.'],
+      ['Barron’s','1d','TSMC May revenue beat eases concern over advanced-packaging bottlenecks','TSMC posted May revenue up 38% y/y, ahead of consensus, easing fears that packaging constraints would cap GPU shipments in the second half. Shares of AI suppliers rose in sympathy.']
+    ]
+  },
+  AAPL: {
+    ranges: { '1W': 203.02, '1M': 198.51, '3M': 195.10, 'YTD': 209.64, 'ALL': 64.20 },
+    stats: [['Open','$203.60'],['Volume','48.6M'],['High','$205.88'],['Avg vol','54.1M'],['Low','$203.11'],['Mkt cap','$3.02T'],['52wk high','$226.40'],['P/E','31.2'],['52wk low','$168.34'],['Div yield','0.51%']],
+    consensus: { buy: 31, hold: 14, sell: 3, pt: 232.00 },
+    news: [
+      ['WSJ','3h','Apple Intelligence on-device tier drives upgrade chatter ahead of WWDC','Developers briefed ahead of Monday’s keynote expect Apple to open its on-device foundation models to third-party apps, a move analysts say could finally trigger the long-promised iPhone upgrade supercycle.'],
+      ['Financial Times','8h','Apple’s India production now a quarter of global iPhone output','Foxconn and Tata facilities assembled 25% of iPhones in the trailing quarter, hitting Apple’s diversification target a year early as US tariff exposure to China-made devices keeps falling.'],
+      ['Bloomberg','1d','Services margin hits record as App Store legal overhang fades','Services gross margin reached 76.2% last quarter, and the EU’s acceptance of Apple’s revised link-out terms removes the largest remaining regulatory threat to the segment’s growth.']
+    ]
+  },
+  MSFT: {
+    ranges: { '1W': 472.95, '1M': 461.30, '3M': 449.86, 'YTD': 442.10, 'ALL': 212.65 },
+    stats: [['Open','$475.10'],['Volume','17.8M'],['High','$479.62'],['Avg vol','21.3M'],['Low','$474.05'],['Mkt cap','$3.55T'],['52wk high','$491.20'],['P/E','36.4'],['52wk low','$385.58'],['Div yield','0.68%']],
+    consensus: { buy: 44, hold: 6, sell: 1, pt: 540.00 },
+    news: [
+      ['CNBC','2h','Microsoft lifts Azure AI disclosure; run-rate tops $52 billion','In a first, Microsoft broke out Azure AI services as a standalone line, revealing a $52B annualized run-rate growing 64% y/y — well above the $45B bogey most analysts carried.'],
+      ['The Information','6h','OpenAI compute pact renewal seen favoring Azure through 2028','People familiar with the negotiations say the renewed agreement keeps the majority of OpenAI’s training workloads on Azure in exchange for steeper committed-use discounts.'],
+      ['Morgan Stanley','1d','Copilot seat growth re-accelerates in Q2 CIO survey','Of 100 CIOs surveyed, 71% plan to expand Copilot seats this year, up from 58% in the January edition, with average deployment size doubling to 2,400 seats.']
+    ]
+  },
+  'BRK.B': {
+    ranges: { '1W': 426.78, '1M': 419.42, '3M': 432.90, 'YTD': 401.55, 'ALL': 228.40 },
+    stats: [['Open','$428.70'],['Volume','3.1M'],['High','$430.55'],['Avg vol','3.8M'],['Low','$427.96'],['Mkt cap','$928B'],['52wk high','$441.18'],['P/E','23.1'],['52wk low','$372.60'],['Div yield','—']],
+    consensus: { buy: 9, hold: 5, sell: 0, pt: 462.00 },
+    news: [
+      ['WSJ','5h','Berkshire cash pile edges lower as Abel deploys into utilities','Berkshire’s cash and Treasuries fell to $322B as Greg Abel committed $11B to grid and transmission projects — the first sustained deployment since he took the CEO seat.'],
+      ['Nikkei Asia','1d','Berkshire lifts Japan trading-house stakes toward 12%','Filings show Berkshire raised holdings in Mitsubishi Corp. and Mitsui & Co., extending a bet Buffett began in 2020 and Abel has continued, citing durable commodity cash flows.'],
+      ['Barron’s','2d','Insurance float hits record on strong GEICO underwriting','GEICO posted a 90.1% combined ratio and float reached $189B, giving Berkshire what amounts to the cheapest leverage in the S&P 500.']
+    ]
+  },
+  TLT: {
+    ranges: { '1W': 86.94, '1M': 88.70, '3M': 91.10, 'YTD': 91.86, 'ALL': 112.30 },
+    stats: [['Open','$87.30'],['Volume','28.4M'],['High','$87.71'],['Avg vol','33.0M'],['Low','$87.18'],['Net assets','$48.2B'],['52wk high','$97.45'],['Yield (30d SEC)','4.31%'],['52wk low','$84.12'],['Expense ratio','0.15%']],
+    consensus: null,
+    news: [
+      ['Reuters','4h','10-year auction tails as dealers brace for Wednesday’s CPI print','The $42B reopening tailed 1.4bp with dealers taking 18%, the weakest sponsorship since February, as traders hedge ahead of a CPI report expected at 2.6% core y/y.'],
+      ['WSJ','7h','Fed officials split on a September cut as labor data softens','Three regional presidents signaled openness to easing after May payrolls revised lower, while Governor Kugler warned tariff pass-through keeps the inflation path “uncomfortably flat.”'],
+      ['Bloomberg','1d','Duration funds notch longest inflow streak since 2024','Long-Treasury ETFs took in $2.8B over eight straight sessions, the longest run in 19 months, as pensions add duration at yields near 4.8% on the long bond.']
+    ]
+  }
+};
+
+/* ================= detail view ================= */
+let detailSym = 'NVDA';
+let detailRangeStart = 0;
+const dChart = Chart($('dchart'), $('dchartwrap'), $('dscrubtime'), 170, detailScrub);
+
+function detailScrub(val, start){
+  const p = S.pos[detailSym];
+  const v = val === null ? p.mark : val;
+  const d = v - start, pct = d / start * 100;
+  $('dnum').textContent = fmtMoney(v);
+  $('ddelta').textContent = fmtDelta(d, pct);
+  setDirection([$('dhero'), $('dranges')], d >= 0);
+}
+function setDetailRange(k){
+  const p = S.pos[detailSym];
+  const meta = DETAIL[detailSym];
+  const start = k === '1D' ? p.mark / (1 + p.day / 100) : meta.ranges[k];
+  detailRangeStart = start;
+  const r = PORT_RANGES[k];
+  const pts = genSeries(detailSym.charCodeAt(0) * 101 + k.charCodeAt(0) * 13 + k.length, start, p.mark, r.n);
+  const labs = pts.map((_, i) => labelFor(k, r.span, i, r.n));
+  dChart.setData(pts, labs);
+  $('dperiod').textContent = periodName(k);
+  detailScrub(null, start);
+}
+buildRangePills($('dranges'), setDetailRange);
+
+function openDetail(sym){
+  detailSym = sym;
+  const p = S.pos[sym], meta = DETAIL[sym];
+  $('navtick').textContent = sym;
+  $('ownpill').textContent = p.qty + ' sh';
+  $('dname').textContent = p.name + ' · ' + sym;
+
+  /* position card — BROKER positions + quote */
+  const equity = p.qty * p.mark;
+  const ret = equity - p.qty * p.avg;
+  const retPct = ret / (p.qty * p.avg) * 100;
+  const prevClose = p.mark / (1 + p.day / 100);
+  const dayPL = p.qty * (p.mark - prevClose);
+  $('poscard').innerHTML =
+    '<div class="pc"><div class="k">Shares</div><div class="v">' + p.qty + '</div></div>' +
+    '<div class="pc"><div class="k">Equity</div><div class="v">' + fmtMoney(equity) + '</div></div>' +
+    '<div class="pc"><div class="k">Average cost</div><div class="v">' + fmtMoney(p.avg) + '</div></div>' +
+    '<div class="pc"><div class="k">Today’s return</div><div class="v ' + (dayPL >= 0 ? 'u' : 'd') + '">' + (dayPL >= 0 ? '+' : '') + fmtMoney(dayPL) + '</div></div>' +
+    '<div class="pc"><div class="k">Portfolio weight</div><div class="v">' + (equity / totalValue() * 100).toFixed(1) + '%</div></div>' +
+    '<div class="pc"><div class="k">Total return</div><div class="v ' + (ret >= 0 ? 'u' : 'd') + '">' + (ret >= 0 ? '+' : '') + fmtMoney(ret) + ' (' + (ret >= 0 ? '+' : '') + retPct.toFixed(2) + '%)</div></div>';
+
+  /* stats grid — quote + company_overview */
+  $('dstats').innerHTML = meta.stats.map(s => '<div class="stat"><span class="k">' + s[0] + '</span><span class="v">' + s[1] + '</span></div>').join('');
+
+  /* analyst consensus — analyst_consensus */
+  const cWrap = $('dconsensus');
+  if (meta.consensus){
+    const c = meta.consensus, tot = c.buy + c.hold + c.sell;
+    const upside = (c.pt - p.mark) / p.mark * 100;
+    cWrap.innerHTML =
+      '<div class="consensus" id="conbar"><div class="bar">' +
+      '<div class="seg b" style="width:' + (c.buy / tot * 100) + '%; transition-delay:.05s"></div>' +
+      '<div class="seg h" style="width:' + (c.hold / tot * 100) + '%; transition-delay:.2s"></div>' +
+      '<div class="seg s" style="width:' + (c.sell / tot * 100) + '%; transition-delay:.32s"></div></div>' +
+      '<div class="conlegend">' +
+      '<span><i style="background:var(--up)"></i>Buy ' + c.buy + '</span>' +
+      '<span><i style="background:#8b958f"></i>Hold ' + c.hold + '</span>' +
+      '<span><i style="background:var(--dn)"></i>Sell ' + c.sell + '</span></div>' +
+      '<div class="pt">Avg price target <b>' + fmtMoney(c.pt) + '</b> · ' + (upside >= 0 ? '+' : '') + upside.toFixed(1) + '% vs mark</div></div>';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const el = document.getElementById('conbar');
+      if (el) el.classList.add('animate');
+    }));
+  } else {
+    cWrap.innerHTML = '<div class="etfnote">ETF — no sell-side coverage. Tracked via treasury_rates: 2Y 3.92% · 10Y 4.38% · 30Y 4.79%.</div>';
+  }
+
+  /* news — market_news */
+  $('dnews').innerHTML = meta.news.map(n =>
+    '<div class="news"><div class="src">' + n[0] + ' · <span class="ago">' + n[1] + ' ago</span></div>' +
+    '<h4>' + n[2] + '</h4><div class="snippet">' + n[3] + '</div></div>').join('');
+  $('dnews').querySelectorAll('.news').forEach(el => el.addEventListener('click', () => el.classList.toggle('open')));
+
+  /* reset chart to 1D */
+  $('dranges').querySelectorAll('button').forEach((b, i) => b.classList.toggle('on', i === 0));
+  setDetailRange('1D');
+  $('detailscroll').scrollTop = 0;
+  $('view-detail').classList.add('active');
+}
+$('detailback').addEventListener('click', () => $('view-detail').classList.remove('active'));
+$('detailscroll').addEventListener('scroll', () => {
+  $('navtick').classList.toggle('show', $('detailscroll').scrollTop > 60);
+});
+
+/* ================= proposals (AGENTS: flock hub) ================= */
+const PROPOSALS = [
+  {
+    agent: 'earnings-watch', side: 'SELL', sym: 'NVDA', qty: 15, limit: 684.50,
+    holding: 'You hold 120 sh · 28.8% of portfolio',
+    rationale: 'Nine days to the Jun 18 print and options imply a ±7.4% move. The position is 28.8% of the book — over your 26% single-name cap. Trimming 15 shares banks +$1,081 versus average cost and brings concentration to 25.2% while keeping 105 shares of upside exposure.',
+    expires: '3:45 PM ET', mark: 682.92,
+    fill: { label: 'Cash', from: () => S.cash, apply: () => { S.cash += 15 * 684.50; S.pos.NVDA.qty -= 15; }, to: () => S.cash }
+  },
+  {
+    agent: 'arm-watch', side: 'BUY', sym: 'TLT', qty: 20, limit: 87.60,
+    holding: 'You hold 200 sh · 6.2% of portfolio · avg $94.10',
+    rationale: 'The 10-year auction tailed ahead of Wednesday’s CPI and TLT sits 0.9% above the May low with RSI-14 at 38. Duration is 6.2% of the book against an 8% target — this adds 0.6% at a level that improves blended cost basis from $94.10 toward $93.51.',
+    expires: '3:55 PM ET', mark: 87.64,
+    fill: { label: 'TLT position', from: () => S.pos.TLT.qty * S.pos.TLT.mark, apply: () => { S.cash -= 20 * 87.60; S.pos.TLT.qty += 20; }, to: () => S.pos.TLT.qty * S.pos.TLT.mark }
+  },
+  {
+    agent: 'arm-watch', side: 'BUY', sym: 'MSFT', qty: 10, limit: 477.80,
+    holding: 'You hold 80 sh · 13.4% of portfolio · avg $396.20',
+    rationale: 'Azure’s AI run-rate disclosure re-rated peers but MSFT lagged QQQ by 180bps this week, pulling back to its 20-day EMA on a still-trending ADX. Adds 1.7% to the position at 36.4× earnings — below its two-year median of 38.1×.',
+    expires: '4:00 PM ET', mark: 478.30,
+    fill: { label: 'MSFT position', from: () => S.pos.MSFT.qty * S.pos.MSFT.mark, apply: () => { S.cash -= 10 * 477.80; S.pos.MSFT.qty += 10; }, to: () => S.pos.MSFT.qty * S.pos.MSFT.mark }
+  }
+];
+let queue = PROPOSALS.slice();
+let approvedCount = 0;
+let busy = false;
+
+function proposalsLeft(){ return queue.length; }
+function updateBadges(){
+  const n = proposalsLeft();
+  $('tabbadge').textContent = n;
+  $('tabbadge').classList.toggle('gone', n === 0);
+  if (n === 0){
+    $('proptext').textContent = 'All proposals reviewed';
+    $('proppill').classList.add('clear');
+  } else {
+    $('proptext').textContent = n + ' proposal' + (n > 1 ? 's' : '') + ' waiting';
+    $('proppill').classList.remove('clear');
+  }
+}
+
+function renderProposal(){
+  const stage = $('pstage');
+  stage.innerHTML = '';
+  if (!queue.length){
+    $('acount').textContent = 'done';
+    $('slidewrap').style.display = 'none';
+    document.querySelector('.denyrow').style.display = 'none';
+    stage.innerHTML = '<div class="allclear"><div class="acdot"></div><h3>All clear</h3><p>The flock is watching. Nothing needs you.</p></div>';
+    return;
+  }
+  $('slidewrap').style.display = '';
+  document.querySelector('.denyrow').style.display = '';
+  const p = queue[0];
+  $('acount').textContent = (PROPOSALS.length - queue.length + 1) + ' of ' + PROPOSALS.length;
+  const card = document.createElement('div');
+  card.className = 'pcard';
+  card.id = 'pcard';
+  card.innerHTML =
+    '<div class="agent"><span class="adot"></span>' + p.agent + ' · via approvals-gate</div>' +
+    '<div class="pside ' + p.side.toLowerCase() + '">' + p.side + ' · LIMIT</div>' +
+    '<div class="porder num">' + p.qty + ' ' + p.sym + '</div>' +
+    '<div class="plimit num">at <b>' + fmtMoney(p.limit) + '</b> limit · est ' + fmtMoney(p.qty * p.limit) + '</div>' +
+    '<div class="pholding">' + p.holding + '</div>' +
+    '<div class="prationale">' + p.rationale + '</div>' +
+    '<div class="pmeta num"><span>mark <b>' + fmtMoney(p.mark) + '</b></span><span>expires <b>' + p.expires + '</b></span></div>' +
+    '<div class="fillover" id="fillover">' +
+      '<div class="particles" id="particles"></div>' +
+      '<div class="fillcheck">✓</div>' +
+      '<div class="filltitle">Filled</div>' +
+      '<div class="fillorder" id="fillorder"></div>' +
+      '<div class="fillcount" id="fillcount"></div>' +
+    '</div>';
+  stage.appendChild(card);
+  resetSlide();
+}
+
+/* ----- slide to confirm ----- */
+const slide = $('slide'), thumb = $('sthumb'), sfill = $('sfill'), slabel = $('slabel');
+let dragging = false, startX = 0, cur = 0, confirmed = false;
+
+function applyThumb(){
+  thumb.style.transform = 'translateX(' + cur + 'px)';
+  const max = slide.clientWidth - thumb.offsetWidth - 6;
+  sfill.style.transform = 'scaleX(' + Math.min(1, (cur + thumb.offsetWidth + 6) / slide.clientWidth) + ')';
+  slabel.style.opacity = Math.max(0, 1 - cur / (max * 0.55));
+}
+function resetSlide(){
+  confirmed = false; cur = 0;
+  thumb.style.transition = 'transform .35s cubic-bezier(.32,.72,.27,1)';
+  sfill.style.transition = 'transform .35s cubic-bezier(.32,.72,.27,1)';
+  thumb.textContent = '›';
+  applyThumb();
+  slabel.style.opacity = 1;
+}
+thumb.addEventListener('pointerdown', e => {
+  if (confirmed || busy || !queue.length) return;
+  dragging = true;
+  startX = e.clientX - cur;
+  thumb.setPointerCapture(e.pointerId);
+  thumb.style.transition = 'none';
+  sfill.style.transition = 'none';
+});
+thumb.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const max = slide.clientWidth - thumb.offsetWidth - 6;
+  cur = Math.max(0, Math.min(max, e.clientX - startX));
+  applyThumb();
+});
+function endDrag(){
+  if (!dragging) return;
+  dragging = false;
+  const max = slide.clientWidth - thumb.offsetWidth - 6;
+  thumb.style.transition = 'transform .35s cubic-bezier(.32,.72,.27,1)';
+  sfill.style.transition = 'transform .35s cubic-bezier(.32,.72,.27,1)';
+  if (cur >= max * 0.92){
+    cur = max; confirmed = true;
+    thumb.textContent = '✓';
+    applyThumb();
+    approve();
+  } else {
+    cur = 0; applyThumb(); slabel.style.opacity = 1;
+  }
+}
+thumb.addEventListener('pointerup', endDrag);
+thumb.addEventListener('pointercancel', endDrag);
+
+/* ----- approve → fill celebration ----- */
+function approve(){
+  if (busy || !queue.length) return;
+  busy = true;
+  const p = queue[0];
+  setTimeout(() => {
+    const over = $('fillover');
+    $('fillorder').textContent = p.qty + ' ' + p.sym + ' @ ' + fmtMoney(p.limit);
+    const from = p.fill.from();
+    p.fill.apply();          /* mutate BROKER state */
+    const to = p.fill.to();
+    over.classList.add('show');
+    /* particle burst */
+    const pc = $('particles');
+    for (let i = 0; i < 26; i++){
+      const d = document.createElement('span');
+      d.className = 'pt-dot';
+      const ang = Math.random() * Math.PI * 2;
+      const dist = 60 + Math.random() * 110;
+      d.style.setProperty('--dx', (Math.cos(ang) * dist).toFixed(0) + 'px');
+      d.style.setProperty('--dy', (Math.sin(ang) * dist).toFixed(0) + 'px');
+      d.style.animationDelay = (Math.random() * 0.12) + 's';
+      d.style.width = d.style.height = (3 + Math.random() * 4).toFixed(1) + 'px';
+      pc.appendChild(d);
+    }
+    /* count-up of the new balance */
+    const fc = $('fillcount');
+    fc.innerHTML = p.fill.label + ' &nbsp;<b id="fcnum"></b>';
+    countup(document.getElementById('fcnum'), from, to, 1100, fmtMoney);
+    /* sync home */
+    queue.shift();
+    approvedCount++;
+    renderPositions();
+    updateBadges();
+    setHomeRange(homeRange);
+    setTimeout(() => {
+      const card = document.getElementById('pcard');
+      if (card) card.classList.add('leaving');
+      setTimeout(() => { busy = false; renderProposal(); }, 320);
+    }, 1900);
+  }, 260);
+}
+
+$('denybtn').addEventListener('click', () => {
+  if (busy || !queue.length) return;
+  busy = true;
+  const p = queue.shift();
+  toast('Denied — ' + p.agent + ' notified');
+  updateBadges();
+  const card = document.getElementById('pcard');
+  if (card) card.classList.add('leaving');
+  setTimeout(() => { busy = false; renderProposal(); }, 320);
+});
+
+/* ================= navigation ================= */
+function setTab(name){
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+}
+function openApprovals(){
+  renderProposal();
+  $('view-approve').classList.add('active');
+  setTab('approve');
+}
+function closeApprovals(){
+  $('view-approve').classList.remove('active');
+  setTab('home');
+}
+$('proppill').addEventListener('click', openApprovals);
+$('approveclose').addEventListener('click', closeApprovals);
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+  if (t.dataset.tab === 'approve') openApprovals(); else closeApprovals();
+}));
+
+/* ================= boot ================= */
+function tick(){
+  const d = new Date();
+  let h = d.getHours() % 12; if (h === 0) h = 12;
+  $('clock').textContent = h + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+tick(); setInterval(tick, 20000);
+renderPositions();
+updateBadges();
+renderProposal();
+setHomeRange('1D');
+</script>
+</body>
+</html>

@@ -1,0 +1,1123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>duck — STACK</title>
+<!--
+  ============================================================================
+  duck for iOS — CONCEPT 04 "STACK"
+  The morning arrives as a finite deck of cards. Swipe up = read,
+  swipe right = approve, swipe left = deny/skip. Tap any card to flip it.
+  When the stack empties, you are done. A ritual, not a feed.
+
+  UI MODULE → DATA SOURCE MAP (audited stack only):
+  · Portfolio anchor card ......... BROKER account (total value, day P/L) +
+                                    MARKET DATA intraday_prices / price_history (chart, all ranges)
+  · Market open brief ............. MARKET CONTEXT index_performance (SPY/QQQ/IWM),
+                                    market_overview (VIX, put/call, adv/dec);
+                                    EVENTS economic_calendar (auction, CPI, FOMC);
+                                    MACRO treasury_rates (2Y/10Y/30Y) on the back
+  · Position checkup (NVDA) ....... BROKER positions + per-symbol quote (mark, day %);
+                                    MARKET DATA technical_indicators (RSI-14, SMA50/200);
+                                    12% cap = approvals-gate policy on the flock hub
+  · Earnings preview (AAPL) ....... EVENTS earnings_calendar (date, est EPS, prior surprise);
+                                    OPTIONS IV history + options_chain (IV30, expected move);
+                                    RESEARCH EDGE analyst_consensus on the back
+  · News card (NVDA) .............. NEWS market_news (headline + 300-char snippet + source + ts);
+                                    RESEARCH EDGE short_interest on the back
+  · Insider alert (MSFT) .......... RESEARCH EDGE insider_activity (Form 4);
+                                    institutional_ownership on the back
+  · Trade proposal cards .......... AGENTS (flock) trade proposals + rationale;
+                                    BROKER per-symbol quote (bid/ask/range) + order preview
+                                    via the human approval gate
+  · End-of-stack summary .......... AGENTS approve/deny decisions + BROKER order status
+  · Recap screen .................. AGENTS run events / decision log + BROKER transactions (60d)
+  · All card backs ................ MARKET DATA price_history + quote (52wk, vol, P/E, mcap)
+  ============================================================================
+-->
+<style>
+  :root {
+    --paper: #f5efe3;
+    --paper-deep: #ece4d2;
+    --card: #fffdf6;
+    --card2: #fbf6ea;
+    --ink: #2a2114;
+    --muted: #8c8068;
+    --faint: #b9ac92;
+    --line: rgba(64,48,22,.12);
+    --line-soft: rgba(64,48,22,.07);
+    --up: #177a48;
+    --up-soft: rgba(23,122,72,.1);
+    --dn: #c23a2b;
+    --dn-soft: rgba(194,58,43,.09);
+    --amber: #b97f24;
+    --espresso: #4a3a22;
+    --serif: ui-serif, "New York", Georgia, "Times New Roman", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1100px 760px at 30% -10%, #2b2317 0%, #15110a 60%);
+    font-family: var(--sans);
+    color: var(--ink);
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px;
+    user-select: none;
+  }
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--paper);
+    border-radius: 54px; border: 1px solid #2a2e35;
+    box-shadow: 0 0 0 11px #16181c, 0 0 0 12.5px #3a3e46, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  @media (max-width: 500px), (max-height: 940px) and (max-width: 940px) {
+    body { padding: 0; }
+    .phone {
+      width: 100vw; height: 100dvh;
+      border-radius: 0; border: none; box-shadow: none;
+    }
+    .island { display: none; }
+    .statusbar { height: calc(env(safe-area-inset-top, 14px) + 14px) !important; }
+    .statusbar span { display: none; }
+    .tabbar { padding-bottom: calc(env(safe-area-inset-bottom, 18px) + 8px) !important; height: auto !important; }
+    .homebar { display: none; }
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 90; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; z-index: 85; color: var(--ink); }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+
+  .main { flex: 1; position: relative; min-height: 0; }
+  .view {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    opacity: 0; pointer-events: none; transform: translateX(14px);
+    transition: opacity .22s ease, transform .22s ease;
+  }
+  .view.active { opacity: 1; pointer-events: auto; transform: none; }
+  #view-stack { padding-bottom: 94px; }
+
+  /* ============ stack header ============ */
+  header.vhead { padding: 8px 22px 0; flex: none; }
+  .kicker { font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--amber); }
+  .titlerow { display: flex; align-items: baseline; justify-content: space-between; margin-top: 2px; }
+  .apptitle { font-family: var(--serif); font-size: 29px; font-weight: 700; letter-spacing: -.4px; }
+  .recaplink { background: none; border: none; font-family: var(--sans); font-size: 13px; font-weight: 700; color: var(--amber); cursor: pointer; padding: 4px 0 4px 12px; }
+  .dots { display: flex; gap: 5px; justify-content: center; padding: 12px 0 2px; flex: none; }
+  .pdot { width: 6px; height: 6px; border-radius: 3px; background: var(--line); transition: width .3s ease, background .3s ease; }
+  .pdot.done { background: var(--faint); }
+  .pdot.cur { width: 18px; background: var(--espresso); }
+  .counter { text-align: center; font-size: 11.5px; font-weight: 600; color: var(--muted); padding-top: 6px; flex: none; font-variant-numeric: tabular-nums; }
+
+  /* ============ deck ============ */
+  .deck { flex: 1; position: relative; margin: 10px 20px 4px; min-height: 0; perspective: 1100px; }
+  .scard {
+    position: absolute; inset: 0;
+    touch-action: none; cursor: grab;
+    transition: transform .32s cubic-bezier(.3,.9,.35,1.1), opacity .3s ease;
+  }
+  .scard.dragging { transition: none; cursor: grabbing; }
+  .scard.pos1 { transform: scale(.95) translateY(18px); }
+  .scard.pos2 { transform: scale(.90) translateY(35px); }
+  .scard.pos1 .face, .scard.pos2 .face { box-shadow: 0 10px 28px rgba(58,42,16,.13); }
+  .scard.hiddeep { transform: scale(.88) translateY(40px); opacity: 0; pointer-events: none; }
+  .scard.gone { display: none; }
+  .scard.flyout { transition: transform .42s ease-in, opacity .38s ease; opacity: 0; }
+  .scard.rubber { transition: transform .45s cubic-bezier(.2,1.6,.4,1); }
+  .flipinner { position: absolute; inset: 0; transform-style: preserve-3d; transition: transform .55s cubic-bezier(.4,.1,.2,1); }
+  .scard.flipped .flipinner { transform: rotateY(180deg); }
+  .face {
+    position: absolute; inset: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden;
+    background: linear-gradient(176deg, var(--card) 0%, var(--card2) 100%);
+    border: 1px solid var(--line); border-radius: 28px;
+    box-shadow: 0 22px 44px rgba(58,42,16,.2), 0 2px 0 rgba(255,255,255,.7) inset;
+    padding: 20px 20px 18px; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .face.back { transform: rotateY(180deg); }
+
+  .tagline { display: flex; align-items: center; justify-content: space-between; }
+  .tag { font-size: 10px; font-weight: 800; letter-spacing: 1.8px; text-transform: uppercase; color: var(--amber); }
+  .tag.risk { color: var(--dn); }
+  .tag.agent { color: var(--up); }
+  .when { font-size: 10.5px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; margin-left: 10px; }
+  .tag { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .htitle { font-family: var(--serif); font-size: 23px; line-height: 1.18; font-weight: 700; margin-top: 10px; letter-spacing: -.2px; }
+  .htitle .em { color: var(--amber); font-style: italic; }
+  .bodytext { font-size: 13px; line-height: 1.55; color: #5c5240; margin-top: 9px; }
+  .src { font-size: 10.5px; color: var(--faint); font-weight: 600; margin-top: 8px; }
+  .src b { color: var(--muted); }
+
+  .bignum { font-size: 44px; font-weight: 800; letter-spacing: -1.6px; font-variant-numeric: tabular-nums; margin-top: 10px; line-height: 1.05; transition: color .25s; }
+  .chgline { font-size: 13.5px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .chgline .ctx { color: var(--faint); font-weight: 600; font-size: 11.5px; }
+  .pos-c { color: var(--up); } .neg-c { color: var(--dn); }
+
+  .chartwrap { margin-top: 6px; position: relative; }
+  .chartwrap svg { display: block; width: 100%; touch-action: none; cursor: crosshair; }
+  .scrubtag {
+    position: absolute; top: -4px; transform: translateX(-50%);
+    font-size: 10px; font-weight: 700; color: var(--card);
+    background: var(--espresso); border-radius: 6px; padding: 2px 7px;
+    pointer-events: none; opacity: 0; white-space: nowrap; font-variant-numeric: tabular-nums;
+  }
+  .ranges { display: flex; gap: 4px; margin-top: 6px; }
+  .ranges button { flex: 1; border: none; background: none; color: var(--faint); font-size: 11px; font-weight: 800; padding: 6px 0; border-radius: 8px; font-family: var(--sans); cursor: pointer; transition: background .18s, color .18s; letter-spacing: .3px; }
+  .ranges button.on { background: rgba(74,58,34,.1); color: var(--espresso); }
+
+  .kv { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 9px 10px; margin-top: 12px; }
+  .kv .cell { background: rgba(64,48,22,.045); border: 1px solid var(--line-soft); border-radius: 12px; padding: 8px 10px; min-width: 0; }
+  .kv .k { font-size: 9px; font-weight: 800; letter-spacing: .9px; text-transform: uppercase; color: var(--faint); white-space: nowrap; }
+  .kv .v { font-size: 13px; font-weight: 750; margin-top: 2px; font-variant-numeric: tabular-nums; font-family: var(--sans); white-space: nowrap; }
+  .kv .v.up { color: var(--up); } .kv .v.dn { color: var(--dn); }
+
+  .caprow { margin-top: 12px; display: flex; gap: 10px; align-items: flex-start; background: var(--dn-soft); border: 1px solid rgba(194,58,43,.22); border-radius: 14px; padding: 11px 12px; }
+  .caprow .ic { font-size: 15px; line-height: 1.2; }
+  .caprow .t { font-size: 12px; line-height: 1.45; color: #7a3328; }
+  .caprow .t b { color: var(--dn); }
+  .capbar { height: 5px; border-radius: 3px; background: rgba(194,58,43,.14); margin-top: 7px; overflow: hidden; }
+  .capbar i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--dn); transition: width .9s cubic-bezier(.2,.8,.2,1); }
+
+  .evlist { margin-top: 12px; display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--line-soft); }
+  .ev { display: flex; align-items: baseline; gap: 10px; padding: 8.5px 2px; border-bottom: 1px solid var(--line-soft); }
+  .ev .tm { font-family: var(--mono); font-size: 11px; color: var(--amber); font-weight: 700; width: 64px; flex: none; }
+  .ev .nm { font-size: 12.5px; font-weight: 600; flex: 1; }
+  .ev .xx { font-size: 10.5px; color: var(--faint); font-weight: 600; }
+  .idxrow { display: flex; gap: 9px; margin-top: 12px; }
+  .idx { flex: 1; border: 1px solid var(--line-soft); background: rgba(64,48,22,.04); border-radius: 13px; padding: 9px 11px; }
+  .idx .s { font-size: 10px; font-weight: 800; color: var(--muted); letter-spacing: .6px; }
+  .idx .p { font-size: 14px; font-weight: 800; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  .orderbox { margin-top: 12px; background: #f3ecdb; border: 1px dashed rgba(64,48,22,.28); border-radius: 16px; padding: 13px 14px; }
+  .orderbox .ol { display: flex; align-items: baseline; gap: 7px; font-family: var(--mono); }
+  .orderbox .ol span { white-space: nowrap; }
+  .orderbox .side { font-size: 11px; font-weight: 900; letter-spacing: 1.5px; padding: 3px 9px; border-radius: 7px; }
+  .side.buy { background: var(--up-soft); color: var(--up); border: 1px solid rgba(23,122,72,.3); }
+  .side.sell { background: var(--dn-soft); color: var(--dn); border: 1px solid rgba(194,58,43,.3); }
+  .orderbox .qty { font-size: 17px; font-weight: 800; }
+  .orderbox .at { color: var(--faint); font-size: 12px; }
+  .orderbox .est { font-size: 11px; color: var(--muted); margin-top: 6px; font-family: var(--mono); }
+  .rationale { margin-top: 11px; flex: 1; min-height: 0; overflow: hidden; font-size: 12.5px; line-height: 1.52; color: #5c5240; border-left: 3px solid var(--amber); padding-left: 12px; }
+  .rationale .who { font-size: 9.5px; font-weight: 800; letter-spacing: 1.4px; color: var(--amber); text-transform: uppercase; display: block; margin-bottom: 4px; }
+  .quoterow { display: flex; gap: 8px; margin-top: 11px; font-family: var(--mono); font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+  .quoterow b { color: var(--ink); font-weight: 700; }
+
+  .fliphint { margin-top: auto; padding-top: 10px; text-align: center; font-size: 10.5px; color: var(--faint); font-weight: 600; }
+
+  .stamp {
+    position: absolute; top: 64px; z-index: 6;
+    font-family: var(--serif); font-size: 30px; font-weight: 800; letter-spacing: 4px;
+    padding: 5px 16px; border-radius: 10px; border: 3.5px solid;
+    opacity: 0; pointer-events: none; background: rgba(255,253,246,.78);
+  }
+  .stamp.ok { left: 20px; color: var(--up); border-color: var(--up); transform: rotate(-13deg); }
+  .stamp.no { right: 20px; color: var(--dn); border-color: var(--dn); transform: rotate(13deg); }
+  .stamp.rd { left: 50%; margin-left: -62px; color: var(--amber); border-color: var(--amber); transform: rotate(-6deg); width: 124px; text-align: center; }
+
+  /* back face */
+  .backhead { display: flex; align-items: baseline; justify-content: space-between; }
+  .backsym { font-family: var(--serif); font-size: 21px; font-weight: 700; }
+  .backsub { font-size: 10.5px; color: var(--faint); font-weight: 600; }
+  .backpx { font-size: 26px; font-weight: 800; letter-spacing: -.8px; font-variant-numeric: tabular-nums; margin-top: 8px; }
+  .backchg { font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 1px; }
+
+  /* empty / done state behind deck */
+  .deckdone { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; opacity: 0; transition: opacity .5s ease .15s; pointer-events: none; }
+  .deckdone.show { opacity: 1; pointer-events: auto; }
+  .deckdone .nest { font-size: 54px; }
+  .deckdone h2 { font-family: var(--serif); font-size: 26px; font-weight: 700; }
+  .deckdone p { font-size: 12.5px; color: var(--muted); max-width: 220px; line-height: 1.5; }
+  .deckdone button { margin-top: 10px; border: none; background: var(--espresso); color: var(--paper); font-family: var(--sans); font-size: 13.5px; font-weight: 700; padding: 12px 22px; border-radius: 999px; cursor: pointer; box-shadow: 0 8px 20px rgba(58,42,16,.3); transition: transform .15s; }
+  .deckdone button:active { transform: scale(.95); }
+
+  /* summary card specifics */
+  .sumstats { display: flex; gap: 8px; margin-top: 14px; }
+  .sumstat { flex: 1; text-align: center; background: rgba(64,48,22,.05); border: 1px solid var(--line-soft); border-radius: 14px; padding: 10px 4px; }
+  .sumstat .n { font-size: 21px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .sumstat .l { font-size: 9px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); margin-top: 2px; }
+  .sumlist { margin-top: 12px; font-size: 12px; line-height: 1.8; color: #5c5240; }
+  .sumlist b { font-variant-numeric: tabular-nums; }
+  .pcl { position: absolute; width: 8px; height: 13px; border-radius: 2.5px; left: 50%; top: 38%; z-index: 300; pointer-events: none; animation: burst 1.25s cubic-bezier(.15,.85,.4,1) forwards; }
+  @keyframes burst {
+    0% { transform: translate(0,0) rotate(0) scale(1); opacity: 1; }
+    100% { transform: translate(var(--tx), var(--ty)) rotate(var(--rr)) scale(.8); opacity: 0; }
+  }
+
+  /* gesture buttons */
+  .actions { flex: none; display: flex; justify-content: center; align-items: center; gap: 24px; padding: 12px 0 2px; }
+  .act { width: 58px; height: 58px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 23px; font-family: var(--sans); background: var(--card); border: 1px solid var(--line); cursor: pointer; transition: transform .14s, opacity .25s; box-shadow: 0 6px 16px rgba(58,42,16,.12); color: var(--muted); }
+  .act:active { transform: scale(.88); }
+  .act.no { color: var(--dn); }
+  .act.yes { color: var(--up); }
+  .act.up { color: var(--amber); }
+  .act.flip { width: 42px; height: 42px; font-size: 15px; }
+  .act[disabled] { opacity: .25; pointer-events: none; }
+  .hint { flex: none; text-align: center; font-size: 11px; color: var(--faint); padding: 6px 0 8px; font-weight: 600; }
+  .hint .l { color: var(--dn); } .hint .r { color: var(--up); } .hint .u { color: var(--amber); }
+
+  .undochip {
+    position: absolute; left: 50%; bottom: 116px; transform: translate(-50%, 16px); z-index: 50;
+    background: var(--espresso); color: var(--paper); border: none; border-radius: 999px;
+    font-family: var(--sans); font-size: 12px; font-weight: 700; padding: 9px 16px;
+    box-shadow: 0 10px 26px rgba(40,28,10,.4); cursor: pointer;
+    opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s;
+  }
+  .undochip.show { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+
+  /* ============ recap ============ */
+  .recapscroll { flex: 1; overflow-y: auto; padding: 4px 20px 120px; }
+  .chips { display: flex; gap: 8px; margin-top: 14px; }
+  .chip { flex: 1; background: var(--card); border: 1px solid var(--line); border-radius: 15px; padding: 11px 6px; text-align: center; }
+  .chip .n { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .chip .l { font-size: 9px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); margin-top: 2px; }
+  .seclabel { font-family: var(--serif); font-size: 15px; font-weight: 700; padding: 20px 2px 8px; color: var(--espresso); }
+  .seclabel small { font-family: var(--sans); font-size: 10.5px; color: var(--faint); font-weight: 600; margin-left: 7px; }
+  .recapcard { background: var(--card); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+  .ritem { display: flex; align-items: center; gap: 12px; padding: 12px 13px; border-bottom: 1px solid var(--line-soft); animation: rise .35s ease; }
+  .recapcard .ritem:last-child { border-bottom: none; }
+  @keyframes rise { from { opacity: 0; transform: translateY(7px); } }
+  .ricn { width: 32px; height: 32px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+  .ricn.read { background: rgba(185,127,36,.12); color: var(--amber); }
+  .ricn.appr { background: var(--up-soft); color: var(--up); }
+  .ricn.deny { background: var(--dn-soft); color: var(--dn); }
+  .ricn.skip { background: rgba(64,48,22,.06); color: var(--faint); }
+  .rmeta { flex: 1; min-width: 0; }
+  .rt { font-size: 13px; font-weight: 650; line-height: 1.3; }
+  .rs { font-size: 11px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rtime { flex: none; font-size: 10.5px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .emptyrecap { padding: 26px 14px; text-align: center; color: var(--faint); font-size: 12.5px; line-height: 1.5; }
+
+  /* ============ tab bar ============ */
+  .tabbar {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 40;
+    height: 92px; padding: 10px 40px 28px;
+    background: rgba(245,239,227,.86); backdrop-filter: blur(20px);
+    border-top: 1px solid var(--line); display: flex;
+  }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; background: none; border: none; color: var(--faint); font-size: 10px; font-weight: 700; position: relative; cursor: pointer; font-family: var(--sans); transition: color .15s; }
+  .tab .ticon { font-size: 21px; line-height: 1; }
+  .tab.active { color: var(--espresso); }
+  .tab .nbadge { position: absolute; top: -4px; right: 26%; background: var(--amber); color: #fff; font-size: 10px; font-weight: 800; min-width: 17px; height: 17px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #2a2114; opacity: .3; z-index: 60; pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span id="clock">9:41</span><span class="icons">●●●● 􀙇 ▮▮▮▯</span></div>
+
+  <div class="main">
+
+    <!-- ================= STACK ================= -->
+    <section class="view active" id="view-stack">
+      <header class="vhead">
+        <div class="kicker">Tuesday · June 9, 2026</div>
+        <div class="titlerow">
+          <div class="apptitle">Morning stack</div>
+          <button class="recaplink" id="to-recap">Recap ›</button>
+        </div>
+      </header>
+      <div class="dots" id="dots"></div>
+      <div class="counter" id="counter"></div>
+      <div class="deck" id="deck">
+        <div class="deckdone" id="deckdone">
+          <div class="nest">🪺</div>
+          <h2>Stack clear.</h2>
+          <p id="donesub">Nine cards, all decided. The flock will rebuild it overnight.</p>
+          <button id="done-recap">Review decisions</button>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="act no" id="act-left">✕</button>
+        <button class="act flip" id="act-flip">⤾</button>
+        <button class="act yes" id="act-right">✓</button>
+      </div>
+      <div class="hint" id="hint"></div>
+      <button class="undochip" id="undochip">↩ Undo</button>
+    </section>
+
+    <!-- ================= RECAP ================= -->
+    <section class="view" id="view-recap">
+      <header class="vhead">
+        <div class="kicker">Decided</div>
+        <div class="titlerow">
+          <div class="apptitle">Recap</div>
+          <button class="recaplink" id="to-stack">‹ Stack</button>
+        </div>
+      </header>
+      <div class="recapscroll">
+        <div class="chips">
+          <div class="chip"><div class="n" id="c-read">0</div><div class="l">Read</div></div>
+          <div class="chip"><div class="n pos-c" id="c-appr">0</div><div class="l">Approved</div></div>
+          <div class="chip"><div class="n neg-c" id="c-deny">0</div><div class="l">Denied</div></div>
+          <div class="chip"><div class="n" id="c-skip">0</div><div class="l">Skipped</div></div>
+        </div>
+        <div class="seclabel">This morning <small id="recap-when">Tue Jun 9</small></div>
+        <div class="recapcard" id="recap-today">
+          <div class="emptyrecap" id="recap-empty">Nothing decided yet.<br>Swipe through the stack — every call lands here.</div>
+        </div>
+        <div class="seclabel">Yesterday <small>Mon Jun 8</small></div>
+        <div class="recapcard">
+          <div class="ritem"><div class="ricn appr">✓</div><div class="rmeta"><div class="rt">Approved — BUY 25 AAPL @ $233.80 LMT</div><div class="rs">earnings-watch · filled 11:42 AM · +$5,845.00</div></div><div class="rtime">8:12 AM</div></div>
+          <div class="ritem"><div class="ricn deny">✕</div><div class="rmeta"><div class="rt">Denied — BUY 10 MSTR @ MKT</div><div class="rs">arm-watch · outside mandate, crypto proxy</div></div><div class="rtime">8:13 AM</div></div>
+          <div class="ritem"><div class="ricn read">●</div><div class="rmeta"><div class="rt">Read 7 brief cards</div><div class="rs">stack cleared in 4m 12s</div></div><div class="rtime">8:16 AM</div></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- tab bar -->
+  <nav class="tabbar">
+    <button class="tab active" data-tab="stack"><span class="ticon">🃏</span>Stack<span class="nbadge" id="tabbadge">9</span></button>
+    <button class="tab" data-tab="recap"><span class="ticon">☕️</span>Recap</button>
+  </nav>
+  <div class="homebar"></div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+const fmt$ = n => "$" + n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const sgnP = n => (n >= 0 ? "+" : "−") + Math.abs(n).toFixed(2) + "%";
+
+/* ================= clock ================= */
+function tickClock() {
+  const d = new Date();
+  let h = d.getHours() % 12 || 12;
+  $("#clock").textContent = h + ":" + String(d.getMinutes()).padStart(2, "0");
+}
+tickClock(); setInterval(tickClock, 10000);
+
+/* ================= series generator ================= */
+function mulberry32(a) {
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function genSeries(seed, n, start, end, vol) {
+  const r = mulberry32(seed);
+  const noise = [0];
+  for (let i = 1; i < n; i++) noise.push(noise[i - 1] + (r() - 0.5));
+  const drift = noise[n - 1];
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const w = noise[i] - drift * t;            // detrended walk, endpoints 0
+    pts.push(start + (end - start) * t + w * vol);
+  }
+  pts[0] = start; pts[n - 1] = end;
+  return pts;
+}
+
+/* range defs: pct = change over range (start derived from end) */
+const RANGE_DEFS = [
+  { k: "1D",  n: 78,  days: 0 },
+  { k: "1W",  n: 70,  days: 7 },
+  { k: "1M",  n: 66,  days: 30 },
+  { k: "3M",  n: 66,  days: 91 },
+  { k: "YTD", n: 80,  days: 159 },
+  { k: "ALL", n: 90,  days: 1460 },
+];
+const TODAY = new Date(2026, 5, 9, 16, 0);
+function timeLabel(rk, i, n) {
+  if (rk === "1D") {
+    const mins = 570 + Math.round((i / (n - 1)) * 390); // 9:30 → 16:00
+    let h = Math.floor(mins / 60), m = mins % 60;
+    const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12;
+    return h + ":" + String(m).padStart(2, "0") + " " + ap;
+  }
+  const def = RANGE_DEFS.find(d => d.k === rk);
+  const dt = new Date(TODAY.getTime() - def.days * 86400000 * (1 - i / (n - 1)));
+  return dt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: rk === "ALL" ? "numeric" : undefined });
+}
+
+/* ================= scrubbable chart ================= */
+/* cfg: { seed, end, pcts:{...per range}, vol, money:bool, onScrub(v,chg,pct,label|null) } */
+let chartUid = 0;
+function buildChart(cfg) {
+  const W = 320, H = 96;
+  const uid = "g" + (chartUid++);
+  const wrap = el("div", "chartwrap noswipe");
+  wrap.innerHTML =
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" height="' + (cfg.h || 96) + '">' +
+    '<defs><linearGradient id="' + uid + '" x1="0" y1="0" x2="0" y2="1">' +
+    '<stop offset="0" stop-opacity=".22"/><stop offset="1" stop-opacity="0"/></linearGradient></defs>' +
+    '<path class="cfill" fill="url(#' + uid + ')" d=""/>' +
+    '<path class="cline" fill="none" stroke-width="2.4" stroke-linecap="round" d=""/>' +
+    '<line class="xh" y1="4" y2="' + H + '" stroke="rgba(64,48,22,.35)" stroke-width="1" stroke-dasharray="2 3" opacity="0"/>' +
+    '<circle class="xdot" r="4.5" opacity="0"/>' +
+    '</svg><div class="scrubtag"></div>';
+  const svg = wrap.querySelector("svg");
+  const lineP = wrap.querySelector(".cline"), fillP = wrap.querySelector(".cfill");
+  const xh = wrap.querySelector(".xh"), xdot = wrap.querySelector(".xdot");
+  const tagEl = wrap.querySelector(".scrubtag");
+  const grad = wrap.querySelectorAll("#" + uid + " stop");
+
+  const ranges = el("div", "ranges noswipe");
+  RANGE_DEFS.forEach(d => {
+    const b = el("button", null, d.k);
+    b.onclick = e => { e.stopPropagation(); setRange(d.k); };
+    ranges.appendChild(b);
+  });
+
+  let pts = [], rk = "1D", up = true;
+  function setRange(k) {
+    rk = k;
+    const def = RANGE_DEFS.find(d => d.k === k);
+    const pct = cfg.pcts[k];
+    const start = cfg.end / (1 + pct / 100);
+    pts = genSeries(cfg.seed + k.charCodeAt(0) * 7 + k.length, def.n, start, cfg.end, cfg.vol * (k === "1D" ? 0.45 : 1));
+    up = cfg.end >= start;
+    const col = up ? "#177a48" : "#c23a2b";
+    lineP.setAttribute("stroke", col);
+    xdot.setAttribute("fill", col);
+    grad.forEach(s => s.setAttribute("stop-color", col));
+    const lo = Math.min(...pts), hi = Math.max(...pts), pad = (hi - lo) * 0.08 || 1;
+    const X = i => (i / (pts.length - 1)) * W;
+    const Y = v => H - 4 - ((v - lo + pad) / (hi - lo + 2 * pad)) * (H - 10);
+    let d = "M" + X(0) + "," + Y(pts[0]);
+    for (let i = 1; i < pts.length; i++) d += "L" + X(i).toFixed(1) + "," + Y(pts[i]).toFixed(1);
+    lineP.setAttribute("d", d);
+    fillP.setAttribute("d", d + "L" + W + "," + H + "L0," + H + "Z");
+    ranges.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.textContent === k));
+    if (cfg.onScrub) cfg.onScrub(cfg.end, cfg.end - start, pct, null, rk);
+    wrap._Y = Y;
+  }
+
+  function scrubAt(clientX) {
+    const r = svg.getBoundingClientRect();
+    const fr = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    const i = Math.round(fr * (pts.length - 1));
+    const x = (i / (pts.length - 1)) * W;
+    const xpx = (x / W) * r.width;
+    xh.setAttribute("x1", x); xh.setAttribute("x2", x); xh.setAttribute("opacity", "1");
+    xdot.setAttribute("cx", x); xdot.setAttribute("cy", wrap._Y(pts[i])); xdot.setAttribute("opacity", "1");
+    tagEl.textContent = timeLabel(rk, i, pts.length);
+    tagEl.style.left = Math.max(28, Math.min(r.width - 28, xpx)) + "px";
+    tagEl.style.opacity = "1";
+    const v = pts[i], chg = v - pts[0];
+    if (cfg.onScrub) cfg.onScrub(v, chg, (chg / pts[0]) * 100, timeLabel(rk, i, pts.length), rk);
+  }
+  function endScrub() {
+    xh.setAttribute("opacity", "0"); xdot.setAttribute("opacity", "0"); tagEl.style.opacity = "0";
+    const start = pts[0];
+    if (cfg.onScrub) cfg.onScrub(cfg.end, cfg.end - start, ((cfg.end - start) / start) * 100, null, rk);
+  }
+  svg.addEventListener("pointerdown", e => {
+    e.stopPropagation(); svg.setPointerCapture(e.pointerId); scrubAt(e.clientX);
+  });
+  svg.addEventListener("pointermove", e => { if (e.buttons) scrubAt(e.clientX); });
+  svg.addEventListener("pointerup", endScrub);
+  svg.addEventListener("pointercancel", endScrub);
+  svg.addEventListener("click", e => e.stopPropagation());
+
+  setRange(cfg.range || "1D");
+  return { wrap, ranges, setRange };
+}
+
+/* price-header helper for card backs: returns {head, bind} */
+function backHeader(sym, name, end) {
+  const head = el("div");
+  head.innerHTML =
+    '<div class="backhead"><div class="backsym">' + sym + '</div><div class="backsub">' + name + '</div></div>' +
+    '<div class="backpx"></div><div class="backchg"></div>';
+  const px = head.querySelector(".backpx"), ch = head.querySelector(".backchg");
+  return {
+    head,
+    onScrub(v, chg, pct, label, rk) {
+      px.textContent = fmt$(v);
+      ch.className = "backchg " + (chg >= 0 ? "pos-c" : "neg-c");
+      ch.innerHTML = (chg >= 0 ? "▲ " : "▼ ") + fmt$(Math.abs(chg)) + " (" + sgnP(pct) + ") " +
+        '<span style="color:var(--faint);font-weight:600">' + (label ? label : rk === "1D" ? "today" : "past " + rk.toLowerCase()) + "</span>";
+    }
+  };
+}
+function kvGrid(items) {
+  return '<div class="kv">' + items.map(it =>
+    '<div class="cell"><div class="k">' + it[0] + '</div><div class="v ' + (it[2] || "") + '">' + it[1] + '</div></div>'
+  ).join("") + "</div>";
+}
+
+/* ================= card data ================= */
+const CHART_CFG = {
+  PORT: { seed: 11, end: 284512.40, vol: 720,  pcts: { "1D": 1.142875, "1W": 2.06, "1M": 5.98, "3M": 12.74, "YTD": 18.02, "ALL": 193.9 } },
+  SPY:  { seed: 23, end: 618.42,    vol: 1.9,  pcts: { "1D": 0.32, "1W": 1.10, "1M": 3.05, "3M": 6.80,  "YTD": 9.40,  "ALL": 86.2 } },
+  NVDA: { seed: 37, end: 682.92,    vol: 4.4,  pcts: { "1D": -0.61, "1W": 2.84, "1M": 9.60, "3M": 21.40, "YTD": 28.10, "ALL": 412.0 } },
+  AAPL: { seed: 41, end: 235.10,    vol: 1.2,  pcts: { "1D": 0.84, "1W": 1.95, "1M": 4.10, "3M": 8.90,  "YTD": 12.30, "ALL": 96.4 } },
+  MSFT: { seed: 53, end: 512.45,    vol: 2.6,  pcts: { "1D": 0.52, "1W": 0.88, "1M": 2.40, "3M": 6.10,  "YTD": 10.80, "ALL": 118.7 } },
+  ARM:  { seed: 67, end: 168.24,    vol: 2.1,  pcts: { "1D": -1.12, "1W": -3.40, "1M": -7.80, "3M": 4.20, "YTD": 11.60, "ALL": 224.0 } },
+};
+
+/* kind: 'info' (up=read, left=skip) | 'proposal' (right=approve, left=deny) | 'summary' */
+const CARDS = [
+  {
+    id: "anchor", kind: "info", tag: "Portfolio · Schwab ····8841", when: "as of 8:02 AM",
+    short: "Portfolio", recap: "Read — portfolio pulse, +$3,214.88 day",
+    front(card) {
+      const f = el("div");
+      f.innerHTML = '<div class="bignum" id="anchor-val">$284,512.40</div><div class="chgline" id="anchor-chg"></div>';
+      const valEl = f.querySelector("#anchor-val"), chgEl = f.querySelector("#anchor-chg");
+      const ch = buildChart(Object.assign({}, CHART_CFG.PORT, {
+        h: 100, range: "1D",
+        onScrub(v, chg, pct, label, rk) {
+          valEl.textContent = fmt$(v);
+          valEl.style.color = chg >= 0 ? "var(--up)" : "var(--dn)";
+          chgEl.className = "chgline " + (chg >= 0 ? "pos-c" : "neg-c");
+          chgEl.innerHTML = (chg >= 0 ? "▲ " : "▼ ") + fmt$(Math.abs(chg)) + " (" + sgnP(pct) + ") " +
+            '<span class="ctx">' + (label ? label : rk === "1D" ? "today" : "past " + rk.toLowerCase()) + "</span>";
+        }
+      }));
+      f.appendChild(ch.wrap); f.appendChild(ch.ranges);
+      f.insertAdjacentHTML("beforeend", kvGrid([
+        ["Cash", "$48,210", ""], ["Buying power", "$96,420", ""], ["Day P/L", "+$3,214.88", "up"],
+      ]));
+      f.appendChild(el("div", "bodytext", "Two proposals from the flock are waiting near the bottom of the stack — <b>arm-watch</b> wants in, <b>earnings-watch</b> wants a trim."));
+      f.appendChild(el("div", "src", "drag the line to scrub · <b>tap card</b> for account detail"));
+      return f;
+    },
+    back() {
+      const b = el("div");
+      b.innerHTML = '<div class="htitle" style="margin-top:6px">Account detail</div>' +
+        kvGrid([
+          ["Cash", "$48,210", ""], ["Buying power", "$96,420", ""], ["Day P/L", "+$3,214.88", "up"],
+          ["Positions", "5 + cash", ""], ["Largest", "NVDA 28.8%", "dn"], ["YTD return", "+18.0%", "up"],
+        ]) +
+        '<div class="bodytext" style="margin-top:12px">Day P/L is live from Schwab (currentDayProfitLoss). Largest-position weight is checked by <b>approvals-gate</b> against your 12% single-name cap every morning at 7:30.</div>';
+      return b;
+    }
+  },
+  {
+    id: "brief", kind: "info", tag: "Market open brief", when: "8:00 AM",
+    short: "Open brief", recap: "Read — market open brief",
+    front() {
+      const f = el("div");
+      f.innerHTML =
+        '<div class="htitle">Quiet tape ahead of <span class="em">tomorrow’s CPI.</span></div>' +
+        '<div class="idxrow">' +
+          '<div class="idx"><div class="s">SPY</div><div class="p pos-c">+0.32%</div></div>' +
+          '<div class="idx"><div class="s">QQQ</div><div class="p pos-c">+0.54%</div></div>' +
+          '<div class="idx"><div class="s">IWM</div><div class="p neg-c">−0.18%</div></div>' +
+          '<div class="idx"><div class="s">VIX</div><div class="p">14.8</div></div>' +
+        '</div>' +
+        '<div class="evlist">' +
+          '<div class="ev"><span class="tm">10:00 AM</span><span class="nm">Wholesale inventories, Apr</span><span class="xx">est +0.2%</span></div>' +
+          '<div class="ev"><span class="tm">1:00 PM</span><span class="nm">10-yr note auction, $39B</span><span class="xx">treasury</span></div>' +
+          '<div class="ev"><span class="tm">Wed 8:30</span><span class="nm">CPI, May</span><span class="xx">est +0.2% m/m</span></div>' +
+          '<div class="ev"><span class="tm">Jun 16–17</span><span class="nm">FOMC meeting</span><span class="xx">hold expected</span></div>' +
+        '</div>';
+      return f;
+    },
+    back() {
+      const b = el("div");
+      const hd = backHeader("SPY", "S&P 500 ETF", 618.42);
+      b.appendChild(hd.head);
+      const ch = buildChart(Object.assign({}, CHART_CFG.SPY, { h: 88, onScrub: hd.onScrub }));
+      b.appendChild(ch.wrap); b.appendChild(ch.ranges);
+      b.insertAdjacentHTML("beforeend", kvGrid([
+        ["Put/Call", "0.87", ""], ["Adv/Dec", "1,940 / 1,210", "up"], ["VIX", "14.8 −0.6", "up"],
+        ["2Y", "3.71%", ""], ["10Y", "4.02%", ""], ["30Y", "4.55%", ""],
+      ]));
+      return b;
+    }
+  },
+  {
+    id: "checkup", kind: "info", tag: "Position checkup", tagCls: "risk", when: "NVDA · 120 sh",
+    short: "NVDA checkup", recap: "Read — NVDA checkup (28.8% weight)",
+    front() {
+      const f = el("div");
+      f.innerHTML =
+        '<div class="htitle">NVDA cooled off; your <span class="em">cap did not.</span></div>' +
+        kvGrid([
+          ["Mark", "$682.92", ""], ["Today", "−0.61%", "dn"], ["Avg cost", "$612.40", ""],
+          ["Unrealized", "+$8,462.40", "up"], ["Return", "+11.5%", "up"], ["RSI-14", "71.4", "dn"],
+        ]) +
+        '<div class="caprow"><div class="ic">⚠️</div><div class="t"><b>Still 28.8% of portfolio</b> — above your 12% single-name cap. earnings-watch staged a trim; it’s two cards down.' +
+        '<div class="capbar"><i id="capfill"></i></div></div></div>';
+      return f;
+    },
+    back() {
+      const b = el("div");
+      const hd = backHeader("NVDA", "NVIDIA Corp", 682.92);
+      b.appendChild(hd.head);
+      const ch = buildChart(Object.assign({}, CHART_CFG.NVDA, { h: 88, onScrub: hd.onScrub }));
+      b.appendChild(ch.wrap); b.appendChild(ch.ranges);
+      b.insertAdjacentHTML("beforeend", kvGrid([
+        ["52-wk hi", "$724.96", ""], ["52-wk lo", "$481.10", ""], ["P/E", "46.2", ""],
+        ["SMA-50", "$641.18", "up"], ["SMA-200", "$571.66", "up"], ["Vol", "31.2M", ""],
+      ]));
+      return b;
+    }
+  },
+  {
+    id: "earnings", kind: "info", tag: "Earnings preview", when: "in 3 days",
+    short: "AAPL earnings", recap: "Read — AAPL earnings preview (Fri)",
+    front() {
+      const f = el("div");
+      f.innerHTML =
+        '<div class="htitle">AAPL reports <span class="em">Friday</span> after the close.</div>' +
+        '<div class="bodytext">You hold 145 sh @ $182.40 avg. Options are pricing a bigger move than usual — IV30 is 38% against a 24% trailing average, with call OI stacking at the $245 strike.</div>' +
+        kvGrid([
+          ["Est. EPS", "$2.43", ""], ["Prior surprise", "+4.1%", "up"], ["Exp. move", "±4.6%", ""],
+          ["IV30", "38% ▲", "dn"], ["IV 30-d avg", "24%", ""], ["Reports", "Jun 12", ""],
+        ]);
+      return f;
+    },
+    back() {
+      const b = el("div");
+      const hd = backHeader("AAPL", "Apple Inc", 235.10);
+      b.appendChild(hd.head);
+      const ch = buildChart(Object.assign({}, CHART_CFG.AAPL, { h: 88, onScrub: hd.onScrub }));
+      b.appendChild(ch.wrap); b.appendChild(ch.ranges);
+      b.insertAdjacentHTML("beforeend", kvGrid([
+        ["Consensus", "Buy (31/42)", "up"], ["Avg PT", "$268.00", "up"], ["Last 4 beats", "4 of 4", "up"],
+        ["Your P/L", "+$7,641.50", "up"], ["Weight", "12.0%", ""], ["Div ex-date", "Aug 10", ""],
+      ]));
+      return b;
+    }
+  },
+  {
+    id: "news", kind: "info", tag: "News · NVDA", when: "6:12 AM",
+    short: "News", recap: "Read — NVDA Rubin Ultra headline",
+    front() {
+      const f = el("div");
+      f.innerHTML =
+        '<div class="htitle">Nvidia ships Rubin Ultra early as CoreWeave, Oracle expand orders</div>' +
+        '<div class="bodytext">Nvidia said first Rubin Ultra racks left Taiwan two weeks ahead of plan, citing yield gains at TSMC’s N2 node. CoreWeave and Oracle both lifted 2027 capacity commitments; analysts see upside to July datacenter guidance.</div>' +
+        '<div class="src"><b>Reuters</b> · 6:12 AM · via market_news</div>';
+      return f;
+    },
+    back() {
+      const b = el("div");
+      const hd = backHeader("NVDA", "NVIDIA Corp", 682.92);
+      b.appendChild(hd.head);
+      const ch = buildChart(Object.assign({}, CHART_CFG.NVDA, { seed: 38, h: 88, onScrub: hd.onScrub }));
+      b.appendChild(ch.wrap); b.appendChild(ch.ranges);
+      b.insertAdjacentHTML("beforeend",
+        kvGrid([["Short int.", "1.1% float", "up"], ["Days to cover", "0.8", ""], ["News today", "14 items", ""]]) +
+        '<div class="bodytext" style="margin-top:10px"><b>Also:</b> “TSMC May revenue +28% y/y” — Nikkei, 5:40 AM · “Coreweave prices $2.5B notes” — Bloomberg, 7:05 AM</div>');
+      return b;
+    }
+  },
+  {
+    id: "insider", kind: "info", tag: "Insider alert", tagCls: "risk", when: "Form 4 · Jun 5",
+    short: "Insider", recap: "Read — MSFT CFO sale ($2.1M)",
+    front() {
+      const f = el("div");
+      f.innerHTML =
+        '<div class="htitle">MSFT’s CFO sold <span class="em">$2.1M</span> of stock.</div>' +
+        '<div class="bodytext">Amy Hood sold 4,100 shares at $512.10 on June 5 (Form 4 filed after close). Sale was <b>not</b> under a 10b5-1 plan. You hold 80 shares; insider net over 90 days is now −$3.4M.</div>' +
+        kvGrid([
+          ["Shares", "4,100", ""], ["Price", "$512.10", ""], ["Value", "$2.10M", "dn"],
+          ["90-d net", "−$3.4M", "dn"], ["10b5-1", "No", "dn"], ["Your stake", "80 sh", ""],
+        ]);
+      return f;
+    },
+    back() {
+      const b = el("div");
+      const hd = backHeader("MSFT", "Microsoft Corp", 512.45);
+      b.appendChild(hd.head);
+      const ch = buildChart(Object.assign({}, CHART_CFG.MSFT, { h: 88, onScrub: hd.onScrub }));
+      b.appendChild(ch.wrap); b.appendChild(ch.ranges);
+      b.insertAdjacentHTML("beforeend", kvGrid([
+        ["Inst. owned", "73.8%", ""], ["Top holder", "Vanguard 9.1%", ""], ["Last insider buy", "Jan 2026", ""],
+        ["P/E", "37.4", ""], ["Today", "+0.52%", "up"], ["Your P/L", "+$5,700", "up"],
+      ]));
+      return b;
+    }
+  },
+  {
+    id: "prop-arm", kind: "proposal", tag: "Proposal · arm-watch", tagCls: "agent", when: "expires 11:00 AM",
+    short: "ARM buy", recap: "BUY 40 ARM @ $167.80 LMT",
+    front() {
+      const f = el("div");
+      f.innerHTML =
+        '<div class="orderbox"><div class="ol"><span class="side buy">BUY</span><span class="qty">40 ARM</span><span class="at">@</span><span class="qty">$167.80</span><span class="at">LMT · day</span></div>' +
+        '<div class="est">est. $6,712.00 · buying power after: $89,708</div></div>' +
+        '<div class="quoterow"><span>bid <b>168.21</b></span><span>ask <b>168.27</b></span><span>day <b>167.4–171.9</b></span><span>RSI <b>38.2</b></span></div>' +
+        '<div class="rationale"><span class="who">arm-watch · why</span>ARM is −7.8% from the May high on Computex sell-the-news, while v9 server royalty mix keeps climbing. Limit sits under the $169 VWAP shelf. Starter size; adds only if it holds the 50-day.</div>' +
+        kvGrid([["New weight", "2.4%", ""], ["Cash after", "$41,498", ""], ["If no fill", "expires 11 AM", ""]]);
+      return f;
+    },
+    back() {
+      const b = el("div");
+      const hd = backHeader("ARM", "Arm Holdings ADR", 168.24);
+      b.appendChild(hd.head);
+      const ch = buildChart(Object.assign({}, CHART_CFG.ARM, { h: 88, range: "1M", onScrub: hd.onScrub }));
+      b.appendChild(ch.wrap); b.appendChild(ch.ranges);
+      b.insertAdjacentHTML("beforeend", kvGrid([
+        ["Order", "LMT $167.80", ""], ["TIF", "Day", ""], ["Commission", "$0.00", ""],
+        ["Est. cost", "$6,712.00", ""], ["BP after", "$89,708", ""], ["Route", "Schwab API", ""],
+      ]) + '<div class="bodytext" style="margin-top:10px">Previewed via the approval gate — nothing is sent until you swipe right.</div>');
+      return b;
+    }
+  },
+  {
+    id: "prop-nvda", kind: "proposal", tag: "Proposal · earnings-watch", tagCls: "agent", when: "expires 11:00 AM",
+    short: "NVDA trim", recap: "SELL 20 NVDA @ MKT (trim 1 of 4)",
+    front() {
+      const f = el("div");
+      f.innerHTML =
+        '<div class="orderbox"><div class="ol"><span class="side sell">SELL</span><span class="qty">20 NVDA</span><span class="at">@</span><span class="qty">MKT</span><span class="at">open</span></div>' +
+        '<div class="est">est. +$13,658 proceeds · weight 28.8% → 24.0%</div></div>' +
+        '<div class="quoterow"><span>mark <b>682.92</b></span><span>bid <b>682.85</b></span><span>ask <b>683.05</b></span><span>avg cost <b>612.40</b></span></div>' +
+        '<div class="rationale"><span class="who">earnings-watch · why</span>Tranche 1 of 4 in the trim plan. NVDA is 28.8% against your 12% cap with RSI-14 at 71.4. Selling 20 sh locks ~$1,410 of gain and steps weight down before July earnings IV builds. Remaining tranches staged weekly.</div>' +
+        kvGrid([["Realizes", "+$1,410.40", "up"], ["Weight after", "24.0%", ""], ["Tranches left", "3 of 4", ""]]);
+      return f;
+    },
+    back() {
+      const b = el("div");
+      const hd = backHeader("NVDA", "NVIDIA Corp", 682.92);
+      b.appendChild(hd.head);
+      const ch = buildChart(Object.assign({}, CHART_CFG.NVDA, { seed: 39, h: 88, range: "3M", onScrub: hd.onScrub }));
+      b.appendChild(ch.wrap); b.appendChild(ch.ranges);
+      b.insertAdjacentHTML("beforeend", kvGrid([
+        ["Order", "MKT, sell", ""], ["Realizes", "+$1,410.40", "up"], ["Weight after", "24.0%", ""],
+        ["Tranches left", "3 of 4", ""], ["Tax lot", "FIFO", ""], ["Route", "Schwab API", ""],
+      ]) + '<div class="bodytext" style="margin-top:10px">Plan: 20 sh/week until ≤12%. approvals-gate re-checks weight after each fill.</div>');
+      return b;
+    }
+  },
+  {
+    id: "summary", kind: "summary", tag: "End of stack", when: "",
+    short: "Done", recap: "",
+    front() { return el("div"); }, // built lazily when revealed
+    back() {
+      return el("div", null, '<div class="htitle" style="margin-top:6px">Tomorrow’s stack</div><div class="bodytext">The flock rebuilds overnight: CPI reaction brief lands 8:00 AM, AAPL earnings countdown moves to 1 day, and earnings-watch stages NVDA trim tranche 2 if today’s fill completes.</div>'); }
+  },
+];
+
+/* ================= deck engine ================= */
+const deckEl = $("#deck");
+const startedAt = Date.now();
+let idx = 0;
+const decisions = []; // {card, action, time}
+const cardEls = [];
+
+function buildCard(c) {
+  const card = el("div", "scard");
+  const inner = el("div", "flipinner");
+  const front = el("div", "face front");
+  const back = el("div", "face back");
+  const tagCls = c.tagCls ? " " + c.tagCls : "";
+  front.appendChild(el("div", "tagline", '<span class="tag' + tagCls + '">' + c.tag + '</span><span class="when">' + c.when + "</span>"));
+  front.appendChild(c.front(card));
+  if (c.kind !== "summary") {
+    front.appendChild(el("div", "fliphint", "tap to flip · drag to decide"));
+    back.appendChild(el("div", "tagline", '<span class="tag">' + c.short + " · detail</span><span class=\"when\">" + c.when + "</span>"));
+    back.appendChild(c.back());
+    back.appendChild(el("div", "fliphint", "tap to flip back"));
+  }
+  inner.append(front, back);
+  card.appendChild(inner);
+  // stamps
+  if (c.kind === "proposal") {
+    card.appendChild(el("div", "stamp ok", "APPROVE"));
+    card.appendChild(el("div", "stamp no", "DENY"));
+  } else if (c.kind === "info") {
+    card.appendChild(el("div", "stamp rd", "READ"));
+    card.appendChild(el("div", "stamp no", "SKIP"));
+  } else {
+    card.appendChild(el("div", "stamp rd", "DONE"));
+  }
+  attachGestures(card, c, inner);
+  return card;
+}
+
+function attachGestures(card, c, inner) {
+  let px = 0, py = 0, dx = 0, dy = 0, dragging = false, moved = false;
+  card.addEventListener("pointerdown", e => {
+    if (cardEls[idx] !== card) return;
+    if (e.target.closest(".noswipe")) return;
+    px = e.clientX; py = e.clientY; dx = dy = 0; dragging = true; moved = false;
+    card.classList.add("dragging"); card.classList.remove("rubber");
+    card.setPointerCapture(e.pointerId);
+  });
+  card.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    dx = e.clientX - px; dy = e.clientY - py;
+    if (Math.hypot(dx, dy) > 8) moved = true;
+    card.style.transform = "translate(" + dx + "px," + dy + "px) rotate(" + dx * 0.055 + "deg)";
+    const okS = card.querySelector(".stamp.ok"), noS = card.querySelector(".stamp.no"), rdS = card.querySelector(".stamp.rd");
+    if (c.kind === "proposal") {
+      if (okS) okS.style.opacity = Math.min(1, Math.max(0, dx - 24) / 80);
+      if (noS) noS.style.opacity = Math.min(1, Math.max(0, -dx - 24) / 80);
+    } else {
+      if (rdS) rdS.style.opacity = Math.min(1, Math.max(0, -dy - 24) / 90);
+      if (noS && c.kind === "info") noS.style.opacity = Math.min(1, Math.max(0, -dx - 24) / 80);
+    }
+  });
+  const settle = e => {
+    if (!dragging) return;
+    dragging = false; card.classList.remove("dragging");
+    const horiz = Math.abs(dx) > Math.abs(dy);
+    let action = null, blockedHint = null;
+    if (c.kind === "proposal") {
+      if (horiz && dx > 96) action = "approved";
+      else if (horiz && dx < -96) action = "denied";
+      else if (!horiz && dy < -110) blockedHint = "this one needs a decision — ← deny · approve →";
+    } else if (c.kind === "info") {
+      if (!horiz && dy < -100) action = "read";
+      else if (horiz && dx < -100) action = "skipped";
+      else if (horiz && dx > 96) blockedHint = "→ is reserved for trade approvals";
+    } else if (c.kind === "summary") {
+      if (!horiz && dy < -100) action = "done";
+    }
+    if (action) { commit(card, c, action, dx, dy); }
+    else {
+      card.classList.add("rubber");
+      card.style.transform = "";
+      card.querySelectorAll(".stamp").forEach(s => s.style.opacity = 0);
+      if (blockedHint) flashHint(blockedHint);
+    }
+  };
+  card.addEventListener("pointerup", settle);
+  card.addEventListener("pointercancel", settle);
+  card.addEventListener("click", e => {
+    if (moved || cardEls[idx] !== card) return;
+    if (e.target.closest(".noswipe")) return;
+    if (c.kind === "summary") return;
+    card.classList.toggle("flipped");
+  });
+}
+
+function commit(card, c, action, dx, dy) {
+  const stamp = action === "approved" ? ".stamp.ok" : (action === "denied" || action === "skipped") ? ".stamp.no" : ".stamp.rd";
+  const st = card.querySelector(stamp); if (st) st.style.opacity = 1;
+  card.classList.remove("rubber");
+  card.classList.add("flyout");
+  let tx = 0, ty = 0, rot = 0;
+  if (action === "approved") { tx = 560; ty = (dy || -20); rot = 22; }
+  else if (action === "denied" || action === "skipped") { tx = -560; ty = (dy || -20); rot = -22; }
+  else { ty = -760; tx = dx * 0.4; rot = dx * 0.02; }
+  card.style.transform = "translate(" + tx + "px," + ty + "px) rotate(" + rot + "deg)";
+  if (action !== "done") {
+    decisions.push({ card: c, action, time: nowStr() });
+    addRecapItem(c, action);
+  }
+  setTimeout(() => {
+    card.classList.add("gone");
+    idx++;
+    layout();
+    if (action !== "done") showUndo();
+  }, 300);
+}
+
+function flashHint(msg) {
+  const h = $("#hint");
+  const prev = h.innerHTML;
+  h.innerHTML = '<span style="color:var(--dn);font-weight:700">' + msg + "</span>";
+  setTimeout(() => { setHint(); }, 1800);
+  void prev;
+}
+
+function nowStr() {
+  const d = new Date();
+  let h = d.getHours() % 12 || 12;
+  return h + ":" + String(d.getMinutes()).padStart(2, "0") + " " + (d.getHours() >= 12 ? "PM" : "AM");
+}
+
+/* ================= layout / progress ================= */
+const dotsEl = $("#dots");
+CARDS.forEach(() => dotsEl.appendChild(el("div", "pdot")));
+
+function setHint() {
+  const c = CARDS[idx], h = $("#hint");
+  if (!c) { h.innerHTML = "see you tomorrow morning"; return; }
+  if (c.kind === "proposal") h.innerHTML = 'swipe <span class="l">← deny</span> · <span class="r">approve →</span> · tap to flip';
+  else if (c.kind === "info") h.innerHTML = 'swipe <span class="u">↑ read</span> · <span class="l">← skip</span> · tap to flip';
+  else h.innerHTML = 'swipe <span class="u">↑ to finish</span>';
+}
+
+function layout() {
+  cardEls.forEach((card, i) => {
+    card.classList.remove("pos1", "pos2", "hiddeep");
+    if (i < idx) return; // gone
+    const d = i - idx;
+    if (d === 0) { card.style.transform = ""; card.classList.remove("flyout"); }
+    else if (d === 1) card.classList.add("pos1");
+    else if (d === 2) card.classList.add("pos2");
+    else card.classList.add("hiddeep");
+  });
+  dotsEl.querySelectorAll(".pdot").forEach((d, i) => {
+    d.className = "pdot" + (i < idx ? " done" : i === idx ? " cur" : "");
+  });
+  const remaining = CARDS.length - idx;
+  $("#counter").textContent = idx >= CARDS.length ? "stack clear" : "card " + (idx + 1) + " of " + CARDS.length + " · " + CARDS[idx].short;
+  const badge = $("#tabbadge");
+  badge.style.display = remaining ? "flex" : "none";
+  badge.textContent = remaining;
+  setHint();
+  // contextual action buttons
+  const c = CARDS[idx];
+  const L = $("#act-left"), R = $("#act-right"), F = $("#act-flip");
+  if (!c) {
+    L.disabled = R.disabled = F.disabled = true;
+    $("#deckdone").classList.add("show");
+    const secs = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    $("#donesub").textContent = CARDS.length + " cards in " + (secs >= 60 ? Math.floor(secs / 60) + "m " + (secs % 60) + "s" : secs + "s") + ". The flock rebuilds it overnight.";
+    return;
+  }
+  $("#deckdone").classList.remove("show");
+  L.disabled = R.disabled = F.disabled = false;
+  if (c.kind === "proposal") { L.textContent = "✕"; R.textContent = "✓"; R.classList.remove("up"); R.classList.add("yes"); }
+  else if (c.kind === "info") { L.textContent = "✕"; R.textContent = "↑"; R.classList.remove("yes"); R.classList.add("up"); }
+  else { L.disabled = true; F.disabled = true; R.textContent = "↑"; R.classList.remove("yes"); R.classList.add("up"); }
+  if (c.kind === "summary") buildSummary();
+  // checkup cap bar animation
+  if (c.id === "checkup") setTimeout(() => { const f = $("#capfill"); if (f) f.style.width = "100%"; }, 250);
+}
+
+$("#act-left").onclick = () => {
+  const c = CARDS[idx]; if (!c) return;
+  commit(cardEls[idx], c, c.kind === "proposal" ? "denied" : "skipped", -40, 0);
+};
+$("#act-right").onclick = () => {
+  const c = CARDS[idx]; if (!c) return;
+  if (c.kind === "proposal") commit(cardEls[idx], c, "approved", 40, 0);
+  else commit(cardEls[idx], c, c.kind === "summary" ? "done" : "read", 0, -40);
+};
+$("#act-flip").onclick = () => { const card = cardEls[idx]; if (card && CARDS[idx].kind !== "summary") card.classList.toggle("flipped"); };
+
+/* ================= undo ================= */
+let undoTimer = null;
+function showUndo() {
+  const u = $("#undochip");
+  u.classList.add("show");
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(() => u.classList.remove("show"), 4000);
+}
+$("#undochip").onclick = () => {
+  if (!decisions.length || idx === 0) return;
+  decisions.pop();
+  idx--;
+  const card = cardEls[idx];
+  card.classList.remove("gone", "flyout", "flipped");
+  card.querySelectorAll(".stamp").forEach(s => s.style.opacity = 0);
+  rebuildRecap();
+  layout();
+  $("#undochip").classList.remove("show");
+};
+
+/* ================= summary card (rebuilt on each reveal) ================= */
+let summaryHost = null;
+function buildSummary() {
+  const card = cardEls[CARDS.length - 1];
+  const front = card.querySelector(".face.front");
+  if (summaryHost) summaryHost.remove();
+  const n = a => decisions.filter(d => d.action === a).length;
+  const approved = decisions.filter(d => d.action === "approved");
+  const secs = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+  const dur = secs >= 60 ? Math.floor(secs / 60) + "m " + (secs % 60) + "s" : secs + "s";
+  const host = el("div");
+  host.innerHTML =
+    '<div class="htitle" style="margin-top:8px">That’s the stack. <span class="em">Good morning.</span></div>' +
+    '<div class="bignum pos-c" id="sum-pl" style="font-size:38px">+$0.00</div>' +
+    '<div class="chgline pos-c">▲ +1.14% <span class="ctx">portfolio today · live from Schwab</span></div>' +
+    '<div class="sumstats">' +
+      '<div class="sumstat"><div class="n">' + n("read") + '</div><div class="l">read</div></div>' +
+      '<div class="sumstat"><div class="n pos-c">' + n("approved") + '</div><div class="l">approved</div></div>' +
+      '<div class="sumstat"><div class="n neg-c">' + n("denied") + '</div><div class="l">denied</div></div>' +
+      '<div class="sumstat"><div class="n">' + n("skipped") + '</div><div class="l">skipped</div></div>' +
+    '</div>' +
+    '<div class="sumlist">' +
+      (approved.length
+        ? approved.map(d => "✓ <b>" + d.card.recap + "</b> — sent to Schwab, working").join("<br>")
+        : "No orders sent — the flock stands down until tomorrow.") +
+      "<br>☕️ Cleared in <b>" + dur + "</b>" +
+    "</div>";
+  front.appendChild(host);
+  summaryHost = host;
+  countUp($("#sum-pl"), 3214.88, 1100);
+  celebrate();
+}
+function countUp(elm, target, ms) {
+  const t0 = performance.now();
+  const step = t => {
+    const k = Math.min(1, (t - t0) / ms);
+    const e = 1 - Math.pow(1 - k, 3);
+    elm.textContent = "+" + fmt$(target * e);
+    if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function celebrate() {
+  const colors = ["#177a48", "#b97f24", "#4a3a22", "#d9a13c", "#7fb78f"];
+  for (let i = 0; i < 26; i++) {
+    const p = el("div", "pcl");
+    const ang = Math.random() * Math.PI * 2, dist = 90 + Math.random() * 160;
+    p.style.setProperty("--tx", Math.cos(ang) * dist + "px");
+    p.style.setProperty("--ty", (Math.sin(ang) * dist - 70) + "px");
+    p.style.setProperty("--rr", (Math.random() * 540 - 270) + "deg");
+    p.style.background = colors[i % colors.length];
+    p.style.animationDelay = (Math.random() * 0.18) + "s";
+    deckEl.appendChild(p);
+    setTimeout(() => p.remove(), 1700);
+  }
+}
+
+/* ================= recap ================= */
+const ICONS = { read: ["read", "●"], approved: ["appr", "✓"], denied: ["deny", "✕"], skipped: ["skip", "↷"] };
+function addRecapItem(c, action) {
+  $("#recap-empty").style.display = "none";
+  const [cls, ic] = ICONS[action];
+  const title = action === "approved" ? "Approved — " + c.recap
+    : action === "denied" ? "Denied — " + c.recap
+    : action === "skipped" ? "Skipped — " + c.short
+    : c.recap;
+  const sub = c.kind === "proposal"
+    ? (action === "approved" ? c.tag.replace("Trade proposal · ", "") + " · order sent to Schwab, status: working" : c.tag.replace("Trade proposal · ", "") + " · proposal closed, agent notified")
+    : c.tag;
+  const item = el("div", "ritem",
+    '<div class="ricn ' + cls + '">' + ic + '</div><div class="rmeta"><div class="rt">' + title + '</div><div class="rs">' + sub + '</div></div><div class="rtime">' + nowStr() + "</div>");
+  $("#recap-today").prepend(item);
+  updateChips();
+}
+function rebuildRecap() {
+  const host = $("#recap-today");
+  host.querySelectorAll(".ritem").forEach(x => x.remove());
+  $("#recap-empty").style.display = decisions.length ? "none" : "";
+  decisions.forEach(d => addRecapItem(d.card, d.action));
+  updateChips();
+}
+function updateChips() {
+  const n = a => decisions.filter(d => d.action === a).length;
+  $("#c-read").textContent = n("read");
+  $("#c-appr").textContent = n("approved");
+  $("#c-deny").textContent = n("denied");
+  $("#c-skip").textContent = n("skipped");
+}
+
+/* ================= navigation ================= */
+function showTab(name) {
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + name));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+}
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => showTab(t.dataset.tab));
+$("#to-recap").onclick = () => showTab("recap");
+$("#to-stack").onclick = () => showTab("stack");
+$("#done-recap").onclick = () => showTab("recap");
+
+/* ================= boot ================= */
+CARDS.forEach(c => {
+  const card = buildCard(c);
+  cardEls.push(card);
+  deckEl.insertBefore(card, deckEl.firstChild); // later cards behind: keep DOM order reversed
+});
+/* fix stacking: top card must be last in paint order → set z-index by position */
+function restack() { cardEls.forEach((card, i) => { card.style.zIndex = String(100 + CARDS.length - i); }); }
+restack();
+layout();
+</script>
+</body>
+</html>

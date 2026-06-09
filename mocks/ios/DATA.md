@@ -71,6 +71,10 @@ Most relevant for the app: `quote`, `intraday_prices` (adaptive 5m/15m/1h or uni
 - **Market-research MCP**: mint one `mcp_` key per device, store in Keychain. Portal already has key-minting (`POST /api/mcp-keys`); a `/api/mobile/login` mirror of the CLI login flow would automate it.
 - **Broker**: the shared `X-Auth-Secret` should *not* ship in an app. Two options: route broker calls through the schwab-MCP (mcp-key auth, already owner-scoped), or put the broker behind the same mcp-key validation. The MCP route needs zero new code.
 
+## Options positions — capturing them accurately
+
+Schwab's positions payload already includes option legs — `instrument.assetType: "OPTION"` with the OCC symbol (`NVDA  260619C00750000`), `putCall`, `underlyingSymbol`, and description carrying strike/expiry; short legs come as `shortQuantity` with negative market value; contract multiplier 100. The broker's normalizer currently flattens these to the same 6 generic fields as equities, losing `putCall`/`underlying`/`strike`/`expiry` — capturing options accurately means keeping those instrument fields (same unwrap as day-P/L, ~15 lines). Greeks/IV/OI come from `options_chain` + `historical_option_iv` (Polygon delayed, ThetaData real-time) keyed by the OCC symbol. With both, the app can group legs under their underlying, derive strategy labels (covered call = short call + ≥100 shares; cash-secured put = short put + cash collateral), show DTE/breakeven/assignment risk, and let agents propose rolls as ordinary order proposals through the approvals gate.
+
 ## The write path: approvals gate (to build)
 
 Agents must never hold `place_order`. Flow:

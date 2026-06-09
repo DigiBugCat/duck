@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>duck for iOS — 6 UI concepts</title>
+<style>
+  :root {
+    --bg: #08090b; --surface: #15181d; --border: rgba(255,255,255,.08);
+    --text: #eef0f2; --muted: #8a909a; --faint: #5a6069; --coral: #e8694a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #1a1410 0%, var(--bg) 55%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--text); min-height: 100vh; padding: 56px 24px;
+    display: flex; flex-direction: column; align-items: center;
+  }
+  h1 { font-size: 36px; font-weight: 850; letter-spacing: -1px; }
+  h1 span { color: var(--coral); }
+  .tag { color: var(--muted); margin-top: 10px; font-size: 15px; max-width: 640px; text-align: center; line-height: 1.55; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 40px; width: 100%; max-width: 1180px; }
+  a.tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+    padding: 24px 22px; text-decoration: none; color: inherit; position: relative;
+    transition: transform .15s, border-color .15s; overflow: hidden;
+  }
+  a.tile:hover { transform: translateY(-3px); border-color: rgba(232,105,74,.5); }
+  .swatch { position: absolute; top: 0; left: 0; right: 0; height: 4px; }
+  .num { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: var(--faint); }
+  .tname { font-size: 21px; font-weight: 800; margin-top: 6px; letter-spacing: -.3px; }
+  .thesis { font-size: 12px; font-weight: 700; margin-top: 3px; }
+  .tdesc { font-size: 13px; color: var(--muted); margin-top: 10px; line-height: 1.6; }
+  .try { margin-top: 12px; font-size: 12px; color: var(--faint); line-height: 1.7; }
+  .try b { color: var(--muted); font-weight: 700; }
+  .star { position: absolute; top: 14px; right: 16px; font-size: 12px; font-weight: 800; color: #ffd60a; background: rgba(255,214,10,.1); border: 1px solid rgba(255,214,10,.3); padding: 4px 10px; border-radius: 999px; }
+  .foot { margin-top: 44px; color: var(--faint); font-size: 12.5px; text-align: center; line-height: 1.7; max-width: 680px; }
+  .foot code { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--surface); padding: 1px 6px; border-radius: 5px; }
+</style>
+</head>
+<body>
+  <h1>🦆 duck <span>× robinhood</span> — six concepts</h1>
+  <p class="tag">Same product, same real data sources, six theses. Every concept has the Robinhood DNA — giant money number, scrubbable chart, range pills, P/L-reactive color, a celebration — interpreted differently. All work full-bleed on a real iPhone.</p>
+
+  <div class="grid">
+    <a class="tile" href="06-hybrid.html">
+      <div class="swatch" style="background:linear-gradient(90deg,#2bdc96,#e8a020)"></div>
+      <span class="star">★ the lean</span>
+      <div class="num">06</div>
+      <div class="tname">Hybrid</div>
+      <div class="thesis" style="color:#2bdc96">Pulse × Feed — with real options</div>
+      <div class="tdesc">Pulse's silent-luxury skeleton, Feed's agent voice as a quiet narrative layer. First concept with accurate options positions: covered calls, CSPs, and long calls grouped under their underlyings with Greeks, DTE, and assignment risk.</div>
+      <div class="try"><b>Try:</b> the NVDA covered-call leg (assignment warning, earnings Thursday) · the roll proposal in Trades · option leg detail with Greeks</div>
+    </a>
+    <a class="tile" href="01-pulse.html">
+      <div class="swatch" style="background:#2bdc96"></div>
+      <div class="num">01</div>
+      <div class="tname">Pulse</div>
+      <div class="thesis" style="color:#2bdc96">Silent luxury — the faithful minimal take</div>
+      <div class="tdesc">Near-black, one sea-glass green that flips rose on down days, extreme restraint. If in doubt, remove it.</div>
+      <div class="try"><b>Try:</b> scrub the chart · slide-to-approve a proposal (particle burst + count-up) · tap the balance for privacy blur · 3M range flips the UI red</div>
+    </a>
+    <a class="tile" href="02-terminal.html">
+      <div class="swatch" style="background:#ffb042"></div>
+      <div class="num">02</div>
+      <div class="tname">Terminal</div>
+      <div class="thesis" style="color:#ffb042">Information density as luxury</div>
+      <div class="tdesc">Bloomberg-grade research one thumb-tap away: short interest, insider ledger, senate trades, analyst target bands, valuation vs history. All monospace, amber on black.</div>
+      <div class="try"><b>Try:</b> hold the ticker strip to freeze it · NVDA dossier modules (spring collapse) · long-press a row → command sheet → queue a trim → ORDER FILLED celebration</div>
+    </a>
+    <a class="tile" href="03-feed.html">
+      <div class="swatch" style="background:#e8a020"></div>
+      <div class="num">03</div>
+      <div class="tname">Feed</div>
+      <div class="thesis" style="color:#e8a020">Your money's group chat</div>
+      <div class="tdesc">A private feed where every poster works for you — agent insights, fill receipts, morning briefs, milestones. Warm paper + ink. Tabs: Feed / Agents / Trades / Portfolio (full scrub-chart screen).</div>
+      <div class="try"><b>Try:</b> double-tap a card (heart pop) · approve the NVDA trim inline (confetti) · scroll to the $285k milestone count-up · Portfolio tab → scrubbable chart</div>
+    </a>
+    <a class="tile" href="04-stack.html">
+      <div class="swatch" style="background:#b97f24"></div>
+      <div class="num">04</div>
+      <div class="tname">Stack</div>
+      <div class="thesis" style="color:#b97f24">A morning ritual, not a feed</div>
+      <div class="tdesc">The day arrives as one finite card deck. Swipe up = read, right = approve, left = skip, tap = 3D flip for the data back. Cream paper, serif headlines, done-feeling when it empties.</div>
+      <div class="try"><b>Try:</b> the three-gesture vocabulary · flip a card (every back has a scrubbable chart) · wrong-gesture rubber-band · clear the stack for the 🪺 done state + recap</div>
+    </a>
+    <a class="tile" href="05-glance.html">
+      <div class="swatch" style="background:#0b8a5c"></div>
+      <div class="num">05</div>
+      <div class="tname">Glance</div>
+      <div class="thesis" style="color:#0b8a5c">Calm control room</div>
+      <div class="tdesc">Ten iOS-widget tiles — whole financial life in 3 seconds. Tiles FLIP-expand into full screens; long-press for jiggle edit mode with drag-reorder.</div>
+      <div class="try"><b>Try:</b> expand the portfolio hero tile → full scrub chart · long-press → jiggle mode → drag tiles around · approvals tile → inline swipe deck</div>
+    </a>
+  </div>
+
+  <p class="foot">
+    All six share the audited data layer (<code>../DATA.md</code>): broker positions/quotes, market-research MCP (intraday candles, news, earnings, insider/senate/short-interest), flock proposals over the hub. AirDrop any file to a phone — they all go full-bleed with safe-area insets.
+  </p>
+</body>
+</html>

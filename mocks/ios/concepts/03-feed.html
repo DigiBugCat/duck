@@ -131,6 +131,9 @@
   }
   .fcard.in { opacity: 1; transform: none; transition: opacity .45s ease, transform .55s cubic-bezier(.22,1.2,.36,1); }
   .fcard.hidden { display: none; }
+  .facetbar { margin: 10px 16px 0; padding: 11px 15px; border-radius: 14px; background: rgba(33,29,20,.05); border: 1px solid rgba(33,29,20,.09); font-size: 12px; display: flex; align-items: baseline; gap: 8px; animation: cardin .3s ease; }
+  .facetbar b { font-size: 13px; }
+  .facetbar span { color: rgba(33,29,20,.55); }
   .fcard.flash { animation: flashring 1.2s ease; }
   @keyframes flashring { 0%,70% { box-shadow: 0 0 0 3px var(--amber), 0 2px 10px rgba(33,29,20,.05); } 100% { box-shadow: 0 0 0 0 rgba(232,160,32,0), 0 2px 10px rgba(33,29,20,.05); } }
 
@@ -354,6 +357,7 @@
     </header>
 
     <!-- the feed -->
+    <div class="facetbar" id="facetbar" style="display:none"></div>
     <div class="feed" id="feed"></div>
 
     <!-- detail -->
@@ -396,10 +400,10 @@
 
   <!-- tab bar = feed facets -->
   <nav class="tabbar">
-    <button class="tab active" data-f="all"><span class="ticon">🦆</span>Everything</button>
+    <button class="tab active" data-f="all"><span class="ticon">🦆</span>Feed</button>
     <button class="tab" data-f="agents"><span class="ticon">🛰</span>Agents</button>
     <button class="tab" data-f="trades"><span class="ticon">⇄</span>Trades<span class="nbadge">1</span></button>
-    <button class="tab" data-f="news"><span class="ticon">🗞</span>News</button>
+    <button class="tab" data-f="portfolio"><span class="ticon">◔</span>Portfolio</button>
   </nav>
   <div class="homebar"></div>
 </div>
@@ -662,11 +666,24 @@ feedEl.addEventListener('scroll',function(){
 countUp(document.getElementById('hbal'),281297.52,284512.40,1200,function(v){return money(v);});
 
 /* ============================== feed facets (tab bar) ============================== */
+var lastFacetTab=null;
+var FACETS={agents:['🛰 Agent activity','findings, runs & proposals from your flock'],trades:['⇄ Trade activity','proposals, fills & receipts']};
+function setActiveTab(t){document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active');});t.classList.add('active');}
 document.querySelectorAll('.tab').forEach(function(t){
   t.addEventListener('click',function(){
-    document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active');});
-    t.classList.add('active');
     var f=t.dataset.f;
+    if(f==='portfolio'){
+      // Portfolio is a real screen: the full-bleed scrubbable chart view
+      setActiveTab(t);
+      openDetail('PORT',null);
+      return;
+    }
+    lastFacetTab=t;
+    detail.classList.remove('open');
+    setActiveTab(t);
+    var fb=document.getElementById('facetbar');
+    if(f==='all'){fb.style.display='none';}
+    else{fb.style.display='';fb.innerHTML='<b>'+FACETS[f][0]+'</b><span>'+FACETS[f][1]+'</span>';}
     document.querySelectorAll('.fcard').forEach(function(c){
       var show=f==='all'||c.dataset.tags.indexOf(f)>=0;
       c.classList.toggle('hidden',!show);
@@ -777,7 +794,11 @@ function openDetail(key,card){
   setRange('1D');
   detail.classList.add('open');
 }
-document.getElementById('dback').addEventListener('click',function(){detail.classList.remove('open');});
+document.getElementById('dback').addEventListener('click',function(){
+  detail.classList.remove('open');
+  var t=lastFacetTab||document.querySelector('.tab[data-f="all"]');
+  setActiveTab(t);
+});
 phead.addEventListener('click',function(){openDetail('PORT',null);});
 dlike.addEventListener('click',function(){
   if(srcCard){likeCard(srcCard,true);}
