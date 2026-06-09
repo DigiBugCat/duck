@@ -124,14 +124,15 @@ type overrideRunner interface {
 // hub-already-has-this-dir conflict (actions.ErrHubNonEmpty), turns that into an
 // interactive choice instead of a hard error:
 //
-//   - interactive (TTY): print the merge prompt — for one user across machines
-//     the merge keeps the NEWEST version of each file (a per-file rsync seed,
-//     then mutagen on the now-identical sides; nothing is deleted). The DEFAULT
-//     is YES because newest-wins is non-destructive of newer data: [y]/yes/blank
-//     Enter re-runs the flow with OverrideSync (the newest-wins merge); [n]/no
-//     re-runs with OverrideNoSyncOnce — a ONE-TIME no-sync that opens a session
-//     in the hub's existing copy WITHOUT syncing and does NOT persist "never", so
-//     duck asks again next time. Either way the session+attach then proceeds.
+//   - interactive (TTY): print the direction prompt. The DEFAULT is "no sync —
+//     just connect to the hub's existing copy" ([n]/blank Enter → OverrideNoSyncOnce,
+//     a ONE-TIME no-sync that opens a session in the hub's copy WITHOUT syncing and
+//     does NOT persist "never", so duck asks again next time). The opt-in merge
+//     ([m]/merge → OverrideSync) keeps the NEWEST version of each file (a per-file
+//     rsync seed, then mutagen on the now-identical sides; nothing is deleted).
+//     Defaulting to connect-only avoids touching either copy unless the user asks;
+//     a merge — even newest-wins — is a real data operation they should opt into.
+//     Either way the session+attach then proceeds.
 //   - non-interactive (no TTY): returns the ErrHubNonEmpty error UNCHANGED and
 //     never reads stdin (invariant b: no prompt reads stdin when stdin is not a
 //     TTY). `duck --sync` resolves the same conflict newest-wins WITHOUT a prompt
@@ -149,11 +150,11 @@ func runWithHubConflict(r overrideRunner, target string, override flow.Override)
 		return err
 	}
 	fmt.Printf("Hub already has %s with files. Choose a direction:\n"+
+		"  [n] no sync — just open a remote session in the hub’s copy (default)\n"+
+		"  [m] merge  newest of each file wins (union, nothing deleted)\n"+
 		"  [p] push   local → hub  (local CLOBBERS the hub copy, incl. deletes)\n"+
 		"  [u] pull   hub → local  (hub CLOBBERS your local copy, incl. deletes)\n"+
-		"  [m] merge  newest of each file wins (union, nothing deleted)\n"+
-		"  [n] no sync — just open a remote session in the hub’s copy\n"+
-		"Choice [m]: ", e.Path)
+		"Choice [n]: ", e.Path)
 	line, lerr := readLine(os.Stdin)
 	if lerr != nil {
 		return err // surface the original conflict if we cannot read an answer.
@@ -162,19 +163,21 @@ func runWithHubConflict(r overrideRunner, target string, override flow.Override)
 }
 
 // conflictOverride maps a raw answer line at the hub-conflict prompt to the
-// override to re-run the flow with. The default (blank Enter) is MERGE — the only
-// non-destructive choice — matching the printed [m] default: p → OverridePush
-// (local clobbers hub), u → OverridePull (hub clobbers local), m/empty →
-// OverrideSync (newest-wins merge), n/anything else → OverrideNoSyncOnce (open a
-// session in the hub's copy WITHOUT syncing, NOT persisting "never", so duck asks
-// again next time). Pure, so the mapping is unit-tested without a TTY.
+// override to re-run the flow with. The default (blank Enter) is "just connect to
+// the remote" — OverrideNoSyncOnce — matching the printed [n] default: a merge
+// (even newest-wins) is a real data operation the user should opt into, so the
+// safe default touches neither copy. p → OverridePush (local clobbers hub), u →
+// OverridePull (hub clobbers local), m → OverrideSync (newest-wins merge),
+// n/empty/anything else → OverrideNoSyncOnce (open a session in the hub's copy
+// WITHOUT syncing, NOT persisting "never", so duck asks again next time). Pure, so
+// the mapping is unit-tested without a TTY.
 func conflictOverride(line string) flow.Override {
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "p", "push":
 		return flow.OverridePush
 	case "u", "pull":
 		return flow.OverridePull
-	case "m", "merge", "":
+	case "m", "merge":
 		return flow.OverrideSync
 	default:
 		return flow.OverrideNoSyncOnce

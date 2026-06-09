@@ -86,11 +86,12 @@ func TestRunWithHubConflictNoErrorPassesThrough(t *testing.T) {
 }
 
 // TestConflictOverride pins the direction-prompt answer→override mapping for the
-// [p]ush / [u]ll / [m]erge / [n]o prompt: p → OverridePush (local clobbers hub),
-// u → OverridePull (hub clobbers local), m and the blank-Enter default →
-// OverrideSync (newest-wins merge), n and gibberish → OverrideNoSyncOnce (open in
-// the hub's copy, no sync, do NOT persist "never"). The load-bearing default: a
-// blank Enter MUST be the non-destructive merge, and declining a ONE-TIME no-sync.
+// [n]o / [m]erge / [p]ush / [u]ll prompt: p → OverridePush (local clobbers hub),
+// u → OverridePull (hub clobbers local), m → OverrideSync (newest-wins merge),
+// n and the blank-Enter default and gibberish → OverrideNoSyncOnce (open in the
+// hub's copy, no sync, do NOT persist "never"). The load-bearing default: a blank
+// Enter MUST be "just connect to the remote" (touch neither copy), with merge an
+// explicit opt-in.
 func TestConflictOverride(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -103,9 +104,9 @@ func TestConflictOverride(t *testing.T) {
 		{"pull", flow.OverridePull},
 		{"m", flow.OverrideSync},
 		{"merge", flow.OverrideSync},
-		{"", flow.OverrideSync},
-		{"\n", flow.OverrideSync},
-		{"  ", flow.OverrideSync},
+		{"", flow.OverrideNoSyncOnce},
+		{"\n", flow.OverrideNoSyncOnce},
+		{"  ", flow.OverrideNoSyncOnce},
 		{"n", flow.OverrideNoSyncOnce},
 		{"no", flow.OverrideNoSyncOnce},
 		{"garbage", flow.OverrideNoSyncOnce},
