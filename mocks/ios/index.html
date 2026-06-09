@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>duck for iOS — mocks</title>
+<title>duck for iOS — interactive mock</title>
 <style>
   :root {
     --bg: #08090b; --surface: #161a20; --border: rgba(255,255,255,.08);
@@ -19,60 +19,66 @@
   h1 { font-size: 38px; font-weight: 850; letter-spacing: -1px; }
   h1 span { color: var(--coral); }
   .tag { color: var(--muted); margin-top: 10px; font-size: 15px; max-width: 560px; text-align: center; line-height: 1.5; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 40px; width: 100%; max-width: 1100px; }
+  a.launch {
+    margin-top: 30px; text-decoration: none;
+    background: var(--coral); color: #fff;
+    font-size: 17px; font-weight: 800;
+    padding: 16px 36px; border-radius: 16px;
+    box-shadow: 0 10px 32px rgba(232,105,74,.4);
+    transition: transform .15s;
+  }
+  a.launch:hover { transform: translateY(-2px); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 44px; width: 100%; max-width: 1000px; }
   a.tile {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
-    padding: 24px 22px; text-decoration: none; color: inherit;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
+    padding: 20px 20px; text-decoration: none; color: inherit;
     transition: transform .15s, border-color .15s;
   }
   a.tile:hover { transform: translateY(-3px); border-color: rgba(232,105,74,.45); }
-  .num { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: var(--coral); }
-  .tname { font-size: 19px; font-weight: 750; margin-top: 8px; }
-  .tdesc { font-size: 13px; color: var(--muted); margin-top: 8px; line-height: 1.55; }
-  .icon { font-size: 30px; margin-bottom: 12px; display: block; }
+  .icon { font-size: 26px; display: block; margin-bottom: 10px; }
+  .tname { font-size: 17px; font-weight: 750; }
+  .tdesc { font-size: 12.5px; color: var(--muted); margin-top: 7px; line-height: 1.55; }
   .foot { margin-top: 48px; color: var(--faint); font-size: 12.5px; text-align: center; line-height: 1.7; max-width: 640px; }
   .foot code { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); background: var(--surface); padding: 1px 6px; border-radius: 5px; }
 </style>
 </head>
 <body>
   <h1>🦆 duck <span>for iOS</span></h1>
-  <p class="tag">Mobile dashboard for the cassandra stack — chat with hub sessions, approve trades with a swipe, watch the portfolio and the flock. No file sync, hub-only.</p>
+  <p class="tag">Fully interactive mock — chat with hub sessions, swipe trade approvals, watch the portfolio, fire flock automations. Everything is tappable.</p>
+
+  <a class="launch" href="app.html">Launch the app →</a>
 
   <div class="grid">
-    <a class="tile" href="01-sessions.html">
+    <a class="tile" href="app.html#sessions">
       <span class="icon">🗂</span>
-      <div class="num">01</div>
       <div class="tname">Sessions</div>
-      <div class="tdesc">The duck picker, mobile: live tmux sessions on the hub with Claude's pane-title task summaries, looped sessions pinned, swipe-to-kill.</div>
+      <div class="tdesc">Live search, swipe rows left to rename/kill, ＋ creates a session, tap a row to chat with it.</div>
     </a>
-    <a class="tile" href="02-chat.html">
+    <a class="tile" href="app.html#sessions">
       <span class="icon">💬</span>
-      <div class="num">02</div>
-      <div class="tname">Session Chat</div>
-      <div class="tdesc">Chat into a running session — ⏺ turns, ⎿ tool hooks, inline permission approve/deny, camera button for the clipboard bridge.</div>
+      <div class="tname">Chat</div>
+      <div class="tdesc">Real composer — send a message and watch Claude stream turns and ⎿ tool calls. Allow/deny the git push permission card; esc interrupt works.</div>
     </a>
-    <a class="tile" href="03-trades.html">
+    <a class="tile" href="app.html#trades">
       <span class="icon">⇄</span>
-      <div class="num">03</div>
       <div class="tname">Trade Approvals</div>
-      <div class="tdesc">Tinder for trades. Swipe right to approve, left to deny — cards carry the order, live quote, position context, and the agent's rationale. Drag works in this mock.</div>
+      <div class="tdesc">Swipe right approve / left deny, with undo. ⓘ flips the card to the raw order payload. Clear the queue and a new request arrives from the flock.</div>
     </a>
-    <a class="tile" href="04-portfolio.html">
+    <a class="tile" href="app.html#portfolio">
       <span class="icon">◔</span>
-      <div class="num">04</div>
       <div class="tname">Portfolio</div>
-      <div class="tdesc">Schwab positions via cassandra-schwab-broker — total value, day P/L, per-position sparklines, and agent risk alerts.</div>
+      <div class="tdesc">Range switcher redraws the chart, risk alert and pending positions deep-link into Approvals.</div>
     </a>
-    <a class="tile" href="05-flock.html">
+    <a class="tile" href="app.html#flock">
       <span class="icon">𓅮</span>
-      <div class="num">05</div>
       <div class="tname">Flock</div>
-      <div class="tdesc">Automations and runs from flock-server :8787 — heartbeats, crons, event gates; fire / pause from the phone.</div>
+      <div class="tdesc">Fire ▶ / pause ⏸ automations — fired runs appear live in Recent runs and complete a few seconds later.</div>
     </a>
   </div>
 
   <p class="foot">
-    All data shapes are real: sessions mirror duck's <code>Sess</code> (tmux + pane_title), trades use the schwab-broker position/quote format, automations mirror flock's <code>Automation</code>/<code>Run</code> domain types. The app would speak to flock-server's existing REST + WebSocket API over Tailscale — no new backend needed for v1.
+    Open <code>app.html</code> on an actual iPhone (AirDrop it or serve over Tailscale) and it goes full-screen with safe-area insets — feels native in Safari.
+    Data shapes are real: duck's <code>Sess</code>, flock's <code>Automation</code>/<code>Run</code>, and the schwab-broker position/quote format. The production app would speak flock-server's existing REST + WebSocket API on <code>:8787</code>.
   </p>
 </body>
 </html>

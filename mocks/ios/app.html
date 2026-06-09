@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>duck for iOS</title>
+<style>
+  :root {
+    --bg: #08090b;
+    --screen: #0e1014;
+    --surface: #161a20;
+    --surface2: #1d222a;
+    --border: rgba(255,255,255,.07);
+    --text: #eef0f2;
+    --muted: #878e99;
+    --faint: #5a6069;
+    --coral: #e8694a;
+    --coral-soft: rgba(232,105,74,.14);
+    --green: #30d158;
+    --red: #ff453a;
+    --blue: #64a8ff;
+    --amber: #ffd60a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #1a1410 0%, var(--bg) 55%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px;
+    user-select: none;
+  }
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--screen);
+    border-radius: 54px; border: 1px solid #2a2e35;
+    box-shadow: 0 0 0 11px #16181c, 0 0 0 12.5px #3a3e46, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  @media (max-width: 500px), (max-height: 940px) and (max-width: 940px) {
+    body { padding: 0; }
+    .phone {
+      width: 100vw; height: 100dvh;
+      border-radius: 0; border: none; box-shadow: none;
+    }
+    .island { display: none; }
+    .statusbar { height: calc(env(safe-area-inset-top, 14px) + 14px) !important; }
+    .statusbar span { display: none; }
+    .tabbar { padding-bottom: calc(env(safe-area-inset-bottom, 18px) + 8px) !important; height: auto !important; }
+    .homebar { display: none; }
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 90; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; z-index: 85; }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+
+  .main { flex: 1; position: relative; min-height: 0; }
+
+  /* ============ views ============ */
+  .view {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    opacity: 0; pointer-events: none; transform: translateX(14px);
+    transition: opacity .2s ease, transform .2s ease;
+  }
+  .view.active { opacity: 1; pointer-events: auto; transform: none; }
+  #view-chat {
+    z-index: 45; background: var(--screen);
+    transform: translateX(100%); opacity: 1;
+    transition: transform .3s cubic-bezier(.32,.72,.27,1);
+  }
+  #view-chat.active { transform: none; }
+
+  header.vhead { padding: 10px 20px 8px; flex: none; display: flex; align-items: center; justify-content: space-between; }
+  .apptitle { font-size: 30px; font-weight: 800; letter-spacing: -.6px; display: flex; align-items: center; gap: 9px; }
+  .hubpill { display: flex; align-items: center; gap: 7px; background: var(--surface); border: 1px solid var(--border); padding: 7px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .scroll { flex: 1; overflow-y: auto; padding: 0 16px 120px; }
+  .sectionlabel { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--faint); padding: 16px 6px 8px; display: flex; justify-content: space-between; align-items: baseline; }
+  .sectionlabel .proj { color: var(--blue); font-family: ui-monospace, "SF Mono", Menlo, monospace; text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 11px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; overflow: hidden; }
+
+  /* ============ sessions ============ */
+  .subline { padding: 0 20px; font-size: 13px; color: var(--faint); font-weight: 500; flex: none; }
+  .searchwrap { padding: 12px 16px 2px; flex: none; }
+  .search {
+    width: 100%; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 10px 14px;
+    color: var(--text); font-size: 15px; font-family: inherit; outline: none;
+  }
+  .search::placeholder { color: var(--faint); }
+  .search:focus { border-color: rgba(232,105,74,.4); }
+
+  .rowwrap { position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }
+  .card .rowwrap:last-child { border-bottom: none; }
+  .rowwrap.removing { transition: max-height .3s ease, opacity .25s; max-height: 0 !important; opacity: 0; }
+  .rowactions { position: absolute; right: 0; top: 0; bottom: 0; width: 132px; display: flex; }
+  .rowactions button { flex: 1; border: none; color: #fff; font-size: 11px; font-weight: 700; font-family: inherit; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; cursor: pointer; }
+  .rowactions .rename { background: #3a4654; }
+  .rowactions .kill { background: var(--red); }
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 14px 14px; position: relative; z-index: 2;
+    background: var(--surface);
+    transition: transform .25s ease;
+    cursor: pointer; touch-action: pan-y;
+  }
+  .row.dragging { transition: none; }
+  .glyph { width: 38px; height: 38px; flex: none; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 17px; background: var(--surface2); color: var(--faint); }
+  .glyph.working { background: var(--coral-soft); color: var(--coral); animation: pulse 1.6s ease-in-out infinite; }
+  .glyph.loop { background: rgba(100,168,255,.12); color: var(--blue); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+  .meta { flex: 1; min-width: 0; }
+  .name { font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 7px; }
+  .badge { font-size: 9.5px; font-weight: 800; letter-spacing: .6px; padding: 2.5px 7px; border-radius: 6px; text-transform: uppercase; }
+  .badge.attached { background: rgba(48,209,88,.15); color: var(--green); }
+  .badge.loop { background: rgba(100,168,255,.13); color: var(--blue); }
+  .task { margin-top: 3px; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .path { margin-top: 3px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--faint); }
+  .right { flex: none; text-align: right; }
+  .ago { font-size: 12px; color: var(--faint); font-weight: 600; }
+  .chev { color: var(--faint); font-size: 14px; margin-top: 6px; }
+
+  .fab {
+    position: absolute; right: 20px; bottom: 108px; z-index: 30;
+    width: 56px; height: 56px; border-radius: 50%; border: none;
+    background: var(--coral); color: #fff; font-family: inherit;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px; font-weight: 300; cursor: pointer;
+    box-shadow: 0 8px 24px rgba(232,105,74,.45);
+    transition: transform .15s;
+  }
+  .fab:active { transform: scale(.92); }
+
+  /* ============ chat ============ */
+  .navbar { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 14px 12px; border-bottom: 1px solid var(--border); background: rgba(14,16,20,.8); backdrop-filter: blur(20px); }
+  .back { color: var(--coral); font-size: 26px; background: none; border: none; padding: 0 8px; cursor: pointer; font-family: inherit; line-height: 1; }
+  .navmeta { flex: 1; min-width: 0; }
+  .navtitle { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .workdot { color: var(--coral); font-size: 14px; animation: pulse 1.6s infinite; }
+  .navsub { font-size: 11.5px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .modelpill { flex: none; font-size: 10.5px; font-weight: 700; color: var(--muted); background: var(--surface); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; text-align: center; line-height: 1.35; }
+  .modelpill b { color: var(--text); display: block; }
+
+  .chatscroll { flex: 1; overflow-y: auto; padding: 18px 16px 16px; display: flex; flex-direction: column; gap: 16px; }
+  .daystamp { text-align: center; font-size: 11px; color: var(--faint); font-weight: 600; }
+  .bubble-user {
+    align-self: flex-end; max-width: 78%;
+    background: linear-gradient(135deg, #ef7c55, #d85a3c);
+    color: #fff; font-size: 15px; line-height: 1.4;
+    padding: 11px 15px; border-radius: 20px 20px 6px 20px;
+    box-shadow: 0 4px 16px rgba(232,105,74,.25);
+    animation: popin .25s ease;
+  }
+  @keyframes popin { from { opacity: 0; transform: translateY(8px) scale(.97); } }
+  .claude { align-self: flex-start; max-width: 94%; font-size: 14.5px; line-height: 1.5; display: flex; flex-direction: column; gap: 7px; }
+  .turn { display: flex; gap: 9px; animation: popin .25s ease; }
+  .turn .bullet { color: var(--coral); flex: none; font-size: 13px; padding-top: 2px; }
+  .tool { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--muted); display: flex; gap: 8px; align-items: baseline; margin-left: 4px; animation: popin .2s ease; }
+  .tool .hook { color: var(--faint); flex: none; }
+  .tool b { color: #aeb6c2; font-weight: 600; }
+  .ok { color: var(--green); }
+  .interrupted { align-self: center; font-size: 11px; color: var(--faint); font-weight: 600; }
+
+  .permcard { align-self: stretch; background: var(--surface); border: 1px solid rgba(232,105,74,.35); border-radius: 16px; padding: 14px 14px 12px; box-shadow: 0 0 0 4px rgba(232,105,74,.06); animation: popin .25s ease; transition: border-color .3s; }
+  .permcard.resolved-allow { border-color: rgba(48,209,88,.4); box-shadow: none; }
+  .permcard.resolved-deny { border-color: var(--border); opacity: .65; box-shadow: none; }
+  .permlabel { font-size: 10.5px; font-weight: 800; letter-spacing: 1px; color: var(--coral); text-transform: uppercase; }
+  .permcard.resolved-allow .permlabel { color: var(--green); }
+  .permcard.resolved-deny .permlabel { color: var(--faint); }
+  .permcmd { margin: 9px 0 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--text); background: #0b0d10; border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; word-break: break-all; }
+  .permbtns { display: flex; gap: 8px; }
+  .permbtns button { flex: 1; border: none; border-radius: 10px; padding: 10px; font-size: 13.5px; font-weight: 700; font-family: inherit; cursor: pointer; transition: transform .12s; }
+  .permbtns button:active { transform: scale(.96); }
+  .allow { background: var(--coral); color: #fff; }
+  .deny { background: var(--surface2); color: var(--muted); }
+  .permresult { font-size: 12px; font-weight: 700; text-align: center; padding: 4px 0 0; }
+
+  .workingline { align-self: flex-start; display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--coral); font-weight: 600; }
+  .workingline .spin { animation: pulse 1.2s infinite; }
+  .interruptbtn { border: 1px solid rgba(255,69,58,.4); color: var(--red); background: none; font-size: 11px; font-weight: 700; border-radius: 999px; padding: 4px 10px; font-family: inherit; cursor: pointer; }
+
+  .composer { flex: none; padding: 10px 14px calc(14px + env(safe-area-inset-bottom, 16px)); border-top: 1px solid var(--border); background: rgba(14,16,20,.85); backdrop-filter: blur(20px); display: flex; align-items: center; gap: 9px; }
+  .cbtn { width: 38px; height: 38px; flex: none; border-radius: 50%; border: none; background: var(--surface2); color: var(--muted); display: flex; align-items: center; justify-content: center; font-size: 17px; cursor: pointer; font-family: inherit; }
+  .field { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 10px 16px; font-size: 15px; color: var(--text); font-family: inherit; outline: none; min-width: 0; }
+  .field::placeholder { color: var(--faint); }
+  .field:focus { border-color: rgba(232,105,74,.4); }
+  .sendbtn { width: 38px; height: 38px; flex: none; border-radius: 50%; border: none; background: var(--coral); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 16px; cursor: pointer; box-shadow: 0 4px 14px rgba(232,105,74,.4); transition: transform .12s, opacity .2s; }
+  .sendbtn:active { transform: scale(.9); }
+
+  /* ============ trades ============ */
+  .pendpill { background: rgba(255,69,58,.13); color: var(--red); border: 1px solid rgba(255,69,58,.25); font-size: 12px; font-weight: 800; padding: 6px 12px; border-radius: 999px; }
+  .pendpill.clear { background: rgba(48,209,88,.13); color: var(--green); border-color: rgba(48,209,88,.25); }
+  .deck { flex: 1; position: relative; margin: 8px 18px 6px; min-height: 0; }
+  .tcard {
+    position: absolute; inset: 0;
+    background: linear-gradient(180deg, #1a1f27 0%, #14181e 100%);
+    border: 1px solid var(--border); border-radius: 26px;
+    padding: 20px 20px 16px;
+    display: flex; flex-direction: column;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55);
+    touch-action: none; cursor: grab; overflow: hidden;
+    transition: transform .28s ease, opacity .28s ease;
+  }
+  .tcard.dragging { transition: none; cursor: grabbing; }
+  .tcard.behind1 { transform: scale(.95) translateY(16px); opacity: .8; z-index: 2; }
+  .tcard.behind2 { transform: scale(.90) translateY(32px); opacity: .5; z-index: 1; }
+  .tcard.top { z-index: 3; }
+  .tcard.flyout { transition: transform .45s ease, opacity .4s ease; opacity: 0; }
+  .tcard.arriving { animation: arrive .45s cubic-bezier(.32,.72,.27,1); }
+  @keyframes arrive { from { transform: translateY(-110%) rotate(-4deg); opacity: 0; } }
+  .cardtop { display: flex; align-items: flex-start; justify-content: space-between; }
+  .sidepill { font-size: 11px; font-weight: 900; letter-spacing: 1.4px; padding: 5px 12px; border-radius: 8px; }
+  .sidepill.buy { background: rgba(48,209,88,.15); color: var(--green); border: 1px solid rgba(48,209,88,.3); }
+  .sidepill.sell { background: rgba(255,69,58,.13); color: var(--red); border: 1px solid rgba(255,69,58,.3); }
+  .source { text-align: right; font-size: 10.5px; color: var(--faint); font-weight: 600; line-height: 1.5; }
+  .source b { color: var(--blue); font-weight: 700; }
+  .symbol { font-size: 44px; font-weight: 850; letter-spacing: -1.5px; margin-top: 12px; line-height: 1; }
+  .desc { font-size: 13px; color: var(--muted); margin-top: 5px; font-weight: 500; }
+  .orderline { margin-top: 14px; display: flex; align-items: baseline; gap: 8px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .orderline .qty { font-size: 20px; font-weight: 700; }
+  .orderline .at { color: var(--faint); font-size: 13px; }
+  .orderline .px { font-size: 20px; font-weight: 700; color: var(--coral); }
+  .estval { font-size: 12px; color: var(--faint); margin-top: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .quotegrid { margin-top: 14px; display: grid; grid-template-columns: 1fr 1.2fr 1.4fr; background: #0c0e12; border: 1px solid var(--border); border-radius: 14px; padding: 11px 14px; gap: 4px 8px; }
+  .q { font-size: 10px; color: var(--faint); font-weight: 700; text-transform: uppercase; letter-spacing: .8px; }
+  .v { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13.5px; font-weight: 650; }
+  .v.up { color: var(--green); } .v.dn { color: var(--red); }
+  .holding { margin-top: 11px; font-size: 12px; color: var(--muted); display: flex; gap: 7px; align-items: center; }
+  .holding .hicon { color: var(--blue); }
+  .rationale { margin-top: 11px; flex: 1; min-height: 0; overflow: hidden; font-size: 12.5px; line-height: 1.5; color: #c4c9d2; border-left: 2.5px solid var(--coral); padding-left: 12px; }
+  .rationale .who { font-size: 10px; font-weight: 800; letter-spacing: 1px; color: var(--coral); text-transform: uppercase; display: block; margin-bottom: 4px; }
+  .expiry { font-size: 11px; color: var(--faint); text-align: center; font-weight: 600; margin-top: 8px; }
+  .expiry b { color: var(--amber); }
+  .stamp { position: absolute; top: 80px; font-size: 34px; font-weight: 900; letter-spacing: 3px; padding: 6px 18px; border-radius: 12px; border: 4px solid; opacity: 0; transform: rotate(-14deg); pointer-events: none; z-index: 5; }
+  .stamp.yes { left: 22px; color: var(--green); border-color: var(--green); }
+  .stamp.no { right: 22px; color: var(--red); border-color: var(--red); transform: rotate(14deg); }
+
+  .carddetail {
+    position: absolute; inset: 0; z-index: 6;
+    background: rgba(10,12,15,.96); backdrop-filter: blur(6px);
+    border-radius: 26px; padding: 22px 20px;
+    display: flex; flex-direction: column; gap: 12px;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  .carddetail.show { opacity: 1; pointer-events: auto; }
+  .carddetail h4 { font-size: 12px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: var(--blue); }
+  .carddetail pre { flex: 1; overflow: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.7; color: #aeb6c2; background: #0b0d10; border: 1px solid var(--border); border-radius: 12px; padding: 13px; user-select: text; }
+  .carddetail .key { color: var(--coral); }
+  .carddetail .closebtn { border: 1px solid var(--border); background: var(--surface2); color: var(--text); border-radius: 10px; padding: 10px; font-size: 13px; font-weight: 700; font-family: inherit; cursor: pointer; }
+
+  .deckempty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--faint); font-size: 15px; font-weight: 600; }
+  .deckempty .big { font-size: 52px; }
+  .deckempty .sub { font-size: 12px; color: var(--faint); font-weight: 500; }
+
+  .actions { flex: none; display: flex; justify-content: center; align-items: center; gap: 26px; padding: 10px 0 4px; }
+  .act { width: 60px; height: 60px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 25px; font-family: inherit; background: var(--surface); border: 1px solid var(--border); cursor: pointer; transition: transform .12s; }
+  .act:active { transform: scale(.9); }
+  .act.no { color: var(--red); box-shadow: 0 6px 20px rgba(255,69,58,.18); }
+  .act.yes { color: var(--green); box-shadow: 0 6px 20px rgba(48,209,88,.18); }
+  .act.info { width: 44px; height: 44px; font-size: 16px; color: var(--muted); }
+  .hint { flex: none; text-align: center; font-size: 11px; color: var(--faint); padding-bottom: 4px; font-weight: 600; }
+  .hint .l { color: var(--red); } .hint .r { color: var(--green); }
+  .history { flex: none; padding: 4px 20px 112px; display: flex; gap: 8px; overflow-x: auto; }
+  .hchip { flex: none; font-size: 11px; font-weight: 650; color: var(--muted); background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; display: flex; gap: 6px; align-items: center; animation: popin .25s; }
+  .hchip .y { color: var(--green); } .hchip .n { color: var(--red); }
+
+  /* ============ portfolio ============ */
+  .acctpill { background: var(--surface); border: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); padding: 6px 12px; border-radius: 999px; }
+  .hero { background: linear-gradient(170deg, #1c2129 0%, #14181e 70%); border: 1px solid var(--border); border-radius: 22px; padding: 20px 18px 0; overflow: hidden; margin-top: 8px; }
+  .herolabel { font-size: 11px; font-weight: 700; letter-spacing: 1.1px; color: var(--faint); text-transform: uppercase; }
+  .heroval { font-size: 38px; font-weight: 850; letter-spacing: -1.2px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .herochg { margin-top: 4px; font-size: 14px; font-weight: 700; }
+  .herochg.up { color: var(--green); } .herochg.dn { color: var(--red); }
+  .herochg span { color: var(--faint); font-weight: 600; font-size: 12px; }
+  .spark { display: block; width: 100%; height: 84px; margin-top: 8px; }
+  .ranges { display: flex; gap: 6px; padding: 0 0 14px; margin-top: 2px; }
+  .ranges button { flex: 1; border: none; background: none; color: var(--faint); font-size: 11.5px; font-weight: 700; padding: 6px 0; border-radius: 8px; font-family: inherit; cursor: pointer; transition: background .15s; }
+  .ranges .on { background: var(--surface2); color: var(--text); }
+  .statrow { display: flex; gap: 10px; margin-top: 12px; }
+  .stat { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 12px 14px; }
+  .stat .k { font-size: 10px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase; color: var(--faint); }
+  .stat .v2 { font-size: 16px; font-weight: 750; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .alert { margin-top: 12px; display: flex; gap: 11px; align-items: flex-start; background: rgba(255,214,10,.07); border: 1px solid rgba(255,214,10,.25); border-radius: 16px; padding: 13px 14px; cursor: pointer; transition: transform .12s; }
+  .alert:active { transform: scale(.98); }
+  .alert .aicon { font-size: 16px; }
+  .alert .atext { font-size: 12.5px; line-height: 1.45; color: #e8dfc0; }
+  .alert .atext b { color: var(--amber); }
+  .alert .asrc { font-size: 10.5px; color: var(--faint); margin-top: 3px; font-weight: 600; }
+  .pos { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
+  .card .pos:last-child { border-bottom: none; }
+  .sym { width: 54px; flex: none; }
+  .sym .t { font-size: 15px; font-weight: 800; letter-spacing: -.2px; }
+  .sym .q2 { font-size: 10.5px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; margin-top: 2px; }
+  .minispark { flex: 1; height: 30px; min-width: 0; }
+  .posnums { flex: none; text-align: right; width: 112px; }
+  .mv { font-size: 14.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pl { font-size: 11.5px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .up { color: var(--green); } .dn { color: var(--red); }
+  .pendlink { color: var(--blue); }
+
+  /* ============ flock ============ */
+  .auto { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
+  .card .auto:last-child { border-bottom: none; }
+  .aglyph { width: 38px; height: 38px; flex: none; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 16px; background: var(--surface2); color: var(--faint); }
+  .aglyph.live { background: var(--coral-soft); color: var(--coral); animation: pulse 1.6s infinite; }
+  .aglyph.cron { background: rgba(100,168,255,.12); color: var(--blue); }
+  .aglyph.evt { background: rgba(255,214,10,.1); color: var(--amber); }
+  .ameta { flex: 1; min-width: 0; }
+  .aname { font-size: 15px; font-weight: 650; }
+  .atrig { margin-top: 3px; font-size: 11px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .astate { flex: none; text-align: right; }
+  .statepill { font-size: 10px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase; padding: 3px 8px; border-radius: 6px; }
+  .statepill.running { background: var(--coral-soft); color: var(--coral); }
+  .statepill.idle { background: var(--surface2); color: var(--muted); }
+  .statepill.paused { background: rgba(255,214,10,.12); color: var(--amber); }
+  .statepill.waiting { background: rgba(100,168,255,.12); color: var(--blue); }
+  .ainfo { font-size: 10.5px; color: var(--faint); margin-top: 5px; font-variant-numeric: tabular-nums; }
+  .ctrl { width: 34px; height: 34px; flex: none; border-radius: 50%; border: 1px solid var(--border); background: var(--surface2); color: var(--muted); font-size: 12px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-family: inherit; transition: transform .12s; }
+  .ctrl:active { transform: scale(.88); }
+  .run { display: flex; align-items: center; gap: 11px; padding: 12px 14px; border-bottom: 1px solid var(--border); animation: popin .3s; }
+  .card .run:last-child { border-bottom: none; }
+  .rstate { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .rstate.running { background: var(--coral); box-shadow: 0 0 8px var(--coral); animation: pulse 1.6s infinite; }
+  .rstate.done { background: var(--green); }
+  .rstate.failed { background: var(--red); }
+  .rmeta { flex: 1; min-width: 0; }
+  .rname { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rsub { font-size: 11px; color: var(--faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .rtok { flex: none; font-size: 11px; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+  /* ============ tab bar ============ */
+  .tabbar {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 40;
+    height: 92px; padding: 10px 10px 28px;
+    background: rgba(14,16,20,.85); backdrop-filter: blur(20px);
+    border-top: 1px solid var(--border); display: flex;
+  }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; background: none; border: none; color: var(--faint); font-size: 10px; font-weight: 650; position: relative; cursor: pointer; font-family: inherit; transition: color .15s; }
+  .tab .ticon { font-size: 22px; line-height: 1; }
+  .tab.active { color: var(--coral); }
+  .tab .nbadge { position: absolute; top: -4px; right: 22%; background: var(--red); color: #fff; font-size: 10px; font-weight: 800; min-width: 17px; height: 17px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #fff; opacity: .35; z-index: 60; pointer-events: none; }
+
+  /* ============ toast / sheet ============ */
+  .toasts { position: absolute; top: 64px; left: 0; right: 0; z-index: 75; display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+  .toast {
+    pointer-events: auto;
+    background: rgba(28,33,42,.95); backdrop-filter: blur(14px);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 10px 18px; font-size: 13px; font-weight: 600; color: var(--text);
+    display: flex; align-items: center; gap: 12px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    animation: toastin .3s cubic-bezier(.32,.72,.27,1);
+    max-width: 86%;
+  }
+  @keyframes toastin { from { opacity: 0; transform: translateY(-14px) scale(.95); } }
+  .toast.out { transition: opacity .25s, transform .25s; opacity: 0; transform: translateY(-10px); }
+  .toast button { border: none; background: none; color: var(--coral); font-weight: 800; font-size: 13px; font-family: inherit; cursor: pointer; padding: 0; }
+  .toast .ticn { font-size: 14px; }
+
+  .sheetdim { position: absolute; inset: 0; z-index: 80; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none; transition: opacity .25s; }
+  .sheetdim.show { opacity: 1; pointer-events: auto; }
+  .sheet {
+    position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 81;
+    background: #1a1f26; border: 1px solid var(--border);
+    border-radius: 28px; padding: 22px 20px calc(20px + env(safe-area-inset-bottom, 8px));
+    transform: translateY(120%); transition: transform .32s cubic-bezier(.32,.72,.27,1);
+  }
+  .sheet.show { transform: none; }
+  .sheet h3 { font-size: 18px; font-weight: 800; }
+  .sheet .shint { font-size: 12.5px; color: var(--muted); margin-top: 5px; line-height: 1.5; }
+  .sheet input { width: 100%; margin-top: 16px; background: var(--screen); border: 1px solid var(--border); border-radius: 12px; padding: 13px 15px; font-size: 15px; color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace; outline: none; }
+  .sheet input:focus { border-color: rgba(232,105,74,.4); }
+  .sheetbtns { display: flex; gap: 9px; margin-top: 16px; }
+  .sheetbtns button { flex: 1; border: none; border-radius: 13px; padding: 14px; font-size: 15px; font-weight: 700; font-family: inherit; cursor: pointer; }
+  .sheetbtns .primary { background: var(--coral); color: #fff; }
+  .sheetbtns .secondary { background: var(--surface2); color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span id="clock">9:41</span><span class="icons">●●●● 􀙇 ▮▮▮▯</span></div>
+
+  <div class="main">
+
+    <!-- ================= SESSIONS ================= -->
+    <section class="view active" id="view-sessions">
+      <header class="vhead">
+        <div class="apptitle">🦆 duck</div>
+        <div class="hubpill"><span class="dot"></span>duck.local</div>
+      </header>
+      <div class="subline" id="sessions-subline"></div>
+      <div class="searchwrap"><input class="search" id="session-search" placeholder="⌕  Search sessions" autocomplete="off"></div>
+      <div class="scroll" id="sessions-list"></div>
+      <button class="fab" id="fab-new">＋</button>
+    </section>
+
+    <!-- ================= TRADES ================= -->
+    <section class="view" id="view-trades">
+      <header class="vhead">
+        <div class="apptitle">Approvals</div>
+        <div class="pendpill" id="pendcount">—</div>
+      </header>
+      <div class="subline">Schwab ····8841 · <b style="color:var(--muted)">$48,210</b> cash available</div>
+      <div class="deck" id="deck">
+        <div class="deckempty" id="deckempty" style="display:none">
+          <div class="big">🎉</div>
+          <div>Queue clear — nothing pending</div>
+          <div class="sub">new requests from the flock land here</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="act no" id="btn-deny">✕</button>
+        <button class="act info" id="btn-info">ⓘ</button>
+        <button class="act yes" id="btn-approve">✓</button>
+      </div>
+      <div class="hint">swipe <span class="l">← deny</span> · <span class="r">approve →</span></div>
+      <div class="history" id="history">
+        <div class="hchip"><span class="y">✓</span> AAPL buy 25 — 2h ago</div>
+        <div class="hchip"><span class="y">✓</span> TLT roll — 5h ago</div>
+        <div class="hchip"><span class="n">✕</span> MSTR buy 10 — yesterday</div>
+      </div>
+    </section>
+
+    <!-- ================= PORTFOLIO ================= -->
+    <section class="view" id="view-portfolio">
+      <header class="vhead">
+        <div class="apptitle">Portfolio</div>
+        <div class="acctpill">Schwab ····8841</div>
+      </header>
+      <div class="scroll">
+        <div class="hero">
+          <div class="herolabel">Total value</div>
+          <div class="heroval" id="heroval">$284,512.40</div>
+          <div class="herochg up" id="herochg">▲ $3,214.88 (+1.14%) <span>today</span></div>
+          <svg class="spark" viewBox="0 0 360 86" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="gup" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#30d158" stop-opacity=".28"/><stop offset="1" stop-color="#30d158" stop-opacity="0"/>
+              </linearGradient>
+              <linearGradient id="gdn" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#ff453a" stop-opacity=".25"/><stop offset="1" stop-color="#ff453a" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <path id="sparkfill" d="" fill="url(#gup)"/>
+            <path id="sparkline" d="" fill="none" stroke="#30d158" stroke-width="2.5" stroke-linecap="round"/>
+            <circle id="sparkdot" cx="360" cy="8" r="4" fill="#30d158"/>
+          </svg>
+          <div class="ranges" id="ranges"></div>
+        </div>
+        <div class="statrow">
+          <div class="stat"><div class="k">Cash</div><div class="v2">$48,210</div></div>
+          <div class="stat"><div class="k">Buying power</div><div class="v2">$96,420</div></div>
+          <div class="stat"><div class="k">Day P/L</div><div class="v2 up">+$3,214</div></div>
+        </div>
+        <div class="alert" id="risk-alert">
+          <div class="aicon">⚠️</div>
+          <div>
+            <div class="atext"><b>NVDA is 14.2% of portfolio</b> — above your 12% single-name cap. earnings-watch queued a trim order in Approvals.</div>
+            <div class="asrc">earnings-watch · 12 min ago · tap to review</div>
+          </div>
+        </div>
+        <div class="sectionlabel">Positions · 6</div>
+        <div class="card" id="positions"></div>
+      </div>
+    </section>
+
+    <!-- ================= FLOCK ================= -->
+    <section class="view" id="view-flock">
+      <header class="vhead">
+        <div class="apptitle">Flock</div>
+        <div class="hubpill"><span class="dot"></span><span id="flock-live">:8787 · 2 live</span></div>
+      </header>
+      <div class="scroll" id="flock-scroll"></div>
+    </section>
+
+    <!-- ================= CHAT (pushed) ================= -->
+    <section class="view" id="view-chat">
+      <div class="navbar">
+        <button class="back" id="chat-back">‹</button>
+        <div class="navmeta">
+          <div class="navtitle" id="chat-title"></div>
+          <div class="navsub" id="chat-sub"></div>
+        </div>
+        <div class="modelpill"><b>Opus 4.8</b><span id="chat-tok">42.1k tok</span></div>
+      </div>
+      <div class="chatscroll" id="chat-host"></div>
+      <div class="composer">
+        <button class="cbtn" id="snapbtn" title="duck snap — clipboard bridge">📷</button>
+        <input class="field" id="chat-input" placeholder="Message…" autocomplete="off">
+        <button class="sendbtn" id="chat-send">↑</button>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- tab bar -->
+  <nav class="tabbar">
+    <button class="tab active" data-tab="sessions"><span class="ticon">🗂</span>Sessions</button>
+    <button class="tab" data-tab="trades"><span class="ticon">⇄</span>Trades<span class="nbadge" id="tabbadge">3</span></button>
+    <button class="tab" data-tab="portfolio"><span class="ticon">◔</span>Portfolio</button>
+    <button class="tab" data-tab="flock"><span class="ticon">𓅮</span>Flock</button>
+  </nav>
+  <div class="homebar"></div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <div class="sheetdim" id="sheetdim"></div>
+  <div class="sheet" id="sheet">
+    <h3 id="sheet-title"></h3>
+    <div class="shint" id="sheet-hint"></div>
+    <input id="sheet-input" autocomplete="off" spellcheck="false">
+    <div class="sheetbtns">
+      <button class="secondary" id="sheet-cancel">Cancel</button>
+      <button class="primary" id="sheet-ok">OK</button>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
+
+/* ================= clock ================= */
+function tickClock() {
+  const d = new Date();
+  let h = d.getHours() % 12 || 12;
+  $("#clock").textContent = `${h}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+tickClock(); setInterval(tickClock, 10000);
+
+/* ================= toast ================= */
+function toast(msg, opts = {}) {
+  const t = el("div", "toast");
+  if (opts.icon) t.appendChild(el("span", "ticn", opts.icon));
+  t.appendChild(el("span", null, msg));
+  if (opts.action) {
+    const b = el("button", null, opts.action);
+    b.onclick = () => { dismiss(); opts.onAction && opts.onAction(); };
+    t.appendChild(b);
+  }
+  if (opts.onTap) { t.style.cursor = "pointer"; t.onclick = e => { if (e.target.tagName !== "BUTTON") { dismiss(); opts.onTap(); } }; }
+  $("#toasts").appendChild(t);
+  let gone = false;
+  const dismiss = () => { if (gone) return; gone = true; t.classList.add("out"); setTimeout(() => t.remove(), 260); };
+  setTimeout(dismiss, opts.ms || 3400);
+  return dismiss;
+}
+
+/* ================= sheet ================= */
+let sheetCb = null;
+function openSheet(title, hint, value, placeholder, okLabel, cb) {
+  $("#sheet-title").textContent = title;
+  $("#sheet-hint").innerHTML = hint;
+  const inp = $("#sheet-input");
+  inp.value = value || ""; inp.placeholder = placeholder || "";
+  $("#sheet-ok").textContent = okLabel || "OK";
+  sheetCb = cb;
+  $("#sheetdim").classList.add("show"); $("#sheet").classList.add("show");
+  setTimeout(() => inp.focus(), 320);
+}
+function closeSheet() { $("#sheetdim").classList.remove("show"); $("#sheet").classList.remove("show"); sheetCb = null; }
+$("#sheet-cancel").onclick = closeSheet;
+$("#sheetdim").onclick = closeSheet;
+$("#sheet-ok").onclick = () => { const v = $("#sheet-input").value.trim(); const cb = sheetCb; closeSheet(); if (cb) cb(v); };
+$("#sheet-input").addEventListener("keydown", e => { if (e.key === "Enter") $("#sheet-ok").click(); });
+
+/* ================= navigation ================= */
+let activeTab = "sessions";
+function showTab(name) {
+  activeTab = name;
+  $("#view-chat").classList.remove("active");
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + name));
+  document.querySelectorAll(".tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+  location.hash = name;
+}
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => showTab(t.dataset.tab));
+
+/* ================= sessions ================= */
+let sessions = [
+  { id: "babysit-prs", loop: true, working: false, attached: false, task: "⠂ Watching CI for PR #142 — retry queued", dir: "~/dev/duck", ago: "4m", windows: 1 },
+  { id: "duck", working: true, attached: true, task: "✳ Refactoring sync conflict flow", dir: "~/dev/duck", ago: "now", windows: 3 },
+  { id: "flock", working: true, attached: false, task: "✳ Adding WebSocket replay buffer tests", dir: "~/cassandra-stack/flock", ago: "2m", windows: 1 },
+  { id: "cassandra-portal", working: false, attached: false, task: "Schwab OAuth callback wired, idle", dir: "~/cassandra-stack/cassandra-portal", ago: "1h", windows: 2 },
+  { id: "media-mcp", working: false, attached: false, task: "GPU transcription batch finished", dir: "~/cassandra-stack/cassandra-media-mcp", ago: "3h", windows: 1 },
+  { id: "scratch", working: false, attached: false, task: "—", dir: "~/tmp/scratch", ago: "2d", windows: 1 },
+];
+
+function sessionRow(s) {
+  const wrap = el("div", "rowwrap");
+  wrap.style.maxHeight = "100px";
+  const actions = el("div", "rowactions");
+  const ren = el("button", "rename", "✎<br>Rename");
+  const kil = el("button", "kill", "⌫<br>Kill");
+  actions.append(ren, kil);
+
+  const row = el("div", "row");
+  const glyphCls = s.loop ? "glyph loop" : s.working ? "glyph working" : "glyph";
+  const glyphChar = s.loop ? "∞" : s.working ? "✳" : "⠿";
+  row.innerHTML = `
+    <div class="${glyphCls}">${glyphChar}</div>
+    <div class="meta">
+      <div class="name">${s.id}
+        ${s.attached ? '<span class="badge attached">attached</span>' : ""}
+        ${s.loop ? '<span class="badge loop">loop</span>' : ""}
+      </div>
+      <div class="task">${s.task}</div>
+      <div class="path">${s.dir}${s.windows > 1 ? " · " + s.windows + " windows" : ""}</div>
+    </div>
+    <div class="right"><div class="ago">${s.ago}</div><div class="chev">›</div></div>`;
+  wrap.append(actions, row);
+
+  // swipe-to-reveal
+  let sx = 0, dx = 0, open = false, dragging = false, moved = false;
+  row.addEventListener("pointerdown", e => {
+    sx = e.clientX; dragging = true; moved = false;
+    row.classList.add("dragging");
+    row.setPointerCapture(e.pointerId);
+  });
+  row.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    dx = e.clientX - sx + (open ? -132 : 0);
+    if (Math.abs(e.clientX - sx) > 6) moved = true;
+    dx = Math.max(-132, Math.min(0, dx));
+    row.style.transform = `translateX(${dx}px)`;
+  });
+  const settle = () => {
+    if (!dragging) return;
+    dragging = false; row.classList.remove("dragging");
+    open = dx < -60;
+    row.style.transform = open ? "translateX(-132px)" : "";
+    dx = open ? -132 : 0;
+  };
+  row.addEventListener("pointerup", settle);
+  row.addEventListener("pointercancel", settle);
+  row.addEventListener("click", () => {
+    if (moved) return;
+    if (open) { open = false; row.style.transform = ""; dx = 0; return; }
+    openChat(s.id);
+  });
+
+  ren.onclick = () => {
+    openSheet("Rename session", `Display name for <b style="color:var(--text)">${s.id}</b> — stored in <span style="font-family:ui-monospace,monospace">~/.duck/names.json</span> on the hub.`, s.id, "name", "Rename", v => {
+      if (!v) return;
+      s.id = v; renderSessions();
+      toast(`Renamed to ${v}`, { icon: "✎" });
+    });
+  };
+  kil.onclick = () => {
+    wrap.classList.add("removing");
+    setTimeout(() => {
+      sessions = sessions.filter(x => x !== s);
+      renderSessions();
+    }, 300);
+    toast(`Killed ${s.id}`, { icon: "⌫", action: "Undo", onAction: () => { renderSessions(); } });
+  };
+  return wrap;
+}
+
+function renderSessions() {
+  const q = $("#session-search").value.trim().toLowerCase();
+  const host = $("#sessions-list");
+  host.innerHTML = "";
+  const match = s => !q || (s.id + s.task + s.dir).toLowerCase().includes(q);
+  const looped = sessions.filter(s => s.loop && match(s));
+  const normal = sessions.filter(s => !s.loop && match(s));
+
+  if (looped.length) {
+    host.appendChild(el("div", "sectionlabel", "⟳ Looped"));
+    const c = el("div", "card");
+    looped.forEach(s => c.appendChild(sessionRow(s)));
+    host.appendChild(c);
+  }
+  host.appendChild(el("div", "sectionlabel", "Sessions"));
+  const c2 = el("div", "card");
+  if (normal.length) normal.forEach(s => c2.appendChild(sessionRow(s)));
+  else c2.appendChild(el("div", null, `<div style="padding:24px;text-align:center;color:var(--faint);font-size:13px">no matches</div>`));
+  host.appendChild(c2);
+
+  const working = sessions.filter(s => s.working).length;
+  $("#sessions-subline").textContent = `${sessions.length} sessions on hub · ${working} working · ${sessions.filter(s => s.loop).length} looped`;
+}
+$("#session-search").addEventListener("input", renderSessions);
+
+$("#fab-new").onclick = () => {
+  openSheet("New session", "Directory on the hub to duck into. A tmux session is created there and Claude starts in it.", "", "~/dev/", "Create", v => {
+    if (!v) return;
+    const id = v.replace(/\/+$/, "").split("/").pop() || "session";
+    sessions.splice(1, 0, { id, working: true, attached: false, task: "✳ Starting up…", dir: v, ago: "now", windows: 1 });
+    renderSessions();
+    toast(`Created ${id} on duck.local`, { icon: "🦆" });
+    setTimeout(() => openChat(id), 420);
+  });
+};
+
+/* ================= chat ================= */
+const chats = {}; // id -> {host, replyIdx, timer, workingEl}
+let currentChat = null;
+
+function addUser(host, text) {
+  host.appendChild(el("div", "bubble-user", text));
+  host.scrollTop = host.scrollHeight;
+}
+function claudeGroup(host) {
+  const g = el("div", "claude");
+  host.appendChild(g);
+  return g;
+}
+function addTurn(group, html) {
+  group.appendChild(el("div", "turn", `<span class="bullet">⏺</span><div>${html}</div>`));
+  group.parentElement.scrollTop = group.parentElement.scrollHeight;
+}
+function addTool(group, html) {
+  group.appendChild(el("div", "tool", `<span class="hook">⎿</span><span>${html}</span>`));
+  group.parentElement.scrollTop = group.parentElement.scrollHeight;
+}
+function addPerm(host, cmd, onResolve) {
+  const card = el("div", "permcard");
+  card.innerHTML = `
+    <div class="permlabel">⚠ Permission request · Bash</div>
+    <div class="permcmd">${cmd}</div>
+    <div class="permbtns">
+      <button class="deny">Deny</button>
+      <button class="allow">Allow</button>
+    </div>`;
+  const btns = card.querySelector(".permbtns");
+  card.querySelector(".allow").onclick = () => {
+    card.classList.add("resolved-allow");
+    card.querySelector(".permlabel").innerHTML = "✓ Allowed · Bash";
+    btns.remove();
+    onResolve(true);
+  };
+  card.querySelector(".deny").onclick = () => {
+    card.classList.add("resolved-deny");
+    card.querySelector(".permlabel").innerHTML = "✕ Denied · Bash";
+    btns.remove();
+    onResolve(false);
+  };
+  host.appendChild(card);
+  host.scrollTop = host.scrollHeight;
+  return card;
+}
+function showWorking(chat, label) {
+  hideWorking(chat);
+  const w = el("div", "workingline", `<span class="spin">✳</span> ${label || "working…"} <button class="interruptbtn">esc interrupt</button>`);
+  w.querySelector(".interruptbtn").onclick = () => interrupt(chat);
+  chat.host.appendChild(w);
+  chat.host.scrollTop = chat.host.scrollHeight;
+  chat.workingEl = w;
+}
+function hideWorking(chat) { if (chat.workingEl) { chat.workingEl.remove(); chat.workingEl = null; } }
+function interrupt(chat) {
+  if (chat.timer) { clearTimeout(chat.timer); chat.timer = null; }
+  hideWorking(chat);
+  chat.host.appendChild(el("div", "interrupted", "— interrupted —"));
+  chat.host.scrollTop = chat.host.scrollHeight;
+  const s = sessions.find(x => x.id === chat.id);
+  if (s) { s.working = false; s.task = "⠂ Interrupted — waiting for input"; renderSessions(); updateChatHeader(s); }
+}
+
+// streams steps: {t:'text'|'tool'|'perm', s, cmd}
+function streamReply(chat, steps, done) {
+  let group = null, i = 0;
+  showWorking(chat);
+  const next = () => {
+    if (i >= steps.length) {
+      hideWorking(chat); chat.timer = null;
+      const s = sessions.find(x => x.id === chat.id);
+      if (s) { s.working = false; renderSessions(); updateChatHeader(s); }
+      done && done();
+      return;
+    }
+    const st = steps[i++];
+    hideWorking(chat);
+    if (st.t === "text") { if (!group || st.newGroup) group = claudeGroup(chat.host); addTurn(group, st.s); }
+    else if (st.t === "tool") { if (!group) group = claudeGroup(chat.host); addTool(group, st.s); }
+    else if (st.t === "perm") {
+      addPerm(chat.host, st.cmd, allowed => {
+        group = null;
+        if (allowed) streamReply(chat, st.onAllow, done);
+        else streamReply(chat, st.onDeny, done);
+      });
+      showWorking(chat, "waiting on approval…");
+      chat.timer = null;
+      return; // resume on resolve
+    }
+    showWorking(chat);
+    chat.timer = setTimeout(next, st.ms || 650);
+  };
+  chat.timer = setTimeout(next, 500);
+}
+
+const PUSH_ALLOW = [
+  { t: "tool", s: "<b>Bash</b> git push origin main <span class='ok'>✓</span>", ms: 900 },
+  { t: "text", s: "Pushed — <b>8fc42d2</b> is on origin/main. CI is running; babysit-prs has it covered." },
+];
+const PUSH_DENY = [{ t: "text", s: "Okay, holding off. The commit's local — say the word when you want it pushed." }];
+
+const REPLY_POOL = [
+  [
+    { t: "text", s: "On it — taking a look now." },
+    { t: "tool", s: "<b>Read</b> internal/session/session.go", ms: 800 },
+    { t: "tool", s: "<b>Grep</b> \"pane_title\" — 6 matches", ms: 700 },
+    { t: "text", s: "Found it. The picker reads <b>pane_title</b> straight off tmux and gates on the status glyph. I can extend the same gate to codex-named sessions — want that?" },
+  ],
+  [
+    { t: "text", s: "Sure — making that change." },
+    { t: "tool", s: "<b>Edit</b> internal/tui/picker.go <span style='color:var(--green)'>+22</span> <span style='color:var(--red)'>-6</span>", ms: 900 },
+    { t: "tool", s: "<b>Bash</b> go test ./... <span class='ok'>✓ 41 passed</span>", ms: 1100 },
+    { t: "text", s: "Done and tests pass. Committed locally as <b>4d1f0ae</b>. Push it?" },
+    { t: "perm", cmd: "git push origin main", onAllow: PUSH_ALLOW, onDeny: PUSH_DENY },
+  ],
+  [
+    { t: "text", s: "Quick status: working tree is clean, 2 commits ahead of origin. The conflict-flow refactor is merged and the picker pins looped sessions on top." },
+    { t: "tool", s: "<b>Bash</b> git log --oneline -3", ms: 700 },
+    { t: "text", s: "Anything else you want reshaped while I'm in here?" },
+  ],
+];
+
+function buildInitial(chat) {
+  const { host, id } = chat;
+  host.appendChild(el("div", "daystamp", "Today"));
+  if (id === "duck") {
+    addUser(host, "hows the conflict refactor going? make merge opt-in, default should just attach to the hub's copy");
+    const g = claudeGroup(host);
+    addTurn(g, "Done — connect-only is now the default when the hub already has the folder. Merge moved behind <b>[m]</b> as an explicit opt-in.");
+    addTool(g, "<b>Read</b> internal/reconcile/reconcile.go");
+    addTool(g, "<b>Edit</b> command/root.go <span style='color:var(--green)'>+14</span> <span style='color:var(--red)'>-3</span>");
+    addTool(g, "<b>Bash</b> go test ./... <span class='ok'>✓ passed</span>");
+    addTurn(g, "Tests pass. Want me to push?");
+    addUser(host, "ship it 🚀");
+    addPerm(host, "git push origin main", allowed => {
+      streamReply(chat, allowed ? PUSH_ALLOW : PUSH_DENY);
+    });
+    showWorking(chat, "waiting on approval…");
+  } else if (id === "flock") {
+    addUser(host, "hows the replay buffer test coming");
+    const g = claudeGroup(host);
+    addTurn(g, "Writing table tests for the 500-event ring buffer — covering wraparound, late-subscriber replay, and the done-sentinel path.");
+    addTool(g, "<b>Edit</b> internal/runtime/session_test.go <span style='color:var(--green)'>+184</span>");
+    addTool(g, "<b>Bash</b> go test ./internal/runtime/ <span style='color:var(--coral)'>running…</span>");
+    showWorking(chat, "running tests…");
+  } else if (id === "babysit-prs") {
+    const g = claudeGroup(host);
+    addTurn(g, "Loop iteration 14 · PR <b>#142</b>: CI flaked on the macos runner (rsync test, again). Re-ran the job — green expected in ~6 min. PR <b>#139</b> merged clean.");
+    addTool(g, "<b>Bash</b> gh run rerun 9182 <span class='ok'>✓</span>");
+    addTurn(g, "Next check in 5 minutes.");
+  } else {
+    host.appendChild(el("div", "interrupted", "session is idle — say something to wake it up"));
+  }
+}
+
+function updateChatHeader(s) {
+  $("#chat-title").innerHTML = `${s.working ? '<span class="workdot">✳</span>' : ""}${s.id}`;
+  $("#chat-sub").textContent = `${s.dir} · tmux:${s.id}`;
+}
+
+function openChat(id) {
+  const s = sessions.find(x => x.id === id);
+  if (!s) return;
+  if (!chats[id]) {
+    chats[id] = { id, host: el("div", "chatscroll"), replyIdx: 0, timer: null, workingEl: null };
+    chats[id].host.id = "chat-host";
+    buildInitial(chats[id]);
+  }
+  const old = $("#chat-host");
+  old.replaceWith(chats[id].host);
+  currentChat = chats[id];
+  updateChatHeader(s);
+  $("#chat-tok").textContent = (30 + Math.floor(Math.random() * 40)) + "." + Math.floor(Math.random() * 9) + "k tok";
+  $("#view-chat").classList.add("active");
+  setTimeout(() => { currentChat.host.scrollTop = currentChat.host.scrollHeight; }, 60);
+}
+$("#chat-back").onclick = () => { $("#view-chat").classList.remove("active"); };
+
+function sendMessage() {
+  const inp = $("#chat-input");
+  const text = inp.value.trim();
+  if (!text || !currentChat) return;
+  inp.value = "";
+  addUser(currentChat.host, text);
+  const s = sessions.find(x => x.id === currentChat.id);
+  if (s) { s.working = true; s.task = "✳ " + text.slice(0, 42); s.ago = "now"; renderSessions(); updateChatHeader(s); }
+  const steps = REPLY_POOL[currentChat.replyIdx % REPLY_POOL.length];
+  currentChat.replyIdx++;
+  streamReply(currentChat, steps);
+}
+$("#chat-send").onclick = sendMessage;
+$("#chat-input").addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
+$("#snapbtn").onclick = () => toast("duck snap — remote path copied to clipboard", { icon: "📷" });
+
+/* ================= trades ================= */
+let trades = [
+  {
+    side: "buy", symbol: "ARM", desc: "Arm Holdings plc — EQUITY",
+    qty: "150 sh", px: "$148.50 lmt", est: "est. $22,275.00 · 7.8% of portfolio",
+    mark: "147.92", chg: "+2.31 (+1.59%)", up: true, range: "144.80–149.10",
+    holding: "No existing position",
+    who: "arm-watch · heartbeat",
+    rationale: "Datacenter momentum plus post-earnings drift. Entry under 149 keeps risk tight against the 145 support shelf; stop planned at 143.80.",
+    expiry: "11:42",
+    raw: { action: "BUY", symbol: "ARM", quantity: 150, order_type: "LIMIT", limit_price: 148.50, tif: "DAY", est_value: 22275.00, source_run: "run_8f3a2c", automation: "arm-watch", stop_plan: 143.80 },
+  },
+  {
+    side: "sell", symbol: "NVDA", desc: "NVIDIA Corporation — EQUITY",
+    qty: "40 sh", px: "MKT", est: "est. $27,316.80 · trims position 33%",
+    mark: "682.92", chg: "-4.18 (-0.61%)", up: false, range: "678.10–694.55",
+    holding: "Holding 120 sh @ $612.40 avg · +$8,462 unrealized",
+    who: "earnings-watch · cron",
+    rationale: "Position exceeded the 12% single-name cap after last week's run. Trimming a third locks gains while keeping core exposure into GTC.",
+    expiry: "10:15",
+    raw: { action: "SELL", symbol: "NVDA", quantity: 40, order_type: "MARKET", tif: "DAY", est_value: 27316.80, source_run: "run_2c91aa", automation: "earnings-watch", reason: "single_name_cap_breach" },
+  },
+  {
+    side: "buy", symbol: "TLT", desc: "iShares 20+ Year Treasury Bond ETF",
+    qty: "100 sh", px: "$91.20 lmt", est: "est. $9,120.00 · duration hedge",
+    mark: "91.44", chg: "+0.36 (+0.40%)", up: true, range: "90.88–91.60",
+    holding: "Holding 200 sh @ $94.10 avg · -$532 unrealized",
+    who: "arm-watch · heartbeat",
+    rationale: "CPI print came in soft; adding duration ahead of FOMC. Averages the basis down to $93.13 and rebalances the equity-heavy book.",
+    expiry: "14:00",
+    raw: { action: "BUY", symbol: "TLT", quantity: 100, order_type: "LIMIT", limit_price: 91.20, tif: "GTC", est_value: 9120.00, source_run: "run_8f3a2c", automation: "arm-watch", basis_after: 93.13 },
+  },
+];
+const INCOMING = [
+  {
+    side: "buy", symbol: "COIN", desc: "Coinbase Global Inc — EQUITY",
+    qty: "30 sh", px: "$245.00 lmt", est: "est. $7,350.00 · new position",
+    mark: "243.18", chg: "+6.92 (+2.93%)", up: true, range: "236.40–244.90",
+    holding: "No existing position",
+    who: "approvals-gate · event",
+    rationale: "ETF flow reversal flagged by market-research MCP — three green days of inflows after two red weeks. Small starter, defined risk at 232.",
+    expiry: "15:30",
+    raw: { action: "BUY", symbol: "COIN", quantity: 30, order_type: "LIMIT", limit_price: 245.00, tif: "DAY", est_value: 7350.00, source_run: "run_c44e01", automation: "approvals-gate" },
+  },
+];
+let deckCards = [];
+let lastDecision = null;
+
+function fmtRaw(o) {
+  return JSON.stringify(o, null, 2).replace(/"([^"]+)":/g, '<span class="key">"$1"</span>:');
+}
+
+function makeCard(t) {
+  const c = el("div", "tcard");
+  c.innerHTML = `
+    <div class="cardtop">
+      <span class="sidepill ${t.side}">${t.side.toUpperCase()}</span>
+      <div class="source">requested by<br><b>${t.who}</b></div>
+    </div>
+    <div class="symbol">${t.symbol}</div>
+    <div class="desc">${t.desc}</div>
+    <div class="orderline"><span class="qty">${t.qty}</span><span class="at">@</span><span class="px">${t.px}</span></div>
+    <div class="estval">${t.est}</div>
+    <div class="quotegrid">
+      <div><div class="q">Mark</div><div class="v">${t.mark}</div></div>
+      <div><div class="q">Day</div><div class="v ${t.up ? "up" : "dn"}">${t.chg}</div></div>
+      <div><div class="q">Range</div><div class="v">${t.range}</div></div>
+    </div>
+    <div class="holding"><span class="hicon">◆</span>${t.holding}</div>
+    <div class="rationale"><span class="who">agent rationale</span>${t.rationale}</div>
+    <div class="expiry">expires <b>${t.expiry}</b> if untouched — then auto-denied</div>
+    <div class="stamp yes">APPROVE</div>
+    <div class="stamp no">DENY</div>
+    <div class="carddetail">
+      <h4>order payload · ${t.raw.source_run}</h4>
+      <pre>${fmtRaw(t.raw)}</pre>
+      <button class="closebtn">Close</button>
+    </div>`;
+  c._trade = t;
+  c.querySelector(".closebtn").onclick = e => { e.stopPropagation(); c.querySelector(".carddetail").classList.remove("show"); };
+  attachDrag(c);
+  return c;
+}
+
+function layoutDeck() {
+  deckCards.forEach((c, i) => {
+    c.classList.remove("top", "behind1", "behind2");
+    c.style.display = i < 3 ? "" : "none";
+    if (i === 0) c.classList.add("top");
+    else if (i === 1) c.classList.add("behind1");
+    else if (i === 2) c.classList.add("behind2");
+  });
+  const n = deckCards.length;
+  const pp = $("#pendcount");
+  pp.textContent = n ? `${n} pending` : "all clear";
+  pp.classList.toggle("clear", !n);
+  const badge = $("#tabbadge");
+  badge.style.display = n ? "flex" : "none";
+  badge.textContent = n;
+  $("#deckempty").style.display = n ? "none" : "flex";
+  if (!n) scheduleIncoming();
+}
+
+function rebuildDeck() {
+  deckCards.forEach(c => c.remove());
+  deckCards = [];
+  trades.forEach(t => {
+    const c = makeCard(t);
+    $("#deck").appendChild(c);
+    deckCards.push(c);
+  });
+  // stack order: first trade on top
+  deckCards.slice().reverse().forEach(c => $("#deck").appendChild(c));
+  layoutDeck();
+}
+
+function attachDrag(card) {
+  let sx = 0, sy = 0, dx = 0, dragging = false;
+  card.addEventListener("pointerdown", e => {
+    if (deckCards[0] !== card) return;
+    if (card.querySelector(".carddetail").classList.contains("show")) return;
+    dragging = true; sx = e.clientX; sy = e.clientY;
+    card.classList.add("dragging");
+    card.setPointerCapture(e.pointerId);
+  });
+  card.addEventListener("pointermove", e => {
+    if (!dragging) return;
+    dx = e.clientX - sx;
+    const dy = e.clientY - sy;
+    card.style.transform = `translate(${dx}px, ${dy * 0.4}px) rotate(${dx / 18}deg)`;
+    card.querySelector(".stamp.yes").style.opacity = Math.min(1, Math.max(0, dx / 90));
+    card.querySelector(".stamp.no").style.opacity = Math.min(1, Math.max(0, -dx / 90));
+  });
+  const release = () => {
+    if (!dragging) return;
+    dragging = false; card.classList.remove("dragging");
+    if (Math.abs(dx) > 110) flyOut(card, dx > 0);
+    else {
+      card.style.transform = "";
+      card.querySelector(".stamp.yes").style.opacity = 0;
+      card.querySelector(".stamp.no").style.opacity = 0;
+    }
+    dx = 0;
+  };
+  card.addEventListener("pointerup", release);
+  card.addEventListener("pointercancel", release);
+}
+
+function flyOut(card, approved) {
+  const t = card._trade;
+  card.querySelector(approved ? ".stamp.yes" : ".stamp.no").style.opacity = 1;
+  card.classList.add("flyout");
+  card.style.transform = `translate(${approved ? 560 : -560}px, -40px) rotate(${approved ? 24 : -24}deg)`;
+  trades = trades.filter(x => x !== t);
+  deckCards = deckCards.filter(c => c !== card);
+  setTimeout(() => card.remove(), 450);
+  layoutDeck();
+  lastDecision = { t, approved };
+  const chip = el("div", "hchip", `<span class="${approved ? "y" : "n"}">${approved ? "✓" : "✕"}</span> ${t.symbol} ${t.side} ${t.qty.split(" ")[0]} — just now`);
+  $("#history").prepend(chip);
+  toast(`${approved ? "Approved" : "Denied"} ${t.symbol} ${t.side} — ${approved ? "sent to Schwab" : "returned to " + t.who.split(" ")[0]}`, {
+    icon: approved ? "✅" : "🚫",
+    action: "Undo",
+    onAction: () => {
+      trades.unshift(t);
+      chip.remove();
+      rebuildDeck();
+      lastDecision = null;
+    },
+  });
+}
+
+$("#btn-approve").onclick = () => { if (deckCards[0]) flyOut(deckCards[0], true); };
+$("#btn-deny").onclick = () => { if (deckCards[0]) flyOut(deckCards[0], false); };
+$("#btn-info").onclick = () => { if (deckCards[0]) deckCards[0].querySelector(".carddetail").classList.toggle("show"); };
+
+let incomingScheduled = false;
+function scheduleIncoming() {
+  if (incomingScheduled || !INCOMING.length) return;
+  incomingScheduled = true;
+  setTimeout(() => {
+    incomingScheduled = false;
+    const t = INCOMING.shift();
+    if (!t) return;
+    trades.push(t);
+    rebuildDeck();
+    if (deckCards[0]) deckCards[0].classList.add("arriving");
+    toast(`New trade request · ${t.symbol} from ${t.who.split(" ")[0]}`, { icon: "📨", ms: 5000, onTap: () => showTab("trades") });
+  }, 9000);
+}
+
+rebuildDeck();
+
+/* ================= portfolio ================= */
+const RANGES = {
+  "1D": { chg: "▲ $3,214.88 (+1.14%) <span>today</span>", up: true, pts: [60,58,62,55,57,50,52,46,48,42,44,38,35,30,26,22,18,14,12,8] },
+  "1W": { chg: "▲ $7,940.12 (+2.87%) <span>past week</span>", up: true, pts: [62,58,66,60,53,40,44,48,38,34,30,42,38,34,20,24,28,18,14,8] },
+  "1M": { chg: "▼ $2,108.55 (-0.73%) <span>past month</span>", up: false, pts: [30,26,34,28,38,32,44,36,48,52,44,56,50,58,52,62,56,66,60,64] },
+  "3M": { chg: "▲ $18,402.60 (+6.92%) <span>past 3 months</span>", up: true, pts: [70,66,72,62,64,56,58,48,52,42,46,36,40,30,34,24,26,18,14,10] },
+  "YTD": { chg: "▲ $31,277.94 (+12.35%) <span>this year</span>", up: true, pts: [76,70,74,64,68,58,60,50,54,44,40,46,34,38,28,22,26,16,12,6] },
+  "ALL": { chg: "▲ $134,512.40 (+89.7%) <span>all time</span>", up: true, pts: [80,78,74,76,70,66,68,60,62,54,56,48,42,44,36,30,24,18,12,6] },
+};
+function sparkPath(pts) {
+  const step = 360 / (pts.length - 1);
+  let d = `M0,${pts[0]}`;
+  for (let i = 1; i < pts.length; i++) d += ` L${(i * step).toFixed(1)},${pts[i]}`;
+  return d;
+}
+function setRange(key) {
+  const r = RANGES[key];
+  const line = sparkPath(r.pts);
+  $("#sparkline").setAttribute("d", line);
+  $("#sparkfill").setAttribute("d", line + " L360,86 L0,86 Z");
+  $("#sparkline").setAttribute("stroke", r.up ? "#30d158" : "#ff453a");
+  $("#sparkfill").setAttribute("fill", r.up ? "url(#gup)" : "url(#gdn)");
+  const dot = $("#sparkdot");
+  dot.setAttribute("cy", r.pts[r.pts.length - 1]);
+  dot.setAttribute("fill", r.up ? "#30d158" : "#ff453a");
+  const chg = $("#herochg");
+  chg.innerHTML = r.chg;
+  chg.className = "herochg " + (r.up ? "up" : "dn");
+  document.querySelectorAll("#ranges button").forEach(b => b.classList.toggle("on", b.textContent === key));
+}
+Object.keys(RANGES).forEach(k => {
+  const b = el("button", null, k);
+  b.onclick = () => setRange(k);
+  $("#ranges").appendChild(b);
+});
+setRange("1W");
+
+const POSITIONS = [
+  { t: "NVDA", q: "120 sh", mv: "$81,950", pl: "+$8,462 · -0.61% d", up: true, pts: [22,20,24,16,14,18,10,6,9], stroke: "#30d158" },
+  { t: "AAPL", q: "145 sh", mv: "$29,855", pl: "+$3,120 · +0.84% d", up: true, pts: [18,16,19,14,16,12,13,9,8], stroke: "#30d158" },
+  { t: "ARM", q: "—", mv: "pending buy", pl: "in Approvals →", pend: true, pts: [24,22,18,20,14,12,15,8,6], stroke: "#64a8ff", dash: true },
+  { t: "TLT", q: "200 sh", mv: "$18,288", pl: "-$532 · +0.40% d", up: false, pts: [10,12,11,16,18,15,20,17,15], stroke: "#ff453a" },
+  { t: "MSFT", q: "80 sh", mv: "$33,704", pl: "+$4,890 · +0.52% d", up: true, pts: [20,18,16,17,12,14,10,11,7], stroke: "#30d158" },
+  { t: "BRK.B", q: "160 sh", mv: "$72,505", pl: "+$6,210 · +0.31% d", up: true, pts: [16,15,17,13,15,11,12,10,11], stroke: "#30d158" },
+];
+function miniPath(pts) {
+  const step = 120 / (pts.length - 1);
+  let d = `M0,${pts[0]}`;
+  for (let i = 1; i < pts.length; i++) d += ` L${(i * step).toFixed(0)},${pts[i]}`;
+  return d;
+}
+POSITIONS.forEach(p => {
+  const row = el("div", "pos");
+  row.innerHTML = `
+    <div class="sym"><div class="t">${p.t}</div><div class="q2">${p.q}</div></div>
+    <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none">
+      <path d="${miniPath(p.pts)}" fill="none" stroke="${p.stroke}" stroke-width="1.8" ${p.dash ? 'stroke-dasharray="3 3"' : ""}/>
+    </svg>
+    <div class="posnums"><div class="mv">${p.mv}</div><div class="pl ${p.pend ? "pendlink" : p.up ? "up" : "dn"}">${p.pl}</div></div>`;
+  if (p.pend) { row.style.cursor = "pointer"; row.onclick = () => showTab("trades"); }
+  $("#positions").appendChild(row);
+});
+$("#risk-alert").onclick = () => showTab("trades");
+
+/* ================= flock ================= */
+let autos = [
+  { id: "arm-watch", proj: "Cassandra-Finance/.flock", icon: "♥", iconCls: "live", trig: "heartbeat · every 300s · gpt-5.3-codex", state: "running", info: "fired 4m ago · 18.2k tok" },
+  { id: "earnings-watch", proj: "Cassandra-Finance/.flock", icon: "◷", iconCls: "cron", trig: "cron · 0 9 * * 1-5", state: "idle", info: "next 9:00 AM tomorrow" },
+  { id: "approvals-gate", proj: "Cassandra-Finance/.flock", icon: "⚡︎", iconCls: "evt", trig: "event · webhook /trade-request", state: "waiting", info: "last event 12m ago" },
+  { id: "release-watch", proj: "duck/.flock", icon: "◷", iconCls: "cron", trig: "cron · 0 */6 * * *", state: "paused", info: "last run failed · 2d ago" },
+];
+let runs = [
+  { state: "running", name: "arm-watch · scanning datacenter capex notes", sub: "running 4m · workspace-write", tok: "18.2k" },
+  { state: "done", name: "approvals-gate · queued NVDA trim for approval", sub: "done · 12m ago · 1m 42s", tok: "6.4k" },
+  { state: "done", name: "earnings-watch · pre-market scan, 2 flags", sub: "done · 9:02 AM · 4m 10s", tok: "31.7k" },
+  { state: "failed", name: "release-watch · gh api rate-limited", sub: "failed · 2d ago · retried 3×", tok: "2.1k" },
+];
+
+function renderFlock() {
+  const host = $("#flock-scroll");
+  host.innerHTML = "";
+  const projects = [...new Set(autos.map(a => a.proj))];
+  projects.forEach(p => {
+    host.appendChild(el("div", "sectionlabel", `Automations <span class="proj">${p}</span>`));
+    const c = el("div", "card");
+    autos.filter(a => a.proj === p).forEach(a => {
+      const row = el("div", "auto");
+      const live = a.state === "running";
+      row.innerHTML = `
+        <div class="aglyph ${live ? "live" : a.iconCls}">${a.icon}</div>
+        <div class="ameta">
+          <div class="aname">${a.id}</div>
+          <div class="atrig">${a.trig}</div>
+        </div>
+        <div class="astate">
+          <span class="statepill ${a.state}">${a.state}</span>
+          <div class="ainfo">${a.info}</div>
+        </div>`;
+      const ctrl = el("button", "ctrl", live ? "⏸" : "▶");
+      ctrl.onclick = () => {
+        if (a.state === "running") {
+          a.state = "paused"; a.info = "paused just now";
+          toast(`Paused ${a.id}`, { icon: "⏸" });
+        } else {
+          a.state = "running"; a.info = "fired just now · 0 tok";
+          const run = { state: "running", name: `${a.id} · manual fire from phone`, sub: "running · just now", tok: "0.0k" };
+          runs.unshift(run);
+          toast(`Fired ${a.id}`, { icon: "▶" });
+          setTimeout(() => {
+            run.state = "done"; run.sub = "done · just now · 42s"; run.tok = "3.8k";
+            if (a.state === "running" && a.trig.startsWith("cron")) { a.state = "idle"; a.info = "ran just now · 3.8k tok"; }
+            renderFlock();
+            toast(`${a.id} finished — 3.8k tok`, { icon: "✅" });
+          }, 8000);
+        }
+        renderFlock();
+      };
+      row.appendChild(ctrl);
+      c.appendChild(row);
+    });
+    host.appendChild(c);
+  });
+
+  host.appendChild(el("div", "sectionlabel", "Recent runs"));
+  const rc = el("div", "card");
+  runs.slice(0, 6).forEach(r => {
+    rc.appendChild(el("div", "run", `
+      <div class="rstate ${r.state}"></div>
+      <div class="rmeta"><div class="rname">${r.name}</div><div class="rsub">${r.sub}</div></div>
+      <div class="rtok">${r.tok}</div>`));
+  });
+  host.appendChild(rc);
+  $("#flock-live").textContent = `:8787 · ${autos.filter(a => a.state === "running").length} live`;
+}
+
+/* ================= boot ================= */
+renderSessions();
+renderFlock();
+const initial = location.hash.replace("#", "");
+if (["sessions", "trades", "portfolio", "flock"].includes(initial)) showTab(initial);
+</script>
+</body>
+</html>
