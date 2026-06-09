@@ -75,6 +75,16 @@ Most relevant for the app: `quote`, `intraday_prices` (adaptive 5m/15m/1h or uni
 
 Schwab's positions payload already includes option legs — `instrument.assetType: "OPTION"` with the OCC symbol (`NVDA  260619C00750000`), `putCall`, `underlyingSymbol`, and description carrying strike/expiry; short legs come as `shortQuantity` with negative market value; contract multiplier 100. The broker's normalizer currently flattens these to the same 6 generic fields as equities, losing `putCall`/`underlying`/`strike`/`expiry` — capturing options accurately means keeping those instrument fields (same unwrap as day-P/L, ~15 lines). Greeks/IV/OI come from `options_chain` + `historical_option_iv` (Polygon delayed, ThetaData real-time) keyed by the OCC symbol. With both, the app can group legs under their underlying, derive strategy labels (covered call = short call + ≥100 shares; cash-secured put = short put + cash collateral), show DTE/breakeven/assignment risk, and let agents propose rolls as ordinary order proposals through the approvals gate.
 
+## Position provenance — lots, underlying-at-fill, "since you've held"
+
+Three composable pieces:
+
+1. **Lots ("acquired N times")** — Schwab's transactions endpoint returns every fill with timestamp, qty, and price, but only a **60-day window**. For older lots the app needs its own fill ledger — which the approvals gate produces naturally (it sees every order it places), seeded once via a Schwab transaction-history backfill at setup. Store: `{symbol, occ_symbol?, qty, fill_price, filled_at}`.
+2. **Underlying price at acquisition** — for option fills, look up the underlying's price at the fill timestamp via `price_history`/`intraday_prices` (minute candles cover ~48 days; daily bars beyond). Store it on the lot at write time so it never needs recomputing.
+3. **"Since you've held" timeline** — pure composition, no new infra: take the position's first-lot date and filter existing sources by `date ≥ first_lot`: `market_news(symbol)`, `earnings_calendar` (past results + surprises), `dividends_calendar`, `insider_activity`, `senate_trading`, plus the app's own fill ledger (adds/trims) and agent actions from flock run history. Render newest-first with a "+X% since first lot vs SPY +Y%" header (compute vs `price_history`).
+
+Strategy labels (covered call etc.) are **derived presentation, not data** — the broker only reports legs. Derive relationships at render time (short call + ≥100 underlying shares → "covers 100 of your N sh") and present them as quiet annotations, never as authoritative position types.
+
 ## The write path: approvals gate (to build)
 
 Agents must never hold `place_order`. Flow:

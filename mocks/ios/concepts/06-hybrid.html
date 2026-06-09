@@ -1220,6 +1220,7 @@ renderFeed();
 /* feed interactions — cashtags navigate, likes work, "4 new" prepends, reply acks */
 feedEl.addEventListener('click', e => {
   if (e.target.closest('#newbtn')){
+    if ($('newpill').classList.contains('gone')) return;
     $('newpill').classList.add('gone');
     $('newpill').insertAdjacentHTML('afterend', NEW_POSTS.map(p => postHTML(p, true)).join(''));
     feedEl.scrollTop = 0;
