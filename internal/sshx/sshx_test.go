@@ -161,7 +161,8 @@ func TestAttachArgvBuildsInteractiveAttach(t *testing.T) {
 	if argv[len(argv)-2] != "me@hub.local" {
 		t.Errorf("addr not penultimate: %v", argv)
 	}
-	if argv[len(argv)-1] != "zsh -lc 'tmux attach-session -t cc-1234'" {
-		t.Errorf("AttachArgv tail = %q, want login-shell-wrapped tmux attach", argv[len(argv)-1])
+	want := `zsh -lc 'infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; tmux attach-session -t cc-1234'`
+	if argv[len(argv)-1] != want {
+		t.Errorf("AttachArgv tail = %q, want login-shell-wrapped tmux attach with TERM guard", argv[len(argv)-1])
 	}
 }
