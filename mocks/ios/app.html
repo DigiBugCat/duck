@@ -302,6 +302,29 @@
   .up { color: var(--green); } .dn { color: var(--red); }
   .pendlink { color: var(--blue); }
 
+  /* segmented control + today feed */
+  .seg { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 3px; margin-top: 16px; }
+  .seg button { flex: 1; border: none; background: none; color: var(--muted); font-family: inherit; font-size: 13px; font-weight: 700; padding: 8px; border-radius: 9px; cursor: pointer; transition: background .15s, color .15s; }
+  .seg button.on { background: var(--surface2); color: var(--text); }
+  .daychips { display: flex; gap: 10px; margin-top: 12px; }
+  .chipstat { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 11px 13px; }
+  .chipstat .k { font-size: 10px; font-weight: 700; letter-spacing: .9px; text-transform: uppercase; color: var(--faint); }
+  .chipstat .v2 { font-size: 15px; font-weight: 750; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .actrow { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border); animation: popin .3s; }
+  .card .actrow:last-child { border-bottom: none; }
+  .aicn { width: 34px; height: 34px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; background: var(--surface2); color: var(--muted); }
+  .aicn.fill { background: rgba(48,209,88,.13); color: var(--green); }
+  .aicn.denied { background: rgba(255,69,58,.1); color: var(--red); }
+  .aicn.warn { background: rgba(255,214,10,.1); color: var(--amber); }
+  .aicn.agent { background: rgba(100,168,255,.1); color: var(--blue); }
+  .aicn.pending { background: var(--coral-soft); color: var(--coral); animation: pulse 1.2s infinite; }
+  .ameta2 { flex: 1; min-width: 0; }
+  .atitle { font-size: 13.5px; font-weight: 650; line-height: 1.35; }
+  .asub { font-size: 11px; color: var(--faint); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .aright { flex: none; text-align: right; }
+  .aamt { font-size: 13px; font-weight: 750; font-variant-numeric: tabular-nums; }
+  .atime { font-size: 10.5px; color: var(--faint); font-weight: 600; margin-top: 3px; }
+
   /* ============ flock ============ */
   .auto { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--border); }
   .card .auto:last-child { border-bottom: none; }
@@ -465,8 +488,23 @@
             <div class="asrc">earnings-watch · 12 min ago · tap to review</div>
           </div>
         </div>
-        <div class="sectionlabel">Positions · 6</div>
-        <div class="card" id="positions"></div>
+        <div class="seg" id="pf-seg">
+          <button class="on" data-panel="positions">Positions</button>
+          <button data-panel="today">Today</button>
+        </div>
+        <div id="panel-positions">
+          <div class="sectionlabel">Positions · <span id="poscount">6</span></div>
+          <div class="card" id="positions"></div>
+        </div>
+        <div id="panel-today" style="display:none">
+          <div class="daychips">
+            <div class="chipstat"><div class="k">Trades today</div><div class="v2" id="chip-trades">1</div></div>
+            <div class="chipstat"><div class="k">Realized P/L</div><div class="v2" id="chip-realized">$0.00</div></div>
+            <div class="chipstat"><div class="k">Top mover</div><div class="v2 up" id="chip-mover">ARM +1.6%</div></div>
+          </div>
+          <div class="sectionlabel">Activity</div>
+          <div class="card" id="activity"></div>
+        </div>
       </div>
     </section>
 
@@ -898,7 +936,7 @@ $("#snapbtn").onclick = () => toast("duck snap — remote path copied to clipboa
 /* ================= trades ================= */
 let trades = [
   {
-    side: "buy", symbol: "ARM", desc: "Arm Holdings plc — EQUITY",
+    side: "buy", symbol: "ARM", fill: "148.32", desc: "Arm Holdings plc — EQUITY",
     qty: "150 sh", px: "$148.50 lmt", est: "est. $22,275.00 · 7.8% of portfolio",
     mark: "147.92", chg: "+2.31 (+1.59%)", up: true, range: "144.80–149.10",
     holding: "No existing position",
@@ -908,7 +946,7 @@ let trades = [
     raw: { action: "BUY", symbol: "ARM", quantity: 150, order_type: "LIMIT", limit_price: 148.50, tif: "DAY", est_value: 22275.00, source_run: "run_8f3a2c", automation: "arm-watch", stop_plan: 143.80 },
   },
   {
-    side: "sell", symbol: "NVDA", desc: "NVIDIA Corporation — EQUITY",
+    side: "sell", symbol: "NVDA", fill: "682.40", desc: "NVIDIA Corporation — EQUITY",
     qty: "40 sh", px: "MKT", est: "est. $27,316.80 · trims position 33%",
     mark: "682.92", chg: "-4.18 (-0.61%)", up: false, range: "678.10–694.55",
     holding: "Holding 120 sh @ $612.40 avg · +$8,462 unrealized",
@@ -918,7 +956,7 @@ let trades = [
     raw: { action: "SELL", symbol: "NVDA", quantity: 40, order_type: "MARKET", tif: "DAY", est_value: 27316.80, source_run: "run_2c91aa", automation: "earnings-watch", reason: "single_name_cap_breach" },
   },
   {
-    side: "buy", symbol: "TLT", desc: "iShares 20+ Year Treasury Bond ETF",
+    side: "buy", symbol: "TLT", fill: "91.20", desc: "iShares 20+ Year Treasury Bond ETF",
     qty: "100 sh", px: "$91.20 lmt", est: "est. $9,120.00 · duration hedge",
     mark: "91.44", chg: "+0.36 (+0.40%)", up: true, range: "90.88–91.60",
     holding: "Holding 200 sh @ $94.10 avg · -$532 unrealized",
@@ -930,7 +968,7 @@ let trades = [
 ];
 const INCOMING = [
   {
-    side: "buy", symbol: "COIN", desc: "Coinbase Global Inc — EQUITY",
+    side: "buy", symbol: "COIN", fill: "243.55", desc: "Coinbase Global Inc — EQUITY",
     qty: "30 sh", px: "$245.00 lmt", est: "est. $7,350.00 · new position",
     mark: "243.18", chg: "+6.92 (+2.93%)", up: true, range: "236.40–244.90",
     holding: "No existing position",
@@ -1055,10 +1093,38 @@ function flyOut(card, approved) {
   lastDecision = { t, approved };
   const chip = el("div", "hchip", `<span class="${approved ? "y" : "n"}">${approved ? "✓" : "✕"}</span> ${t.symbol} ${t.side} ${t.qty.split(" ")[0]} — just now`);
   $("#history").prepend(chip);
-  toast(`${approved ? "Approved" : "Denied"} ${t.symbol} ${t.side} — ${approved ? "sent to Schwab" : "returned to " + t.who.split(" ")[0]}`, {
+
+  // order lifecycle → Today feed (real source: preview→place→order status via schwab-broker)
+  const qtyN = t.qty.split(" ")[0];
+  let entry, fillTimer = null;
+  if (approved) {
+    entry = { icn: "●", cls: "pending", title: `${t.side.toUpperCase()} ${qtyN} ${t.symbol} — working`, sub: "preview ✓ · placed via schwab-broker", time: "just now" };
+    fillTimer = setTimeout(() => {
+      entry.icn = "✓"; entry.cls = "fill";
+      entry.title = `${t.side.toUpperCase()} ${qtyN} ${t.symbol} filled @ $${t.fill}`;
+      entry.sub = "approved by you · schwab-broker";
+      const amt = t.est.match(/\$[\d,.]+/)[0];
+      entry.amt = (t.side === "buy" ? "-" : "+") + amt;
+      entry.dir = t.side === "buy" ? "dn" : "up";
+      tradesToday++;
+      if (FILL_FX[t.symbol]) FILL_FX[t.symbol]();
+      renderActivity(); renderPositions();
+      toast(`${t.symbol} ${t.side} filled @ $${t.fill}`, { icon: "✅", onTap: () => { showTab("portfolio"); setPanel("today"); } });
+    }, 4200);
+  } else {
+    entry = { icn: "✕", cls: "denied", title: `Denied ${t.side.toUpperCase()} ${qtyN} ${t.symbol}`, sub: `returned to ${t.who.split(" ")[0]} with feedback`, time: "just now" };
+  }
+  activity.unshift(entry);
+  renderActivity();
+
+  toast(`${approved ? "Approved" : "Denied"} ${t.symbol} ${t.side} — ${approved ? "placing order…" : "returned to " + t.who.split(" ")[0]}`, {
     icon: approved ? "✅" : "🚫",
     action: "Undo",
     onAction: () => {
+      if (fillTimer) clearTimeout(fillTimer);
+      const ai = activity.indexOf(entry);
+      if (ai >= 0) activity.splice(ai, 1);
+      renderActivity();
       trades.unshift(t);
       chip.remove();
       rebuildDeck();
@@ -1139,18 +1205,80 @@ function miniPath(pts) {
   for (let i = 1; i < pts.length; i++) d += ` L${(i * step).toFixed(0)},${pts[i]}`;
   return d;
 }
-POSITIONS.forEach(p => {
-  const row = el("div", "pos");
-  row.innerHTML = `
-    <div class="sym"><div class="t">${p.t}</div><div class="q2">${p.q}</div></div>
-    <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none">
-      <path d="${miniPath(p.pts)}" fill="none" stroke="${p.stroke}" stroke-width="1.8" ${p.dash ? 'stroke-dasharray="3 3"' : ""}/>
-    </svg>
-    <div class="posnums"><div class="mv">${p.mv}</div><div class="pl ${p.pend ? "pendlink" : p.up ? "up" : "dn"}">${p.pl}</div></div>`;
-  if (p.pend) { row.style.cursor = "pointer"; row.onclick = () => showTab("trades"); }
-  $("#positions").appendChild(row);
-});
+function renderPositions() {
+  const host = $("#positions");
+  host.innerHTML = "";
+  POSITIONS.forEach(p => {
+    const row = el("div", "pos");
+    row.innerHTML = `
+      <div class="sym"><div class="t">${p.t}</div><div class="q2">${p.q}</div></div>
+      <svg class="minispark" viewBox="0 0 120 30" preserveAspectRatio="none">
+        <path d="${miniPath(p.pts)}" fill="none" stroke="${p.stroke}" stroke-width="1.8" ${p.dash ? 'stroke-dasharray="3 3"' : ""}/>
+      </svg>
+      <div class="posnums"><div class="mv">${p.mv}</div><div class="pl ${p.pend ? "pendlink" : p.up ? "up" : "dn"}">${p.pl}</div></div>`;
+    if (p.pend) { row.style.cursor = "pointer"; row.onclick = () => showTab("trades"); }
+    host.appendChild(row);
+  });
+  $("#poscount").textContent = POSITIONS.filter(p => !p.pend).length;
+}
+renderPositions();
 $("#risk-alert").onclick = () => showTab("trades");
+
+/* ---- portfolio segmented control ---- */
+function setPanel(name) {
+  document.querySelectorAll("#pf-seg button").forEach(b => b.classList.toggle("on", b.dataset.panel === name));
+  $("#panel-positions").style.display = name === "positions" ? "" : "none";
+  $("#panel-today").style.display = name === "today" ? "" : "none";
+}
+document.querySelectorAll("#pf-seg button").forEach(b => b.onclick = () => setPanel(b.dataset.panel));
+
+/* ---- today / intraday activity feed ----
+   real sources: broker transactions + orders endpoints (to wrap),
+   currentDayProfitLoss per position (to unwrap), flock run events (ws) */
+let tradesToday = 1, realizedToday = 0;
+const activity = [
+  { icn: "⚠", cls: "warn", title: "NVDA breached 12% single-name cap", sub: "earnings-watch · trim queued in Approvals", time: "9:31 AM" },
+  { icn: "✓", cls: "fill", title: "BUY 25 AAPL filled @ $205.88", sub: "approved by you · schwab-broker", amt: "-$5,147.00", dir: "dn", time: "9:28 AM" },
+  { icn: "$", cls: "fill", title: "Dividend credited — AAPL", sub: "$0.26/sh × 145", amt: "+$37.70", dir: "up", time: "9:15 AM" },
+  { icn: "𓅮", cls: "agent", title: "Pre-market scan — 2 flags raised", sub: "earnings-watch · run done in 4m 10s · 31.7k tok", time: "9:02 AM" },
+  { icn: "📈", cls: "agent", title: "ARM +2.3% pre-market vs entry plan", sub: "arm-watch heartbeat · proposal drafted", time: "8:48 AM" },
+];
+function renderActivity() {
+  const host = $("#activity");
+  host.innerHTML = "";
+  activity.forEach(a => {
+    host.appendChild(el("div", "actrow", `
+      <div class="aicn ${a.cls}">${a.icn}</div>
+      <div class="ameta2"><div class="atitle">${a.title}</div><div class="asub">${a.sub}</div></div>
+      <div class="aright">${a.amt ? `<div class="aamt ${a.dir}">${a.amt}</div>` : ""}<div class="atime">${a.time}</div></div>`));
+  });
+  $("#chip-trades").textContent = tradesToday;
+  const r = $("#chip-realized");
+  r.textContent = (realizedToday >= 0 ? "+" : "-") + "$" + Math.abs(realizedToday).toLocaleString(undefined, { minimumFractionDigits: 2 });
+  r.className = "v2 " + (realizedToday > 0 ? "up" : realizedToday < 0 ? "dn" : "");
+  if (realizedToday === 0) r.textContent = "$0.00";
+}
+renderActivity();
+
+/* position mutations once an approved order fills */
+const FILL_FX = {
+  ARM: () => {
+    const i = POSITIONS.findIndex(p => p.t === "ARM");
+    POSITIONS[i] = { t: "ARM", q: "150 sh", mv: "$22,248", pl: "new today · $148.32 avg", up: true, pts: [24,22,18,20,14,12,15,8,6], stroke: "#30d158" };
+  },
+  NVDA: () => {
+    const p = POSITIONS.find(p => p.t === "NVDA");
+    p.q = "80 sh"; p.mv = "$54,634"; p.pl = "+$5,641 · trimmed 40 sh";
+    realizedToday += 2820.80;
+  },
+  TLT: () => {
+    const p = POSITIONS.find(p => p.t === "TLT");
+    p.q = "300 sh"; p.mv = "$27,432"; p.pl = "-$532 · added 100 sh";
+  },
+  COIN: () => {
+    POSITIONS.push({ t: "COIN", q: "30 sh", mv: "$7,307", pl: "new today · $243.55 avg", up: true, pts: [26,22,24,18,14,16,10,8,5], stroke: "#30d158" });
+  },
+};
 
 /* ================= flock ================= */
 let autos = [
