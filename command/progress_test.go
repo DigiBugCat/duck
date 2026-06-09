@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestProgressTTYWritesCarriageReturns verifies the reporter redraws in place
@@ -70,5 +71,20 @@ func TestProgressStartIdempotent(t *testing.T) {
 	}
 	if n := strings.Count(out, "✓ synced"); n != 1 {
 		t.Fatalf("✓ synced count = %d, want exactly 1", n)
+	}
+}
+
+// TestProgressSelfAnimatesWithoutUpdate proves the spinner advances on its own
+// ticker with NO Update calls — so a long blocking step (the reconcile rsync
+// scan) no longer reads as frozen. Stop joins the animator, so the post-Stop
+// buffer read is race-free.
+func TestProgressSelfAnimatesWithoutUpdate(t *testing.T) {
+	var buf bytes.Buffer
+	p := &ttyProgress{w: &buf, isTTY: true, interval: time.Millisecond}
+	p.Start("syncing", "~/dev/foo")
+	time.Sleep(25 * time.Millisecond) // no Update — only the ticker redraws
+	p.Stop(true)
+	if n := strings.Count(buf.String(), "syncing ~/dev/foo"); n < 2 {
+		t.Fatalf("spinner did not self-animate: %d redraws, want >=2", n)
 	}
 }
