@@ -18,17 +18,25 @@
   · OPTION sub-rows (grouped) ............ BROKER: positions where instrument.assetType == "OPTION" —
                                             OCC symbol, putCall, underlyingSymbol, strikePrice, expirationDate,
                                             shortQuantity / longQuantity, averagePrice, marketValue (negative for short), multiplier 100
-  · Strategy labels (covered call / CSP) . derived client-side: short CALL + ≥100 underlying shares → covered call;
-                                            short PUT + cash ≥ strike×100×qty → cash-secured put; long CALL alone → long call
+  · Derived annotations (quiet, gray) .... derived client-side from leg-level facts ONLY — relationships, never strategy names:
+                                            short CALL + ≥100 sh → "covers 100 of your 120 sh"; short PUT + cash ≥ strike×100×qty
+                                            → "secured by $17,600 cash". Leg detail may say "reads as a covered call" under a
+                                            small DERIVED tag (app inference, attributed); rows show raw broker legs only.
   · Greeks grid (Δ Γ θ IV), DTE .......... OPTIONS: options_chain per-contract greeks + IV via Polygon / ThetaData
   · NVDA $750C attention state ........... EVENTS: earnings_calendar (NVDA Thu Jun 11, after close) + IV percentile vs 3-mo avg
   · Leg detail mark-price chart .......... OPTIONS: contract price history (ThetaData EOD marks + Polygon intraday)
   · Roll suggestion chip / proposal ...... AGENTS: earnings-watch run events → flock hub trade proposals → approvals-gate
-  · Quiet feed cards ..................... AGENTS: run events (earnings-watch, arm-watch, approvals-gate, duck hub);
-                                            NEWS & FILINGS: market_news; MARKET CONTEXT: index futures, treasury_rates;
-                                            EVENTS: economic_calendar + earnings_calendar
-  · Fill receipt card .................... BROKER (SOON): transactions feed / order status (fills incl. option orders)
-  · Milestone card ....................... BROKER: account liquidation value intraday high-water mark
+  · Feed timeline posts .................. AGENTS: run events (earnings-watch, arm-watch, approvals-gate, duck hub) rendered
+                                            as posts; NEWS & FILINGS: market_news + insider_activity + senate_trading;
+                                            MARKET CONTEXT: index futures, treasury_rates; EVENTS: economic_calendar +
+                                            earnings_calendar + dividends_calendar; likes are local; cashtags → positions
+  · Fill post (BOT 25 AAPL) .............. BROKER (SOON): transactions feed / order status (fills incl. option orders)
+  · Milestone post ....................... BROKER: account liquidation value intraday high-water mark
+  · Lots / acquisition history ........... BROKER: transactions endpoint (60-day window) + app-side fill ledger recorded by
+                                            the approvals gate (older lots beyond the broker window)
+  · Underlying price at fill ............. MARKET DATA: price_history lookup at the transaction timestamp
+  · "Since you've held" timeline ......... market_news / earnings_calendar / dividends_calendar / insider_activity /
+                                            senate_trading filtered by date ≥ first lot, + your own fills + agent actions
   · Trades queue + slide-to-approve ...... AGENTS: trade proposals; BROKER (SOON): preview/place orders via human approval gate
   · Decided history ...................... AGENTS: approvals-gate decision log
 
@@ -43,6 +51,12 @@
     TOTAL ................ 284,512.40   day +3,214.88 (+1.14%)   ✓
     Option leg P/L: NVDA 750C sold 14.20 → 12.40 = +180 ; AAPL 220C 6.85 → 8.10 = +250 ;
     TLT 88P sold 1.32 → 0.98 = +68. Today is Tue Jun 9 2026 → 750C 10 DTE, 220C 101 DTE, 88P 38 DTE.
+    LOT LEDGER (sums to the penny; avgs recomputed honestly from lots):
+    NVDA 40@520.00 Nov 21 '25 + 50@610.00 Feb 9 '26 + 30@739.50 Apr 28 '26 = 73,485.00 /120 → avg 612.38
+    AAPL 120@177.50 Sep 18 '25 + 25@205.88 Jun 9 '26 (today, gate fill) = 26,447.00 /145 → avg 182.39
+    MSFT 80@360.20 Aug 4 '25 · BRK.B 160@415.10 Jul 10 '25 · TLT 200@94.10 Jan 15 '26
+    Option fills w/ underlying-at-fill: NVDA −1 750C Jun 2 '26 @14.20 (NVDA 668.40) ·
+    AAPL +2 220C May 12 '26 @6.85 (AAPL 198.20) · TLT −2 88P Jun 1 '26 @1.32 (TLT 91.05)
 -->
 <style>
   :root {
@@ -162,8 +176,6 @@
   .pos .id { flex: 1; min-width: 0; }
   .pos .tickline { display: flex; align-items: center; gap: 8px; }
   .pos .tick { font-size: 15px; font-weight: 700; letter-spacing: -.2px; }
-  .strat { font-size: 9px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--amber); background: var(--amber-soft); padding: 2.5px 7px; border-radius: 5px; }
-  .strat.lc { color: var(--up); background: rgba(43,220,150,.1); }
   .pos .sh { font-size: 11.5px; color: var(--faint); margin-top: 2px; font-weight: 500; font-variant-numeric: tabular-nums; }
   .pos .spark { flex: none; width: 64px; }
   .pos .spark svg { width: 64px; height: 24px; display: block; }
@@ -201,32 +213,45 @@
   .recon .ri b { color: var(--text); font-weight: 650; }
   .recon .ri.tot { border-top: 1px solid var(--border); padding-top: 8px; color: var(--text); font-weight: 650; }
 
-  /* ============ quiet feed ============ */
-  .feedscroll { padding-top: 4px; }
-  .qcard {
-    margin: 0 16px 12px; padding: 15px 17px 13px;
-    border: 1px solid var(--border); border-radius: 20px;
-    background: linear-gradient(180deg, #0c100f 0%, #090c0b 100%);
-    position: relative; overflow: hidden; cursor: pointer;
-    opacity: 0; transform: translateY(18px) scale(.985);
-    transition: background .15s;
+  /* ============ feed — timeline ============ */
+  .feedscroll { padding-top: 2px; }
+  .newpill { display: flex; justify-content: center; padding: 8px 0 6px; }
+  .newpill button {
+    border: 1px solid var(--hairline); background: rgba(17,22,20,.94);
+    color: var(--up); font-family: inherit; font-size: 12px; font-weight: 700;
+    padding: 8px 17px; border-radius: 999px; cursor: pointer; letter-spacing: .3px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.45); transition: transform .15s;
   }
-  .qcard.in { opacity: 1; transform: none; transition: opacity .4s ease, transform .5s cubic-bezier(.22,1.15,.36,1); }
-  .qcard:active { background: #0e1211; }
-  .qcard.needs { border-color: rgba(232,176,74,.35); }
-  .qhead { display: flex; align-items: baseline; gap: 8px; margin-bottom: 9px; }
-  .qhead .adot { width: 6px; height: 6px; border-radius: 50%; background: var(--ac, var(--up)); flex: none; align-self: center; }
-  .qhead .aname { font-size: 11px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
-  .qhead .atag { font-size: 9px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: var(--ac, var(--up)); border: 1px solid var(--border); padding: 2px 6px; border-radius: 5px; }
-  .qhead .atime { margin-left: auto; font-size: 10.5px; color: var(--faint); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .qbody { font-size: 13.5px; line-height: 1.55; color: #c4ccc8; font-weight: 480; }
-  .qbody b { color: var(--text); font-weight: 680; }
-  .qspark { display: block; width: 100%; height: 46px; margin: 9px 0 1px; }
-  .qrows { margin-top: 9px; border-top: 1px solid var(--border); }
-  .qrow { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-  .qrow:last-child { border-bottom: none; padding-bottom: 1px; }
-  .qrow .k { color: var(--muted); font-weight: 550; }
-  .qrow .v { font-weight: 680; }
+  .newpill button:active { transform: scale(.94); }
+  .newpill.gone { display: none; }
+  .tweet { display: flex; gap: 11px; padding: 13px 16px 7px; border-bottom: 1px solid var(--border); }
+  .tweet.tt { border-bottom: none; padding-bottom: 2px; }
+  .tweet.justin { animation: tweetin .5s cubic-bezier(.22,1.1,.36,1); }
+  @keyframes tweetin { from { opacity: 0; transform: translateY(-12px); } }
+  .avcol { flex: none; display: flex; flex-direction: column; align-items: center; }
+  .av { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .tline { flex: 1; width: 2px; border-radius: 1px; background: var(--hairline); margin-top: 4px; }
+  .tmain { flex: 1; min-width: 0; }
+  .thead { display: flex; align-items: baseline; gap: 6px; font-size: 13.5px; white-space: nowrap; overflow: hidden; }
+  .thead b { font-weight: 750; letter-spacing: -.1px; }
+  .thead .hdl { color: var(--faint); font-weight: 500; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .ttext { margin-top: 2px; font-size: 14px; line-height: 1.5; color: #ccd4d0; font-weight: 480; }
+  .ttext b { color: var(--text); font-weight: 680; }
+  .ctag { color: var(--blue); font-weight: 650; cursor: pointer; }
+  .ctag:active { opacity: .55; }
+  .tgo { display: inline-block; margin-top: 8px; background: none; border: 1px solid var(--hairline); border-radius: 999px; color: var(--text); font-family: inherit; font-size: 11.5px; font-weight: 650; padding: 5px 12px; cursor: pointer; transition: transform .14s; }
+  .tgo:active { transform: scale(.95); }
+  .tmedia { margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; max-height: 70px; }
+  .tmedia svg { display: block; width: 100%; height: 54px; }
+  .trow { display: flex; justify-content: space-between; gap: 10px; padding: 3.5px 11px; font-size: 11.5px; font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--border); }
+  .trow:last-child { border-bottom: none; }
+  .trow .k { color: var(--muted); font-weight: 550; white-space: nowrap; }
+  .trow .v { font-weight: 650; text-align: right; }
+  .tacts { display: flex; gap: 42px; padding: 6px 0 2px; }
+  .tact { display: flex; align-items: center; gap: 5px; background: none; border: none; color: var(--faint); font-family: inherit; font-size: 11px; font-weight: 650; cursor: pointer; padding: 3px 0; font-variant-numeric: tabular-nums; transition: color .15s; }
+  .tact svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .tact.like.on { color: var(--dn); }
+  .tact.like.on svg { fill: var(--dn); }
   .qchip {
     display: inline-flex; align-items: center; gap: 6px; margin-top: 11px;
     padding: 8px 14px; border-radius: 999px; border: 1px solid var(--hairline);
@@ -235,26 +260,31 @@
   }
   .qchip:active { transform: scale(.95); }
   .qchip.warm { color: var(--amber); border-color: rgba(232,176,74,.4); }
-  .rcpt { margin-top: 3px; border: 1px dashed rgba(255,255,255,.16); border-radius: 13px; padding: 12px 13px 9px; position: relative; }
-  .rcptbig { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14.5px; font-weight: 750; letter-spacing: .2px; margin-bottom: 7px; }
-  .rcptline { display: flex; justify-content: space-between; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--muted); padding: 2.5px 0; }
-  .rcptline .rv { color: var(--text); font-weight: 650; }
-  .seal {
-    position: absolute; right: 9px; top: 7px; font-size: 11px; font-weight: 900; letter-spacing: 2px;
-    color: var(--up); border: 2px solid var(--up); border-radius: 7px; padding: 4px 8px;
-    transform: rotate(-10deg) scale(0); opacity: 0; text-transform: uppercase;
-  }
-  .qcard.stamped .seal { animation: stamp .5s cubic-bezier(.2,1.6,.35,1) .3s forwards; }
-  @keyframes stamp {
-    0% { transform: rotate(-24deg) scale(2.2); opacity: 0; }
-    60% { transform: rotate(-10deg) scale(.92); opacity: 1; }
-    100% { transform: rotate(-10deg) scale(1); opacity: 1; }
-  }
-  .milenum { font-size: 38px; font-weight: 720; letter-spacing: -1.3px; font-variant-numeric: tabular-nums; color: var(--up); margin: 8px 0 3px; text-align: center; }
-  .milecap { font-size: 12.5px; color: var(--muted); font-weight: 550; text-align: center; line-height: 1.5; margin-bottom: 4px; }
-  .mileglow { position: absolute; inset: -40%; background: radial-gradient(closest-side, rgba(43,220,150,.1), transparent 70%); opacity: 0; pointer-events: none; }
-  .qcard.celebrated .mileglow { animation: glowin 1.6s ease forwards; }
-  @keyframes glowin { 0% { opacity: 0; transform: scale(.6); } 40% { opacity: 1; } 100% { opacity: .6; transform: scale(1); } }
+
+  /* ============ lots + since-held timeline ============ */
+  .h3row { display: flex; justify-content: space-between; align-items: baseline; }
+  .h3row .hnote { font-size: 11px; font-weight: 600; letter-spacing: .3px; text-transform: none; color: var(--faint); }
+  .lotcard { border: 1px solid var(--border); border-radius: 16px; padding: 2px 15px; }
+  .lot { display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  .lot .ld { color: var(--faint); font-weight: 600; flex: none; width: 84px; }
+  .lot .lq { flex: 1; min-width: 0; font-weight: 650; }
+  .lot .lq .lu { display: block; font-size: 11px; color: var(--faint); font-weight: 550; margin-top: 2px; }
+  .lot .lr { flex: none; font-weight: 680; }
+  .lotfoot { padding: 9px 0 10px; font-size: 11.5px; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .derivedtag { display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); border: 1px solid var(--hairline); border-radius: 4px; padding: 1.5px 5px; margin-right: 7px; vertical-align: 1px; }
+  .tlsum { margin-bottom: 13px; font-size: 12.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .tlsum .vs { color: var(--faint); font-weight: 550; }
+  .tlev { display: flex; gap: 11px; }
+  .tlrail { flex: none; width: 24px; display: flex; flex-direction: column; align-items: center; }
+  .tlic { flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); background: var(--surface); }
+  .tlev.you .tlic { color: var(--up); border-color: rgba(43,220,150,.35); }
+  .tlrail .rail { flex: 1; width: 1px; background: var(--border); margin-top: 3px; }
+  .tlev:last-child .rail { display: none; }
+  .tlbody { flex: 1; min-width: 0; padding: 2px 0 15px; }
+  .tld { font-size: 10.5px; color: var(--faint); font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: .2px; }
+  .tlt2 { font-size: 13px; font-weight: 550; color: #c4ccc8; margin-top: 2px; line-height: 1.45; }
+  .tlt2 b { color: var(--text); font-weight: 680; }
+  .srcline { margin-top: 9px; font-size: 10px; font-weight: 800; color: var(--faint); letter-spacing: 1.2px; text-transform: uppercase; }
   .particles { position: absolute; inset: 0; pointer-events: none; overflow: visible; z-index: 6; }
   .pt-dot {
     position: absolute; left: 50%; top: 46%; width: 5px; height: 5px; border-radius: 50%;
@@ -575,28 +605,29 @@ const S = {
   cash: 48210.00,
   reserved: 17600.00, /* cash securing the short TLT 88 puts: 88 × 100 × 2 */
   eq: {
-    NVDA:  { qty: 120, avg: 612.40, mark: 682.92, day: -0.61, name: 'NVIDIA Corporation' },
-    AAPL:  { qty: 145, avg: 182.40, mark: 204.00, day: +0.84, name: 'Apple Inc.' },
-    MSFT:  { qty: 80,  avg: 396.20, mark: 478.25, day: +0.52, name: 'Microsoft Corporation' },
-    'BRK.B': { qty: 160, avg: 388.45, mark: 430.00, day: +0.31, name: 'Berkshire Hathaway Cl B' },
+    NVDA:  { qty: 120, avg: 612.38, mark: 682.92, day: -0.61, name: 'NVIDIA Corporation' },
+    AAPL:  { qty: 145, avg: 182.39, mark: 204.00, day: +0.84, name: 'Apple Inc.' },
+    MSFT:  { qty: 80,  avg: 360.20, mark: 478.25, day: +0.52, name: 'Microsoft Corporation' },
+    'BRK.B': { qty: 160, avg: 415.10, mark: 430.00, day: +0.31, name: 'Berkshire Hathaway Cl B' },
     TLT:   { qty: 200, avg: 94.10, mark: 87.64, day: +0.40, name: 'iShares 20+ Yr Treasury Bond ETF' }
   },
   order: ['NVDA', 'AAPL', 'MSFT', 'BRK.B', 'TLT'],
   /* OPTION legs — Schwab shape: OCC symbol, putCall, underlyingSymbol, strike, expiry,
-     shortQuantity → qty < 0, multiplier 100. Greeks/IV from options_chain (Polygon/ThetaData). */
+     shortQuantity → qty < 0, multiplier 100. Greeks/IV from options_chain (Polygon/ThetaData).
+     `derived` is a quiet client-side relationship note (facts only — never a strategy name). */
   legs: [
-    { id: 'NVDA750C', under: 'NVDA', putCall: 'CALL', strike: 750, expLab: 'Jun 19', expFull: 'Jun 19, 2026',
-      qty: -1, open: 14.20, mark: 12.40, dayChg: +0.55, dte: 10, openSpan: 5, openLab: 'sold Jun 4',
-      occ: 'NVDA  260619C00750000', strat: 'covered call',
+    { id: 'NVDA750C', under: 'NVDA', putCall: 'CALL', strike: 750, expLab: 'Jun 19', exp2: '06/19', expFull: 'Jun 19, 2026',
+      qty: -1, open: 14.20, mark: 12.40, dayChg: +0.55, dte: 10, openSpan: 7, openLab: 'sold Jun 2',
+      occ: 'NVDA  260619C00750000', derived: 'covers 100 of your 120 sh',
       greeks: { d: '0.38', g: '0.0042', t: '−0.42', iv: '48%' }, ivWarn: true,
       attn: 'earnings Thu · assignment risk > $750' },
-    { id: 'AAPL220C', under: 'AAPL', putCall: 'CALL', strike: 220, expLab: 'Sep 18', expFull: 'Sep 18, 2026',
-      qty: +2, open: 6.85, mark: 8.10, dayChg: +0.12, dte: 101, openSpan: 56, openLab: 'opened Apr 14',
-      occ: 'AAPL  260918C00220000', strat: 'long call',
+    { id: 'AAPL220C', under: 'AAPL', putCall: 'CALL', strike: 220, expLab: 'Sep 18', exp2: '09/18', expFull: 'Sep 18, 2026',
+      qty: +2, open: 6.85, mark: 8.10, dayChg: +0.12, dte: 101, openSpan: 28, openLab: 'opened May 12',
+      occ: 'AAPL  260918C00220000', derived: '',
       greeks: { d: '0.44', g: '0.0061', t: '−0.031', iv: '26%' } },
-    { id: 'TLT88P', under: 'TLT', putCall: 'PUT', strike: 88, expLab: 'Jul 17', expFull: 'Jul 17, 2026',
-      qty: -2, open: 1.32, mark: 0.98, dayChg: -0.04, dte: 38, openSpan: 22, openLab: 'sold May 18',
-      occ: 'TLT   260717P00088000', strat: 'cash-secured put',
+    { id: 'TLT88P', under: 'TLT', putCall: 'PUT', strike: 88, expLab: 'Jul 17', exp2: '07/17', expFull: 'Jul 17, 2026',
+      qty: -2, open: 1.32, mark: 0.98, dayChg: -0.04, dte: 38, openSpan: 8, openLab: 'sold Jun 1',
+      occ: 'TLT   260717P00088000', derived: 'secured by $17,600 cash',
       greeks: { d: '−0.21', g: '0.052', t: '−0.026', iv: '14%' } }
   ]
 };
@@ -605,7 +636,7 @@ function legPL(l){ return (l.mark - l.open) * 100 * l.qty; }       /* short: dec
 function legDayPL(l){ return l.dayChg * 100 * l.qty; }
 function legsFor(sym){ return S.legs.filter(l => l.under === sym); }
 function legById(id){ return S.legs.find(l => l.id === id); }
-function legTitle(l){ return l.under + ' $' + l.strike + (l.putCall === 'CALL' ? 'C' : 'P') + ' · ' + l.expLab; }
+function legTitle(l){ return l.under + ' ' + l.exp2 + ' $' + l.strike + (l.putCall === 'CALL' ? 'C' : 'P'); } /* raw broker leg, no strategy name */
 function sharesMV(){ let t = 0; for (const k in S.eq) t += S.eq[k].qty * S.eq[k].mark; return t; }
 function longOptMV(){ return S.legs.filter(l => l.qty > 0).reduce((a, l) => a + legMV(l), 0); }
 function shortOptMV(){ return S.legs.filter(l => l.qty < 0).reduce((a, l) => a + legMV(l), 0); }
@@ -775,10 +806,11 @@ function legRowHTML(l){
   const mv = legMV(l), pl = legPL(l), dp = legDayPL(l);
   const qtyStr = (l.qty > 0 ? '+' : '−') + Math.abs(l.qty);
   const attn = l.attn ? ' <span class="attn">⚠ ' + l.attn + '</span>' : '';
+  const derived = l.derived ? ' · ' + l.derived : '';
   return '<div class="leg" data-leg="' + l.id + '">' +
     '<div class="lid"><div class="lname num"><span class="lqty">' + qtyStr + '</span>' + legTitle(l) +
     '<span class="dte' + (l.ivWarn ? ' warn' : '') + '">' + l.dte + 'd</span></div>' +
-    '<div class="lsub num">' + l.strat + ' · ' + (l.qty < 0 ? 'sold' : 'paid') + ' $' + l.open.toFixed(2) + ' · mark $' + l.mark.toFixed(2) + attn + '</div></div>' +
+    '<div class="lsub num">' + (l.qty < 0 ? 'sold' : 'paid') + ' $' + l.open.toFixed(2) + ' · mark $' + l.mark.toFixed(2) + derived + attn + '</div></div>' +
     '<div class="lrt"><div class="lmv num">' + fmtMoney(mv) + '</div>' +
     '<div class="lpl num"><span class="' + (pl >= 0 ? 'u' : 'd') + '">' + fmtSigned(pl, 0) + '</span> <span class="day">· ' + fmtSigned(dp, 0) + ' today</span></div></div></div>';
 }
@@ -788,9 +820,8 @@ function renderPositions(){
   S.order.forEach(sym => {
     const p = S.eq[sym];
     const myLegs = legsFor(sym);
-    const strat = myLegs.length ? myLegs.map(l => '<span class="strat' + (l.strat === 'long call' ? ' lc' : '') + '">' + l.strat + '</span>').filter((v, i, a) => a.indexOf(v) === i).join('') : '';
     html += '<div class="pos" data-sym="' + sym + '">' +
-      '<div class="id"><div class="tickline"><span class="tick">' + sym + '</span>' + strat + '</div>' +
+      '<div class="id"><div class="tickline"><span class="tick">' + sym + '</span></div>' +
       '<div class="sh">' + p.qty + ' shares · $' + p.avg.toFixed(2) + ' avg</div></div>' +
       '<div class="spark">' + sparkSVG(sym, p) + '</div>' +
       '<div class="rt"><div class="mv num">' + fmtMoney(p.qty * p.mark) + '</div>' +
@@ -831,6 +862,108 @@ const EQ_META = {
     stats: [['Open','$87.30'],['Volume','28.4M'],['High','$87.71'],['30d SEC yield','4.31%'],['Low','$87.18'],['Expense','0.15%']],
     note: '<b>arm-watch:</b> you’re paid three ways here — the 4.3% yield, the −2 $88P collecting premium below the market, and any duration rally. CPI Wednesday is the catalyst.<span class="src">treasury_rates · options_chain</span>' }
 };
+
+/* ================= PROVENANCE — lots + since-held timelines =================
+   Lots ← BROKER transactions (60-day window) + approvals-gate fill ledger (older).
+   Underlying-at-fill ← price_history lookup at the transaction timestamp.
+   Events ← market_news / earnings_calendar / dividends_calendar / insider_activity /
+   senate_trading filtered date ≥ first lot, plus your own fills + agent actions. */
+const LOTS = {
+  NVDA: { head: 'Acquired 3 times', foot: '3 lots = 120 sh · cost $73,485.00 · avg $612.38', rows: [
+    { d: 'Apr 28 ’26', q: '+30 sh @ $739.50', px: 739.50 },
+    { d: 'Feb 9 ’26',  q: '+50 sh @ $610.00', px: 610.00 },
+    { d: 'Nov 21 ’25', q: '+40 sh @ $520.00', px: 520.00 } ] },
+  AAPL: { head: 'Acquired 2 times', foot: '2 lots = 145 sh · cost $26,447.00 · avg $182.39', rows: [
+    { d: 'Jun 9 ’26',  q: '+25 sh @ $205.88', u: 'today · approved via approvals-gate, filled 11:02 AM', px: 205.88 },
+    { d: 'Sep 18 ’25', q: '+120 sh @ $177.50', px: 177.50 } ] },
+  MSFT: { head: 'Acquired once', foot: '1 lot = 80 sh · cost $28,816.00 · avg $360.20', rows: [
+    { d: 'Aug 4 ’25', q: '+80 sh @ $360.20', px: 360.20 } ] },
+  'BRK.B': { head: 'Acquired once', foot: '1 lot = 160 sh · cost $66,416.00 · avg $415.10', rows: [
+    { d: 'Jul 10 ’25', q: '+160 sh @ $415.10', px: 415.10 } ] },
+  TLT: { head: 'Acquired once', foot: '1 lot = 200 sh · cost $18,820.00 · avg $94.10', rows: [
+    { d: 'Jan 15 ’26', q: '+200 sh @ $94.10', px: 94.10 } ] },
+  NVDA750C: { head: 'Sold to open · 1 fill', foot: 'premium collected $1,420.00 (1 × $14.20 × 100)', rows: [
+    { d: 'Jun 2 ’26', q: 'sold 1 @ $14.20', u: 'NVDA was $668.40 at fill', ret: '<span class="u">+$180</span>' } ] },
+  AAPL220C: { head: 'Bought to open · 1 fill', foot: 'debit paid $1,370.00 (2 × $6.85 × 100)', rows: [
+    { d: 'May 12 ’26', q: 'bought 2 @ $6.85', u: 'AAPL was $198.20 at fill', ret: '<span class="u">+$250</span>' } ] },
+  TLT88P: { head: 'Sold to open · 1 fill', foot: 'premium collected $264.00 (2 × $1.32 × 100)', rows: [
+    { d: 'Jun 1 ’26', q: 'sold 2 @ $1.32', u: 'TLT was $91.05 at fill', ret: '<span class="u">+$68</span>' } ] },
+  NVDA780C: { head: 'Sold to open · 1 fill', foot: 'premium collected $1,850.00 · roll netted +$610', rows: [
+    { d: 'Jun 9 ’26', q: 'sold 1 @ $18.50', u: 'NVDA was $682.92 at fill · rolled from 06/19 $750C', ret: '$0' } ] }
+};
+const HELD = {
+  NVDA: { sum: '<span class="u">+31.3%</span> since first lot <span class="vs">· vs SPY +9.3%</span>', ev: [
+    { d: 'Jun 5 ’26',  ic: '◇', t: 'Three analyst PT raises above <b>$800</b>' },
+    { d: 'Jun 2 ’26',  ic: '✓', you: 1, t: 'You sold the 06/19 <b>$750C</b> @ $14.20 — NVDA $668.40' },
+    { d: 'May 14 ’26', ic: '⚑', t: 'Insider sale flagged — EVP, <b>$2.1M</b> · Form 4, 10b5-1' },
+    { d: 'Apr 28 ’26', ic: '✓', you: 1, t: 'You added <b>30 sh</b> @ $739.50' },
+    { d: 'Mar 12 ’26', ic: '¢', t: 'Dividend $0.01/sh — $0.90 on your 90 sh' },
+    { d: 'Feb 25 ’26', ic: '◆', t: 'Q4 earnings beat — <b>+8.2%</b> next session' },
+    { d: 'Feb 9 ’26',  ic: '✓', you: 1, t: 'You added <b>50 sh</b> @ $610.00' },
+    { d: 'Jan 8 ’26',  ic: '≡', t: 'CES keynote — <b>+4.1%</b>' },
+    { d: 'Nov 21 ’25', ic: '●', you: 1, t: 'First lot — <b>40 sh</b> @ $520.00' } ] },
+  AAPL: { sum: '<span class="u">+14.9%</span> since first lot <span class="vs">· vs SPY +12.1%</span>', ev: [
+    { d: 'Jun 9 ’26',  ic: '✓', you: 1, t: 'You added <b>25 sh</b> @ $205.88 — approved via approvals-gate' },
+    { d: 'Jun 8 ’26',  ic: '≡', t: 'WWDC keynote — on-device AI, <b>+1.1%</b>' },
+    { d: 'May 15 ’26', ic: '¢', t: 'Dividend $0.26/sh — $31.20 on your 120 sh' },
+    { d: 'May 12 ’26', ic: '✓', you: 1, t: 'You bought <b>+2 Sep $220C</b> — AAPL $198.20' },
+    { d: 'May 1 ’26',  ic: '◆', t: 'Q2 earnings beat — Services record, <b>+2.9%</b>' },
+    { d: 'Sep 18 ’25', ic: '●', you: 1, t: 'First lot — <b>120 sh</b> @ $177.50' } ] },
+  MSFT: { sum: '<span class="u">+32.8%</span> since first lot <span class="vs">· vs SPY +13.5%</span>', ev: [
+    { d: 'Jun 8 ’26',  ic: '¢', t: 'Dividend $0.83/sh — <b>$66.40</b> credited' },
+    { d: 'Apr 24 ’26', ic: '◆', t: 'Q3 earnings beat — Azure +31%, <b>+3.4%</b>' },
+    { d: 'Jan 29 ’26', ic: '◆', t: 'Q2 earnings beat — <b>+2.1%</b> next session' },
+    { d: 'Aug 4 ’25',  ic: '●', you: 1, t: 'First lot — <b>80 sh</b> @ $360.20' } ] },
+  'BRK.B': { sum: '<span class="u">+3.6%</span> since first lot <span class="vs">· vs SPY +14.2%</span>', ev: [
+    { d: 'May 2 ’26',  ic: '≡', t: 'Annual meeting — record <b>$382B</b> cash, no buybacks' },
+    { d: 'Feb 28 ’26', ic: '≡', t: 'Annual letter — record operating earnings' },
+    { d: 'Nov 14 ’25', ic: '≡', t: '13F — trimmed banks, added energy' },
+    { d: 'Jul 10 ’25', ic: '●', you: 1, t: 'First lot — <b>160 sh</b> @ $415.10' } ] },
+  TLT: { sum: '<span class="d">−6.9%</span> since first lot <span class="vs">· $310 in distributions softened it</span>', ev: [
+    { d: 'Jun 9 ’26',  ic: '≡', t: '10-yr auction tailed 1.4bp — <b>CPI tomorrow 8:30 AM</b>' },
+    { d: 'Jun 1 ’26',  ic: '✓', you: 1, t: 'You sold <b>−2 07/17 $88P</b> @ $1.32 — TLT $91.05' },
+    { d: 'May 30 ’26', ic: '¢', t: 'Monthly distribution $0.31/sh — <b>$62.00</b> credited' },
+    { d: 'Mar 19 ’26', ic: '≡', t: 'FOMC held — dots hawkish, TLT <b>−1.8%</b>' },
+    { d: 'Jan 15 ’26', ic: '●', you: 1, t: 'First lot — <b>200 sh</b> @ $94.10' } ] },
+  NVDA750C: { sum: 'θ captured <span class="u">+$180</span> of $1,420 <span class="vs">· NVDA +2.2% since open · IV 38% → 48%</span>', ev: [
+    { d: 'Jun 9 ’26', ic: '↻', t: 'earnings-watch proposed a roll → <b>07/17 $780C, +$610 credit</b>' },
+    { d: 'Jun 8 ’26', ic: '◇', t: 'IV 44% → <b>48%</b> — earnings premium building into Thursday' },
+    { d: 'Jun 5 ’26', ic: '≡', t: 'PT raises pushed NVDA <b>+2.1%</b> — strike now 9.8% away' },
+    { d: 'Jun 2 ’26', ic: '●', you: 1, t: 'Sold to open <b>1 @ $14.20</b> — NVDA $668.40, IV 38%' } ] },
+  AAPL220C: { sum: '<span class="u">+18.2%</span> on cost <span class="vs">· AAPL +2.9% since open · IV 24% → 26%</span>', ev: [
+    { d: 'Jun 8 ’26',  ic: '≡', t: 'WWDC keynote — AAPL +1.1%, mark <b>+$0.42</b>' },
+    { d: 'May 28 ’26', ic: '≡', t: 'China sales rebound headline — <b>+1.8%</b>' },
+    { d: 'May 20 ’26', ic: '◇', t: 'IV 24% → <b>26%</b> — calls re-rated' },
+    { d: 'May 12 ’26', ic: '●', you: 1, t: 'Bought to open <b>2 @ $6.85</b> — AAPL $198.20' } ] },
+  TLT88P: { sum: 'θ captured <span class="u">+$68</span> of $264 <span class="vs">· TLT −3.7% since open · IV 16% → 14%</span>', ev: [
+    { d: 'Jun 9 ’26', ic: '≡', t: 'Auction tail — TLT $87.64, puts now <b>$0.36 ITM</b>' },
+    { d: 'Jun 4 ’26', ic: '◇', t: 'IV 16% → <b>14%</b> — decay doing the work' },
+    { d: 'Jun 1 ’26', ic: '●', you: 1, t: 'Sold to open <b>2 @ $1.32</b> — TLT $91.05' } ] },
+  NVDA780C: { sum: 'opened today via roll <span class="vs">· +$610 net credit banked</span>', ev: [
+    { d: 'Jun 9 ’26', ic: '●', you: 1, t: 'Rolled from 06/19 $750C — sold <b>1 @ $18.50</b>, NVDA $682.92' } ] }
+};
+function lotRet(px, mark){
+  const r = (mark / px - 1) * 100;
+  return '<span class="' + (r >= 0 ? 'u' : 'd') + '">' + (r >= 0 ? '+' : '−') + Math.abs(r).toFixed(1) + '%</span>';
+}
+function lotsHTML(key){
+  const L = LOTS[key];
+  if (!L) return '';
+  const mark = S.eq[key] ? S.eq[key].mark : null;
+  return '<div class="dsec"><h3 class="h3row">Your lots<span class="hnote">' + L.head + '</span></h3><div class="lotcard">' +
+    L.rows.map(r => '<div class="lot"><span class="ld">' + r.d + '</span><span class="lq num">' + r.q +
+      (r.u ? '<span class="lu">' + r.u + '</span>' : '') + '</span><span class="lr num">' + (r.ret || lotRet(r.px, mark)) + '</span></div>').join('') +
+    '<div class="lotfoot num">' + L.foot + '</div></div>' +
+    '<div class="srcline">transactions 60d + gate fill ledger · underlying via price_history at fill</div></div>';
+}
+function heldHTML(key){
+  const H = HELD[key];
+  if (!H) return '';
+  return '<div class="dsec"><h3>Since you opened this</h3><div class="tlsum num">' + H.sum + '</div><div class="tl">' +
+    H.ev.map(e => '<div class="tlev' + (e.you ? ' you' : '') + '"><div class="tlrail"><div class="tlic">' + e.ic + '</div><div class="rail"></div></div>' +
+      '<div class="tlbody"><div class="tld">' + e.d + '</div><div class="tlt2">' + e.t + '</div></div></div>').join('') +
+    '</div><div class="srcline" style="margin-top:0">news · earnings · dividends · insider · senate — since first lot</div></div>';
+}
 
 /* ================= DETAIL view (equities + option legs + portfolio) ================= */
 let detailCtx = null; /* { kind:'eq'|'leg'|'port', key } */
@@ -909,10 +1042,12 @@ function openEquity(sym){
     '<div class="pc"><div class="k">Equity</div><div class="v">' + fmtMoney(equity) + '</div></div>' +
     '<div class="pc"><div class="k">Average cost</div><div class="v">' + fmtMoney(p.avg) + '</div></div>' +
     '<div class="pc"><div class="k">Total return</div><div class="v ' + (ret >= 0 ? 'u' : 'd') + '">' + fmtSigned(ret) + ' (' + (ret >= 0 ? '+' : '−') + Math.abs(retPct).toFixed(2) + '%)</div></div></div></div>';
+  body += lotsHTML(sym);
   if (myLegs.length){
     body += '<div class="dsec"><h3>Option legs on ' + sym + '</h3><div style="margin:0 -24px">' +
       myLegs.map(legRowHTML).join('') + '</div></div>';
   }
+  body += heldHTML(sym);
   body += '<div class="dsec"><h3>Stats</h3><div class="stats">' +
     meta.stats.map(s => '<div class="stat"><span class="k">' + s[0] + '</span><span class="v">' + s[1] + '</span></div>').join('') + '</div></div>';
   body += '<div class="dsec" style="padding-bottom:24px"><h3>From the flock</h3><div class="agentnote">' + meta.note + '</div></div>';
@@ -965,6 +1100,8 @@ function openLeg(id){
   body += '<div class="dsec"><h3>The math</h3><div class="mathcard">' +
     rows.map(r2 => '<div class="mrow"><span class="mk">' + r2[0] + '</span><span class="mv2 num">' + r2[1] + '</span></div>').join('') +
     '</div>' + legCoverNote(l) + '</div>';
+  body += lotsHTML(l.id);
+  body += heldHTML(l.id);
   if (l.id === 'NVDA750C'){
     body += '<div class="dsec" style="padding-bottom:24px"><h3>earnings-watch suggests</h3>' +
       '<div class="agentnote">IV should crush into the low 30s after Thursday’s print. Rolling now sells tomorrow’s panic at today’s price.' +
@@ -1009,106 +1146,102 @@ function legMathRows(l){
     ['Today', fmtSigned(legDayPL(l), 0)]
   ];
 }
+/* derived insight — the app's inference from leg-level facts, clearly tagged; rows never assert strategy names */
 function legCoverNote(l){
-  if (l.id === 'NVDA750C') return '<div class="covernote"><b>Covered by 100 of your 120 NVDA shares.</b> Worst case isn’t a loss — it’s selling 100 shares at $764.20 effective and keeping 20 plus the other legs.</div>';
-  if (l.id === 'TLT88P') return '<div class="covernote"><b>Cash-secured.</b> If assigned you buy 200 TLT at $86.68 effective — 1.1% under today’s mark, at a level arm-watch already wanted to add.</div>';
-  if (l.id === 'AAPL220C') return '<div class="covernote"><b>Defined risk.</b> Long calls — the debit is the whole downside. Δ 0.44 means these move like ~88 shares without tying up $18k.</div>';
-  if (l.id === 'NVDA780C') return '<div class="covernote"><b>Covered by 100 of your 120 NVDA shares.</b> Rolled from the $750 strike on Jun 9 for a $610 net credit.</div>';
+  const tag = '<span class="derivedtag">derived</span>';
+  if (l.id === 'NVDA750C') return '<div class="covernote">' + tag + 'Reads as a covered call — you hold 120 NVDA sh and this short call obligates 100 of them. If assigned, 100 sh go at $764.20 effective ($750 strike + $14.20 premium); 20 sh and the other legs stay.</div>';
+  if (l.id === 'TLT88P') return '<div class="covernote">' + tag + 'Reads as a cash-secured put — $17,600.00 reserved cash equals 2 × $88 × 100. If assigned you buy 200 TLT at $86.68 effective ($88 − $1.32).</div>';
+  if (l.id === 'AAPL220C') return '<div class="covernote">' + tag + 'Reads as a standalone long call — no shares obligated, the $1,370.00 debit (2 × $6.85 × 100) is the entire risk.</div>';
+  if (l.id === 'NVDA780C') return '<div class="covernote">' + tag + 'Reads as a covered call — rolled from the $750 strike Jun 9 for a +$610 net credit, still backed by 100 of your 120 NVDA sh.</div>';
   return '';
 }
 
-/* ================= FEED — the quiet feed (AGENTS / NEWS / EVENTS) ================= */
+/* ================= FEED — timeline (AGENTS post like a quiet Twitter) ================= */
 const AC = { ew: 'var(--violet)', aw: 'var(--blue)', gate: 'var(--up)', duck: 'var(--amber)' };
-function qspark(seed, endUpBias, color){
+const WHO = {
+  ew:   { name: 'earnings-watch', h: 'earnings-watch', em: '◬', tint: 'rgba(167,149,245,.18)', col: 'var(--violet)' },
+  aw:   { name: 'arm-watch',      h: 'arm-watch',      em: '⌖', tint: 'rgba(111,168,255,.18)', col: 'var(--blue)' },
+  gate: { name: 'approvals-gate', h: 'approvals-gate', em: '✓', tint: 'rgba(43,220,150,.16)',  col: 'var(--up)' },
+  duck: { name: 'duck',           h: 'duck',           em: '🦆', tint: 'rgba(232,176,74,.16)',  col: 'var(--amber)' }
+};
+function ct(sym){ return '<span class="ctag" data-sym="' + sym + '">$' + sym + '</span>'; }
+function tspark(seed, bias, color){
   const r = rng(seed), n = 34;
   let v = 50; const a = [];
-  for (let i = 0; i < n; i++){ v += (r() - 0.5) * 9 + endUpBias; a.push(v); }
+  for (let i = 0; i < n; i++){ v += (r() - 0.5) * 9 + bias; a.push(v); }
   const mn = Math.min.apply(null, a), mx = Math.max.apply(null, a), sp = mx - mn || 1;
   let pts = '';
-  for (let j = 0; j < n; j++) pts += (j * (320 / (n - 1))).toFixed(1) + ',' + (44 - ((a[j] - mn) / sp) * 38 + 2).toFixed(1) + ' ';
-  return '<svg class="qspark" viewBox="0 0 320 46" preserveAspectRatio="none"><polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity=".8"/></svg>';
+  for (let j = 0; j < n; j++) pts += (j * (320 / (n - 1))).toFixed(1) + ',' + (50 - ((a[j] - mn) / sp) * 42 + 2).toFixed(1) + ' ';
+  return '<div class="tmedia"><svg viewBox="0 0 320 54" preserveAspectRatio="none"><polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity=".8"/></svg></div>';
 }
-const CARDS = [
-  { id: 'fc-roll', who: 'approvals-gate', ac: AC.gate, tag: 'needs you', warm: true, time: '1:02 PM', open: 'trades',
-    body: '<div class="qbody"><b>earnings-watch wants to roll your NVDA covered call</b> before Thursday’s print — up $30 in strike, out 28 days, and it pays <b>you</b> $610 to do it.</div>' +
-      '<div class="qrows">' +
-      '<div class="qrow"><span class="k">Close</span><span class="v num">−1 NVDA 06/19 $750C · ~$12.40</span></div>' +
-      '<div class="qrow"><span class="k">Open</span><span class="v num">−1 NVDA 07/17 $780C · ~$18.50</span></div>' +
-      '<div class="qrow"><span class="k">Net</span><span class="v num u">credit +$6.10 · +$610</span></div></div>' +
-      '<button class="qchip warm" data-open="trades">Review in Trades ›</button>' },
-  { id: 'fc-iv', who: 'earnings-watch', ac: AC.ew, tag: 'insight', time: '12:58 PM', open: 'leg:NVDA750C',
-    body: '<div class="qbody"><b>NVDA IV hit 48%</b> — vs a 3-month average of 33. The market is paying up for Thursday. Your short $750C is the beneficiary: Δ 0.38, and <b class="num">θ −$42/day</b> decays toward you.</div>' +
-      qspark(71, 0.9, 'var(--violet)') +
-      '<button class="qchip" data-open="leg:NVDA750C">View the leg ›</button>' },
-  { id: 'fc-theta', who: 'duck', ac: AC.duck, tag: 'premium', time: '11:58 AM', open: 'port',
-    body: '<div class="qbody"><b>Quiet income check.</b> Your two short legs have captured <b class="num u">+$248</b> of the $1,684 premium collected — and ~$47/day of theta keeps working while you do nothing.</div>' +
-      '<div class="qrows">' +
-      '<div class="qrow"><span class="k">−1 NVDA $750C</span><span class="v num u">+$180 of $1,420</span></div>' +
-      '<div class="qrow"><span class="k">−2 TLT $88P</span><span class="v num u">+$68 of $264</span></div></div>' },
-  { id: 'fc-mile', who: 'duck', ac: AC.duck, tag: 'milestone', time: '11:42 AM', open: 'port',
-    body: '<div class="mileglow"></div><div class="milenum num" id="milenum">$285,012</div>' +
-      '<div class="milecap">New high-water mark, crossed at 11:42 AM.<br>Up <b class="u num">+38.4%</b> all time. Nice and boring. Keep going.</div>' },
-  { id: 'fc-aapl', who: 'arm-watch', ac: AC.aw, tag: 'insight', time: '9:48 AM', open: 'leg:AAPL220C',
-    body: '<div class="qbody"><b>AAPL +0.84%</b>, holding above the 50-day since April. Your +2 Sep $220Cs are <b class="num u">+$250 (+18.2%)</b> on cost — leverage doing its job with the debit as the only risk.</div>' +
-      qspark(52, 0.8, 'var(--blue)') +
-      '<button class="qchip" data-open="leg:AAPL220C">View the legs ›</button>' },
-  { id: 'fc-brief', who: 'duck', ac: AC.duck, tag: 'morning brief', time: '7:02 AM', open: 'port',
-    body: '<div class="qbody"><b>Good morning.</b> Quiet open expected, loud week ahead.</div>' +
-      '<div class="qrows">' +
-      '<div class="qrow"><span class="k">S&amp;P futures</span><span class="v num u">+0.4%</span></div>' +
-      '<div class="qrow"><span class="k">10Y Treasury</span><span class="v num">4.18%</span></div>' +
-      '<div class="qrow"><span class="k">CPI (May)</span><span class="v num">Wed 8:30 AM — moves your TLT puts</span></div>' +
-      '<div class="qrow"><span class="k">NVDA reports</span><span class="v num">Thu after close — your $750C expires 8 days later</span></div></div>' },
-  { id: 'fc-fill', who: 'approvals-gate', ac: AC.gate, tag: 'via schwab', time: 'Thu Jun 4', open: 'leg:NVDA750C',
-    body: '<div class="rcpt"><div class="seal">Filled</div>' +
-      '<div class="rcptbig">SLD 1 NVDA 06/19/26 750 C @ 14.20</div>' +
-      '<div class="rcptline"><span>Order</span><span class="rv">sell to open · limit 14.10 · day</span></div>' +
-      '<div class="rcptline"><span>Filled</span><span class="rv">10:31:08 AM ET</span></div>' +
-      '<div class="rcptline"><span>Premium</span><span class="rv">+$1,420.00</span></div>' +
-      '<div class="rcptline"><span>Covered by</span><span class="rv">100 / 120 NVDA shares</span></div>' +
-      '<div class="rcptline"><span>Approved by</span><span class="rv">you · 10:28 AM</span></div></div>' +
-      '<div class="qbody" style="margin-top:9px">You approved earnings-watch’s covered call. Filled 10¢ over your limit. 🤝</div>' }
+function trows(rows){
+  return '<div class="tmedia">' + rows.map(r => '<div class="trow"><span class="k">' + r[0] + '</span><span class="v num">' + r[1] + '</span></div>').join('') + '</div>';
+}
+/* th: 1 = thread top (connector to next post), 2 = thread reply */
+const FEED_POSTS = [
+  { w: 'ew', t: '12m', x: '<b>' + ct('NVDA') + ' IV just printed 48%</b> — the 3-month average is 33. Earnings Thursday after close; the market is paying up for the move. Your −1 06/19 $750C is the beneficiary: θ −$42/day decays toward you.',
+    m: tspark(71, 0.9, 'var(--violet)') },
+  { w: 'gate', t: '1h', x: 'Filled via Schwab: <b>BOT 25 ' + ct('AAPL') + ' @ $205.88</b>. You approved at 10:58 AM. Position is now 145 sh, avg $182.39.',
+    m: trows([['Order', 'buy 25 · limit 206.00 · day'], ['Filled', '11:02:14 AM ET'], ['Cost', '$5,147.00']]) },
+  { w: 'duck', t: '2h', x: 'New high-water mark: <b>$285,012</b> at 11:42 AM. +38.4% all time. Nice and boring — keep going.' },
+  { w: 'aw', t: '3h', th: 1, x: 'Finding: the 10-year auction tailed 1.4bp ahead of tomorrow’s CPI. ' + ct('TLT') + ' sits 0.9% above the May low with RSI-14 at 38. Duration is <b>6.2% of the book vs an 8% target</b>.' },
+  { w: 'aw', t: '3h', th: 2, x: 'Sent a proposal: <b>BUY 20 ' + ct('TLT') + ' · limit $87.60 · day</b>. With your −2 $88P that builds duration at two prices below the market. Routed to @approvals-gate — waiting on you.',
+    go: 'trades', golab: 'Review in Trades ›' },
+  { w: 'duck', t: '7:02 AM', x: '<b>Good morning.</b> Quiet open expected, loud week ahead — CPI Wednesday, ' + ct('NVDA') + ' Thursday.',
+    m: trows([['S&P fut · 10Y', '+0.4% · 4.18%'], ['CPI (May)', 'Wed 8:30 AM ET'], ['NVDA reports', 'Thu after close']]) },
+  { w: 'duck', t: 'Jun 8', x: 'Dividend credited: <b>' + ct('MSFT') + ' $0.83/sh × 80 sh = $66.40</b> cash. DRIP stays off per your standing rule.' },
+  { w: 'ew', t: 'May 14', x: 'Form 4 flag: an ' + ct('NVDA') + ' EVP sold <b>$2.1M</b> (3,050 sh) under a 10b5-1 plan. Third insider sale this quarter — noted, not alarmed.' }
 ];
+const NEW_POSTS = [
+  { w: 'ew', t: 'now', x: '<b>$750C check:</b> mark $12.40 vs $14.20 sold — +$180 captured, 10 DTE. ' + ct('NVDA') + ' $682.92. Holding through the print unless you take the roll.',
+    go: 'leg:NVDA750C', golab: 'View the leg ›' },
+  { w: 'duck', t: '1m', x: 'Reminder: <b>CPI (May) tomorrow 8:30 AM ET</b>, consensus +0.2% m/m. Your 200 ' + ct('TLT') + ' sh and the short $88Ps care about this one.' },
+  { w: 'duck', t: '3m', x: 'Senate disclosure: a senator reported a <b>$15k–$50k buy of ' + ct('NVDA') + '</b>, trade date May 28, disclosed this morning. Logged to the watch file.' },
+  { w: 'aw', t: '5m', x: ct('AAPL') + ' holding the 50-day since the April reclaim — your +2 Sep $220Cs are <b>+18.2% on cost</b>.' }
+];
+const IC_REPLY = '<svg viewBox="0 0 24 24"><path d="M21 11.5c0 4.4-4 8-9 8a10 10 0 0 1-3.4-.6L3 20.5l1.7-4A7.4 7.4 0 0 1 3 11.5c0-4.4 4-8 9-8s9 3.6 9 8z"/></svg>';
+const IC_HEART = '<svg viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 1 0-7.8 7.8l8.8 8.8 8.8-8.8a5.5 5.5 0 0 0 0-7.8z"/></svg>';
+function postHTML(p, justin){
+  const w = WHO[p.w];
+  return '<article class="tweet' + (p.th === 1 ? ' tt' : '') + (justin ? ' justin' : '') + '">' +
+    '<div class="avcol"><div class="av" style="background:' + w.tint + ';color:' + w.col + '">' + w.em + '</div>' + (p.th === 1 ? '<div class="tline"></div>' : '') + '</div>' +
+    '<div class="tmain"><div class="thead"><b>' + (p.th === 2 ? '↳ ' : '') + w.name + '</b><span class="hdl">@' + w.h + ' · ' + p.t + '</span></div>' +
+    '<div class="ttext">' + p.x + '</div>' + (p.m || '') +
+    (p.go ? '<button class="tgo" data-go="' + p.go + '">' + p.golab + '</button>' : '') +
+    '<div class="tacts"><button class="tact rep" data-h="' + w.h + '">' + IC_REPLY + '</button>' +
+    '<button class="tact like">' + IC_HEART + '<span class="n"></span></button></div></div></article>';
+}
 const feedEl = $('feed');
-CARDS.forEach(c => {
-  const el = document.createElement('article');
-  el.className = 'qcard' + (c.warm ? ' needs' : '');
-  el.id = c.id;
-  el.dataset.open = c.open;
-  el.style.setProperty('--ac', c.ac);
-  el.innerHTML = '<div class="qhead"><span class="adot"></span><span class="aname">' + c.who + '</span>' +
-    '<span class="atag">' + c.tag + '</span><span class="atime">' + c.time + '</span></div>' + c.body;
-  feedEl.appendChild(el);
-});
-/* animate-in + milestone celebration on first sight */
-const seenCards = new WeakSet();
-const io = new IntersectionObserver(entries => {
-  entries.forEach(en => {
-    if (!en.isIntersecting) return;
-    const el = en.target;
-    if (seenCards.has(el)) return;
-    seenCards.add(el);
-    el.classList.add('in');
-    if (el.id === 'fc-fill') el.classList.add('stamped');
-    if (el.id === 'fc-mile'){
-      el.classList.add('celebrated');
-      countup($('milenum'), 280000, 285012, 1100, v => fmtMoney(v, 0));
-      setTimeout(() => particleBurst(el, 26), 600);
-    }
-  });
-}, { root: feedEl, threshold: 0.3 });
-document.querySelectorAll('.qcard').forEach(el => io.observe(el));
-
-/* card taps → detail / trades */
+function renderFeed(){
+  feedEl.innerHTML = '<div class="newpill" id="newpill"><button id="newbtn">↑ 4 new</button></div>' +
+    FEED_POSTS.map(p => postHTML(p, false)).join('');
+}
+renderFeed();
+/* feed interactions — cashtags navigate, likes work, "4 new" prepends, reply acks */
 feedEl.addEventListener('click', e => {
-  const card = e.target.closest('.qcard');
-  if (!card) return;
-  const chip = e.target.closest('[data-open]');
-  const target = (chip && chip !== card ? chip.dataset.open : card.dataset.open) || 'port';
-  if (target === 'trades'){ setTab('trades'); return; }
-  if (target === 'port'){ openPortfolio(); return; }
-  if (target.indexOf('leg:') === 0){ openLeg(target.slice(4)); return; }
-  openEquity(target);
+  if (e.target.closest('#newbtn')){
+    $('newpill').classList.add('gone');
+    $('newpill').insertAdjacentHTML('afterend', NEW_POSTS.map(p => postHTML(p, true)).join(''));
+    feedEl.scrollTop = 0;
+    return;
+  }
+  const tag = e.target.closest('.ctag');
+  if (tag){ if (S.eq[tag.dataset.sym]) openEquity(tag.dataset.sym); return; }
+  const go = e.target.closest('[data-go]');
+  if (go){
+    const t = go.dataset.go;
+    if (t === 'trades') setTab('trades');
+    else if (t.indexOf('leg:') === 0) openLeg(t.slice(4));
+    return;
+  }
+  const like = e.target.closest('.tact.like');
+  if (like){
+    const on = like.classList.toggle('on');
+    like.querySelector('.n').textContent = on ? '1' : '';
+    return;
+  }
+  const rep = e.target.closest('.tact.rep');
+  if (rep) toast('Reply queued to @' + rep.dataset.h + ' — soon');
 });
 
 /* ================= TRADES — proposals queue + slide-to-approve ================= */
@@ -1127,9 +1260,9 @@ const PROPOSALS = [
     apply: () => {
       const i = S.legs.findIndex(l => l.id === 'NVDA750C');
       if (i >= 0) S.legs.splice(i, 1);
-      S.legs.unshift({ id: 'NVDA780C', under: 'NVDA', putCall: 'CALL', strike: 780, expLab: 'Jul 17', expFull: 'Jul 17, 2026',
+      S.legs.unshift({ id: 'NVDA780C', under: 'NVDA', putCall: 'CALL', strike: 780, expLab: 'Jul 17', exp2: '07/17', expFull: 'Jul 17, 2026',
         qty: -1, open: 18.50, mark: 18.50, dayChg: 0, dte: 38, openSpan: 1, openLab: 'rolled Jun 9',
-        occ: 'NVDA  260717C00780000', strat: 'covered call',
+        occ: 'NVDA  260717C00780000', derived: 'covers 100 of your 120 sh',
         greeks: { d: '0.31', g: '0.0031', t: '−0.35', iv: '41%' } });
       S.cash += 610; /* −$1,240 buyback + $1,850 premium */
     },
@@ -1150,10 +1283,11 @@ const PROPOSALS = [
     hist: { h1: 'BUY 20 TLT @ $87.60 limit', h2: 'arm-watch · duration add' } }
 ];
 const HISTORY = [
-  { ok: true,  h1: 'SLD 1 NVDA 06/19 $750C @ 14.20', h2: 'earnings-watch · covered call · +$1,420 premium', when: 'Jun 4' },
-  { ok: true,  h1: 'SLD 2 TLT 07/17 $88P @ 1.32',    h2: 'arm-watch · cash-secured · $17,600 reserved',    when: 'May 18' },
+  { ok: true,  h1: 'BOT 25 AAPL @ 205.88',           h2: 'arm-watch · add — filled 11:02 AM',              when: 'today' },
   { ok: false, h1: 'SELL 15 NVDA @ $684.50 limit',   h2: 'earnings-watch · trim — you kept the shares',    when: 'Jun 8' },
-  { ok: true,  h1: 'BOT 2 AAPL 09/18 $220C @ 6.85',  h2: 'arm-watch · long call · $1,370 debit',           when: 'Apr 14' }
+  { ok: true,  h1: 'SLD 1 NVDA 06/19 $750C @ 14.20', h2: 'earnings-watch · +$1,420 premium · NVDA 668.40', when: 'Jun 2' },
+  { ok: true,  h1: 'SLD 2 TLT 07/17 $88P @ 1.32',    h2: 'arm-watch · $17,600 reserved · TLT 91.05',       when: 'Jun 1' },
+  { ok: true,  h1: 'BOT 2 AAPL 09/18 $220C @ 6.85',  h2: 'arm-watch · $1,370 debit · AAPL 198.20',         when: 'May 12' }
 ];
 let queue = PROPOSALS.slice();
 let busy = false;
