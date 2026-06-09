@@ -152,6 +152,14 @@ func (c *Client) commandArgv(remoteCmd string) ([]string, error) {
 	return argv, nil
 }
 
+// termGuard is a shell prefix that runs before the remote tmux attach. It keeps
+// the forwarded TERM when the hub's terminfo db knows it, else falls back to
+// xterm-256color so tmux never aborts with "missing or unsuitable terminal".
+// `infocmp <term>` exits non-zero when the entry is absent; its output is
+// discarded. Lives inside the LoginShellWrap'd command so it shares the same
+// login shell as tmux (and thus the Homebrew PATH where infocmp resolves).
+const termGuard = `infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; `
+
 // LoginShellWrap wraps a remote command so the hub runs it under a LOGIN shell,
 // making the user's full PATH available — notably Homebrew's /opt/homebrew/bin,
 // where tmux and mutagen live on a macOS hub. A plain `ssh host cmd` runs cmd in
@@ -197,6 +205,32 @@ func (c *Client) WarmUp() error {
 	return err
 }
 
+// EnsureTerminfo makes the hub recognize the given TERM so the interactive
+// attach keeps the client's full terminal capabilities instead of falling back
+// to xterm-256color (the termGuard safety net in AttachArgv). It pipes the
+// LOCAL terminfo source (infocmp -x) into a remote `tic -x -`, but only when the
+// hub does not already know the entry — so it is idempotent and a no-op on the
+// common case. Best-effort: a missing local entry, absent tic, or any transport
+// error returns the error for the caller to ignore; the attach still works via
+// the fallback. Skips the universally-present defaults (and empty TERM) entirely.
+func (c *Client) EnsureTerminfo(term string) error {
+	switch term {
+	case "", "xterm", "xterm-256color", "screen", "screen-256color", "tmux-256color", "vt100", "ansi", "dumb":
+		return nil
+	}
+	src, err := exec.Command("infocmp", "-x", term).Output()
+	if err != nil {
+		// Local db lacks the entry — nothing to push; the hub fallback covers it.
+		return err
+	}
+	// `tic -x -` reads source from stdin. Guard with a remote infocmp so we only
+	// compile when the entry is genuinely absent. LoginShellWrap puts tic on the
+	// hub's Homebrew PATH (same as tmux).
+	remote := "infocmp " + singleQuote(term) + " >/dev/null 2>&1 || tic -x -"
+	_, err = c.RunInput(LoginShellWrap(remote), bytes.NewReader(src))
+	return err
+}
+
 // AttachArgv builds the argv for an interactive `tmux attach-session` over the
 // SAME multiplexed control path. Pure (no side effects) so it is unit-testable;
 // ExecAttach wraps it with the actual syscall.Exec.
@@ -206,12 +240,17 @@ func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
 		return nil, err
 	}
 	// -t forces PTY allocation so tmux/ssh own a real TTY after the bubbletea
-	// teardown. The remote command is the literal tmux attach.
+	// teardown. The remote command is the literal tmux attach, prefixed with a
+	// TERM guard: ssh -t forwards the client's TERM (e.g. xterm-ghostty under
+	// Ghostty), but the hub's terminfo db may lack that entry, in which case
+	// tmux aborts with "missing or unsuitable terminal" and the connection
+	// drops. infocmp probes the hub's db and we downgrade to xterm-256color
+	// (universally present) only when the forwarded TERM is unknown there.
 	argv := []string{execAttachPath(), "-t"}
 	argv = append(argv, opts...)
 	// Wrap in a login shell so tmux resolves on the hub's Homebrew PATH; the
 	// -t PTY passes through ssh → zsh → tmux. tmuxSession is a tmux-legal slug.
-	argv = append(argv, c.Addr, LoginShellWrap("tmux attach-session -t "+tmuxSession))
+	argv = append(argv, c.Addr, LoginShellWrap(termGuard+"tmux attach-session -t "+tmuxSession))
 	return argv, nil
 }
 

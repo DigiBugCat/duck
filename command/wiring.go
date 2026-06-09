@@ -8,6 +8,7 @@ package command
 import (
 	"context"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -46,6 +47,10 @@ func build() (*wiring, error) {
 	// Best-effort warm-up; failures surface on the first real call with a
 	// clearer message.
 	_ = client.WarmUp()
+	// Best-effort: teach the hub this terminal's terminfo (e.g. xterm-ghostty)
+	// so the interactive attach keeps full capabilities. Idempotent; on failure
+	// AttachArgv's termGuard falls back to xterm-256color.
+	_ = client.EnsureTerminfo(os.Getenv("TERM"))
 
 	model := cfg.CodexModel
 	if model == "" {
