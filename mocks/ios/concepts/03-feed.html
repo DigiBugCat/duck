@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>duck — feed</title>
+<!--
+  CONCEPT 03 — "FEED" · your money's group chat.
+  A private vertical feed where every poster works for you. Warm paper, ink type,
+  market-green accent. Tap a card → full-screen detail w/ scrubbable chart.
+  Double-tap any card to save it (heart pop).
+
+  UI MODULE → DATA SOURCE MAP (audited stack only):
+  · Sticky portfolio header (balance, day P/L) ......... BROKER: account (cash, total value) + positions
+  · Proposal card (trim 15 NVDA, approve/deny) ......... AGENTS: trade proposals + approvals-gate decisions;
+                                                          BROKER: place/preview orders via human approval gate
+  · Agent insight card (earnings-watch, IV spark) ...... AGENTS: run events; OPTIONS: IV history, options_chain;
+                                                          EVENTS: earnings_calendar (NVDA Thu Jun 11)
+  · Agent insight card (arm-watch, SMA50 reclaim) ...... AGENTS: run events; MARKET DATA: technical_indicators
+                                                          (RSI, SMA50), price_history
+  · Fill receipt card (FILLED 150 ARM @ 148.32) ........ BROKER (SOON): transactions feed / order status
+  · Milestone card ($285k high-water mark) ............. BROKER: account total value (intraday)
+  · Sector heatmap card ................................. MARKET CONTEXT: sector_performance
+  · News digest card (3 NVDA headlines) ................ NEWS & FILINGS: market_news (headline, source, time)
+  · Morning brief card (futures, events, earnings) ..... MARKET CONTEXT: index_performance / market_overview;
+                                                          EVENTS: economic_calendar + earnings_calendar; MACRO: treasury_rates
+  · Detail screen charts (PORT/NVDA/ARM/SPY) ........... MARKET DATA: intraday_prices + price_history;
+                                                          BROKER: per-symbol quote (mark, day range, 52wk, volume)
+  · Detail stats grids .................................. BROKER: quote/positions; MARKET DATA: quote (mcap, P/E)
+  · Feed filter tabs (All/Agents/Trades/News) .......... client-side facet over the above sources
+-->
+<style>
+  :root {
+    --bg: #14110c;
+    --paper: #f5f1e8;
+    --card: #fffdf7;
+    --ink: #211d14;
+    --muted: #8b8472;
+    --faint: #b3ac9a;
+    --line: rgba(33,29,20,.09);
+    --up: #168f52;
+    --up-soft: rgba(22,143,82,.1);
+    --down: #d8453c;
+    --down-soft: rgba(216,69,60,.1);
+    --amber: #e8a020;
+    --amber-soft: rgba(232,160,32,.14);
+    --violet: #7a5fd0;
+    --violet-soft: rgba(122,95,208,.1);
+    --blue: #2f6fd0;
+    --blue-soft: rgba(47,111,208,.1);
+    --acc: var(--up);
+    --acc-soft: var(--up-soft);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #241d10 0%, var(--bg) 55%);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    color: var(--ink);
+    display: flex; align-items: center; justify-content: center;
+    padding: 32px 16px;
+    user-select: none; -webkit-user-select: none;
+  }
+  .phone {
+    width: 393px; height: 852px;
+    background: var(--paper);
+    border-radius: 54px; border: 1px solid #2a2620;
+    box-shadow: 0 0 0 11px #16140f, 0 0 0 12.5px #3e3a30, 0 40px 90px rgba(0,0,0,.7);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  @media (max-width: 500px), (max-height: 940px) and (max-width: 940px) {
+    body { padding: 0; }
+    .phone {
+      width: 100vw; height: 100dvh;
+      border-radius: 0; border: none; box-shadow: none;
+    }
+    .island { display: none; }
+    .statusbar { height: calc(env(safe-area-inset-top, 14px) + 14px) !important; }
+    .statusbar span { display: none; }
+    .tabbar { padding-bottom: calc(env(safe-area-inset-bottom, 18px) + 8px) !important; height: auto !important; }
+    .homebar { display: none; }
+  }
+  .island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 122px; height: 36px; background: #000; border-radius: 20px; z-index: 90; }
+  .statusbar { height: 59px; flex: none; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 32px 8px; font-size: 15px; font-weight: 600; z-index: 85; color: var(--ink); }
+  .statusbar .icons { display: flex; gap: 7px; font-size: 13px; }
+  .homebar { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); width: 140px; height: 5px; border-radius: 3px; background: #211d14; opacity: .3; z-index: 60; pointer-events: none; }
+
+  .main { flex: 1; position: relative; min-height: 0; display: flex; flex-direction: column; }
+
+  /* ============ sticky portfolio header ============ */
+  .phead {
+    flex: none; padding: 4px 22px 12px; z-index: 40;
+    background: linear-gradient(var(--paper) 78%, rgba(245,241,232,0));
+    cursor: pointer;
+  }
+  .phead .who { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; transition: opacity .25s, max-height .25s; max-height: 20px; overflow: hidden; }
+  .phead .who .ld { width: 6px; height: 6px; border-radius: 50%; background: var(--up); box-shadow: 0 0 6px var(--up); }
+  .phead .bal { font-size: 38px; font-weight: 800; letter-spacing: -1.2px; font-variant-numeric: tabular-nums; line-height: 1.05; transition: font-size .28s cubic-bezier(.32,.72,.27,1); }
+  .phead .dayline { display: flex; align-items: center; gap: 8px; margin-top: 4px; transition: margin .28s; }
+  .phead .daypill { font-size: 13.5px; font-weight: 750; font-variant-numeric: tabular-nums; color: var(--acc); background: var(--acc-soft); padding: 3px 10px; border-radius: 999px; }
+  .phead .daycap { font-size: 12px; font-weight: 600; color: var(--faint); }
+  .phead.slim { padding-bottom: 8px; box-shadow: 0 1px 0 var(--line); background: rgba(245,241,232,.92); backdrop-filter: blur(14px); }
+  .phead.slim .who { opacity: 0; max-height: 0; margin: 0; }
+  .phead.slim .bal { font-size: 19px; letter-spacing: -.4px; }
+  .phead.slim .dayline { margin-top: 0; position: absolute; right: 22px; top: 6px; }
+  .phead.slim .daycap { display: none; }
+  .phead.slim { position: relative; }
+
+  /* ============ feed ============ */
+  .feed {
+    flex: 1; overflow-y: auto; min-height: 0;
+    padding: 4px 14px 130px;
+    scroll-snap-type: y proximity;
+    scroll-behavior: smooth;
+  }
+  .fcard {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    padding: 16px 16px 12px;
+    margin-bottom: 14px;
+    scroll-snap-align: start;
+    scroll-margin-top: 6px;
+    position: relative; overflow: hidden;
+    box-shadow: 0 2px 10px rgba(33,29,20,.05);
+    opacity: 0; transform: translateY(22px) scale(.98);
+    cursor: pointer;
+  }
+  .fcard.in { opacity: 1; transform: none; transition: opacity .45s ease, transform .55s cubic-bezier(.22,1.2,.36,1); }
+  .fcard.hidden { display: none; }
+  .fcard.flash { animation: flashring 1.2s ease; }
+  @keyframes flashring { 0%,70% { box-shadow: 0 0 0 3px var(--amber), 0 2px 10px rgba(33,29,20,.05); } 100% { box-shadow: 0 0 0 0 rgba(232,160,32,0), 0 2px 10px rgba(33,29,20,.05); } }
+
+  .chead { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
+  .avatar { width: 38px; height: 38px; flex: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+  .avatar.duck { background: var(--amber-soft); }
+  .avatar.ew { background: var(--violet-soft); }
+  .avatar.aw { background: var(--blue-soft); }
+  .avatar.gate { background: var(--up-soft); }
+  .avatar.news { background: var(--down-soft); }
+  .poster { flex: 1; min-width: 0; }
+  .pname { font-size: 14.5px; font-weight: 750; display: flex; align-items: center; gap: 6px; }
+  .ptag { font-size: 9px; font-weight: 800; letter-spacing: .7px; text-transform: uppercase; padding: 2px 6px; border-radius: 5px; background: var(--acc-soft); color: var(--acc); }
+  .ptag.v { background: var(--violet-soft); color: var(--violet); }
+  .ptag.b { background: var(--blue-soft); color: var(--blue); }
+  .ptag.a { background: var(--amber-soft); color: #b07712; }
+  .ptime { font-size: 11.5px; color: var(--faint); font-weight: 600; margin-top: 1px; }
+  .body { font-size: 14.5px; line-height: 1.5; color: var(--ink); }
+  .body b { font-weight: 750; }
+  .body .num { font-variant-numeric: tabular-nums; }
+  .up { color: var(--up); } .down { color: var(--down); }
+
+  .cfoot { display: flex; align-items: center; gap: 16px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .heart { display: flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 700; color: var(--faint); background: none; border: none; font-family: inherit; cursor: pointer; transition: color .2s, transform .15s; }
+  .heart:active { transform: scale(.88); }
+  .heart.liked { color: var(--down); }
+  .heart .hic { font-size: 15px; }
+  .openhint { margin-left: auto; font-size: 11.5px; font-weight: 700; color: var(--faint); }
+  .heartpop {
+    position: absolute; left: 50%; top: 42%; z-index: 5; pointer-events: none;
+    font-size: 64px; transform: translate(-50%,-50%) scale(0);
+    animation: hpop .8s cubic-bezier(.18,1.4,.4,1) forwards;
+    filter: drop-shadow(0 6px 14px rgba(216,69,60,.4));
+  }
+  @keyframes hpop {
+    0% { transform: translate(-50%,-50%) scale(0) rotate(-14deg); opacity: 1; }
+    45% { transform: translate(-50%,-50%) scale(1.25) rotate(4deg); opacity: 1; }
+    70% { transform: translate(-50%,-58%) scale(1); opacity: 1; }
+    100% { transform: translate(-50%,-90%) scale(.9); opacity: 0; }
+  }
+
+  /* sparkline */
+  .spark { display: block; width: 100%; height: 56px; margin: 10px 0 2px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-top: 11px; padding: 8px 13px; border-radius: 999px;
+    background: var(--violet-soft); color: var(--violet);
+    font-size: 12.5px; font-weight: 750; border: none; font-family: inherit; cursor: pointer;
+    transition: transform .15s;
+  }
+  .chip:active { transform: scale(.94); }
+  .chip.bchip { background: var(--blue-soft); color: var(--blue); }
+
+  /* ===== proposal card ===== */
+  .prop { border-color: rgba(232,160,32,.45); box-shadow: 0 0 0 4px rgba(232,160,32,.07), 0 2px 10px rgba(33,29,20,.05); }
+  .propbox { margin-top: 11px; background: #faf6ec; border: 1px dashed rgba(33,29,20,.18); border-radius: 14px; padding: 12px 13px; }
+  .proprow { display: flex; justify-content: space-between; font-size: 13px; font-variant-numeric: tabular-nums; padding: 2.5px 0; }
+  .proprow .k { color: var(--muted); font-weight: 600; }
+  .proprow .v { font-weight: 750; }
+  .decide { display: flex; gap: 9px; margin-top: 12px; }
+  .decide button { flex: 1; border: none; border-radius: 12px; padding: 12px; font-size: 14px; font-weight: 800; font-family: inherit; cursor: pointer; transition: transform .12s, opacity .25s; }
+  .decide button:active { transform: scale(.95); }
+  .decide .yes { background: var(--ink); color: var(--card); }
+  .decide .no { background: rgba(33,29,20,.07); color: var(--muted); }
+  .propstatus { margin-top: 11px; font-size: 12.5px; font-weight: 750; text-align: center; min-height: 17px; transition: color .3s; }
+  .fcard.approved .decide, .fcard.denied .decide { display: none; }
+  .fcard.approved .propstatus { color: var(--up); }
+  .fcard.denied .propstatus { color: var(--faint); }
+  .fcard.denied { opacity: .62 !important; }
+  .fcard.approved { border-color: rgba(22,143,82,.45); box-shadow: 0 0 0 4px rgba(22,143,82,.08); }
+
+  /* ===== fill receipt ===== */
+  .receipt { background: #fffef9; }
+  .rcptbox { margin-top: 4px; border: 1.5px dashed rgba(33,29,20,.22); border-radius: 14px; padding: 14px 14px 12px; position: relative; font-variant-numeric: tabular-nums; }
+  .rcptline { display: flex; justify-content: space-between; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; color: var(--muted); padding: 3px 0; }
+  .rcptline .rv { color: var(--ink); font-weight: 700; }
+  .rcptbig { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 17px; font-weight: 800; letter-spacing: .3px; margin-bottom: 8px; }
+  .stampseal {
+    position: absolute; right: 10px; top: 8px;
+    font-size: 13px; font-weight: 900; letter-spacing: 2.5px;
+    color: var(--up); border: 2.5px solid var(--up); border-radius: 8px;
+    padding: 5px 10px; transform: rotate(-11deg) scale(0); opacity: 0;
+    text-transform: uppercase;
+  }
+  .fcard.stamped .stampseal { animation: stamp .5s cubic-bezier(.2,1.6,.35,1) .35s forwards; }
+  @keyframes stamp {
+    0% { transform: rotate(-26deg) scale(2.4); opacity: 0; }
+    60% { transform: rotate(-11deg) scale(.92); opacity: 1; }
+    100% { transform: rotate(-11deg) scale(1); opacity: 1; }
+  }
+
+  /* ===== milestone ===== */
+  .mile { background: linear-gradient(155deg, #fffdf7 30%, #f3f9ee 100%); border-color: rgba(22,143,82,.3); text-align: center; padding-top: 22px; }
+  .mile .chead { text-align: left; }
+  .milenum { font-size: 42px; font-weight: 850; letter-spacing: -1.4px; font-variant-numeric: tabular-nums; color: var(--up); margin: 6px 0 2px; }
+  .milecap { font-size: 13px; color: var(--muted); font-weight: 600; margin-bottom: 8px; }
+  .mileglow { position: absolute; inset: -40%; background: radial-gradient(closest-side, rgba(22,143,82,.13), transparent 70%); opacity: 0; pointer-events: none; }
+  .fcard.celebrated .mileglow { animation: glowin 1.6s ease forwards; }
+  @keyframes glowin { 0% { opacity: 0; transform: scale(.6); } 40% { opacity: 1; } 100% { opacity: .55; transform: scale(1); } }
+
+  /* ===== heatmap ===== */
+  .hmap { display: grid; grid-template-columns: repeat(6, 1fr); grid-auto-rows: 44px; gap: 5px; margin-top: 11px; }
+  .tile { border-radius: 10px; display: flex; flex-direction: column; justify-content: flex-end; padding: 6px 8px; color: #fff; overflow: hidden; }
+  .tile .tn { font-size: 10px; font-weight: 800; letter-spacing: .3px; opacity: .95; white-space: nowrap; }
+  .tile .tp { font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .tile.s6 { grid-column: span 3; grid-row: span 2; } .tile.s6 .tn { font-size: 11.5px; } .tile.s6 .tp { font-size: 16px; }
+  .tile.s4 { grid-column: span 3; }
+  .tile.s3 { grid-column: span 2; }
+  .tile.s2 { grid-column: span 2; }
+
+  /* ===== news ===== */
+  .nrow { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .nrow:last-of-type { border-bottom: none; padding-bottom: 2px; }
+  .nrow .ndot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin-top: 7px; }
+  .nh { font-size: 13.5px; font-weight: 700; line-height: 1.35; }
+  .nsrc { font-size: 11px; color: var(--faint); font-weight: 600; margin-top: 3px; }
+
+  /* ===== brief ===== */
+  .brow { display: flex; align-items: baseline; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
+  .brow:last-of-type { border-bottom: none; }
+  .brow .bk { color: var(--muted); font-weight: 600; }
+  .brow .bv { font-weight: 750; font-variant-numeric: tabular-nums; }
+  .briefhead { font-size: 11px; font-weight: 800; letter-spacing: 1.2px; text-transform: uppercase; color: var(--faint); margin: 10px 0 2px; }
+
+  /* ============ confetti ============ */
+  .confetti { position: absolute; left: 50%; top: 45%; width: 0; height: 0; pointer-events: none; z-index: 8; }
+  .confetti i {
+    position: absolute; width: 7px; height: 11px; border-radius: 2px;
+    background: var(--c); opacity: 0;
+    animation: burst .95s cubic-bezier(.16,.8,.4,1) forwards;
+  }
+  @keyframes burst {
+    0% { transform: translate(0,0) rotate(0deg) scale(1); opacity: 1; }
+    100% { transform: translate(var(--tx), var(--ty)) rotate(var(--r)) scale(.55); opacity: 0; }
+  }
+
+  /* ============ detail view ============ */
+  .detail {
+    position: absolute; inset: 0; z-index: 70;
+    background: var(--paper);
+    display: flex; flex-direction: column;
+    transform: translateY(104%);
+    transition: transform .42s cubic-bezier(.32,.72,.27,1);
+  }
+  .detail.open { transform: none; }
+  .dnav { flex: none; display: flex; align-items: center; padding: 58px 14px 6px; gap: 8px; }
+  .dback { background: none; border: none; font-family: inherit; font-size: 15px; font-weight: 750; color: var(--ink); cursor: pointer; padding: 8px 10px; display: flex; align-items: center; gap: 3px; }
+  .dback .arr { font-size: 21px; line-height: 1; margin-top: -2px; }
+  .dctx { flex: 1; text-align: center; font-size: 13px; font-weight: 700; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dlike { background: none; border: none; font-size: 20px; cursor: pointer; padding: 6px 10px; color: var(--faint); font-family: inherit; transition: transform .15s; }
+  .dlike:active { transform: scale(.85); }
+  .dlike.liked { color: var(--down); }
+  .dscroll { flex: 1; overflow-y: auto; min-height: 0; padding-bottom: 60px; }
+  .dhead { padding: 6px 22px 4px; }
+  .dname { font-size: 22px; font-weight: 800; letter-spacing: -.5px; }
+  .dsub { font-size: 12.5px; color: var(--muted); font-weight: 600; margin-top: 1px; }
+  .bignum {
+    font-size: 44px; font-weight: 850; letter-spacing: -1.6px;
+    font-variant-numeric: tabular-nums; line-height: 1.1; margin-top: 10px;
+    animation: rise .4s cubic-bezier(.22,1.2,.36,1);
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } }
+  .changeline { font-size: 14.5px; font-weight: 750; font-variant-numeric: tabular-nums; margin-top: 4px; color: var(--acc2, var(--up)); display: flex; gap: 7px; align-items: baseline; }
+  .changeline .span { color: var(--faint); font-weight: 600; font-size: 12.5px; }
+  .scrubtime { font-size: 12px; font-weight: 750; color: var(--muted); height: 16px; margin-top: 3px; opacity: 0; transition: opacity .15s; }
+  .detail.scrubbing .scrubtime { opacity: 1; }
+
+  .chartwrap { position: relative; margin: 8px 0 2px; touch-action: none; }
+  .chartwrap svg { display: block; width: 100%; height: 224px; }
+  #cline { fill: none; stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  #carea { opacity: .9; }
+  #xline { stroke: rgba(33,29,20,.3); stroke-width: 1; stroke-dasharray: 1 3; visibility: hidden; }
+  #xdot { visibility: hidden; }
+  .detail.scrubbing #xline, .detail.scrubbing #xdot { visibility: visible; }
+
+  .ranges { display: flex; gap: 4px; padding: 8px 18px 2px; }
+  .rpill {
+    flex: 1; border: none; background: none; font-family: inherit;
+    font-size: 12.5px; font-weight: 800; color: var(--faint);
+    padding: 8px 0; border-radius: 999px; cursor: pointer;
+    transition: background .2s, color .2s, transform .12s;
+  }
+  .rpill:active { transform: scale(.93); }
+  .rpill.active { background: var(--ink); color: var(--card); }
+
+  .dstats { display: grid; grid-template-columns: 1fr 1fr; gap: 0 26px; margin: 18px 22px 0; border-top: 1px solid var(--line); }
+  .stat { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .stat .sk { color: var(--muted); font-weight: 600; }
+  .stat .sv { font-weight: 750; font-variant-numeric: tabular-nums; }
+  .dnote { margin: 16px 22px 0; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 13px 15px; font-size: 13.5px; line-height: 1.5; color: var(--ink); }
+  .dnote .src { display: block; margin-top: 7px; font-size: 11px; font-weight: 700; color: var(--faint); letter-spacing: .4px; }
+
+  /* ============ tab bar (feed facets) ============ */
+  .tabbar {
+    position: absolute; bottom: 0; left: 0; right: 0; z-index: 50;
+    height: 92px; padding: 10px 10px 28px;
+    background: rgba(250,247,240,.88); backdrop-filter: blur(20px);
+    border-top: 1px solid var(--line); display: flex;
+  }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; background: none; border: none; color: var(--faint); font-size: 10px; font-weight: 750; position: relative; cursor: pointer; font-family: inherit; transition: color .15s, transform .12s; }
+  .tab:active { transform: scale(.92); }
+  .tab .ticon { font-size: 21px; line-height: 1; }
+  .tab.active { color: var(--ink); }
+  .tab .nbadge { position: absolute; top: -4px; right: 22%; background: var(--down); color: #fff; font-size: 10px; font-weight: 800; min-width: 17px; height: 17px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="island"></div>
+  <div class="statusbar"><span>1:24</span><span class="icons">𝍪 ⌁ ▮</span></div>
+
+  <div class="main">
+    <!-- sticky portfolio header -->
+    <header class="phead" id="phead">
+      <div class="who"><span class="ld"></span>duck · the flock is live</div>
+      <div class="bal" id="hbal">$284,512.40</div>
+      <div class="dayline">
+        <span class="daypill" id="hday">+$3,214.88 (+1.14%)</span>
+        <span class="daycap">today</span>
+      </div>
+    </header>
+
+    <!-- the feed -->
+    <div class="feed" id="feed"></div>
+
+    <!-- detail -->
+    <section class="detail" id="detail">
+      <div class="dnav">
+        <button class="dback" id="dback"><span class="arr">‹</span> Feed</button>
+        <div class="dctx" id="dctx"></div>
+        <button class="dlike" id="dlike">♡</button>
+      </div>
+      <div class="dscroll">
+        <div class="dhead">
+          <div class="dname" id="dname"></div>
+          <div class="dsub" id="dsub"></div>
+          <div class="bignum" id="bignum"></div>
+          <div class="changeline" id="changeline"></div>
+          <div class="scrubtime" id="scrubtime">·</div>
+        </div>
+        <div class="chartwrap" id="chartwrap">
+          <svg id="chart" viewBox="0 0 360 224" preserveAspectRatio="none">
+            <defs>
+              <linearGradient id="gUp" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="rgba(22,143,82,.22)"/><stop offset="100%" stop-color="rgba(22,143,82,0)"/>
+              </linearGradient>
+              <linearGradient id="gDown" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="rgba(216,69,60,.2)"/><stop offset="100%" stop-color="rgba(216,69,60,0)"/>
+              </linearGradient>
+            </defs>
+            <path id="carea" d=""/>
+            <path id="cline" d=""/>
+            <line id="xline" x1="0" y1="8" x2="0" y2="216"/>
+            <circle id="xdot" r="5" fill="var(--paper)" stroke-width="3"/>
+          </svg>
+        </div>
+        <div class="ranges" id="ranges"></div>
+        <div class="dstats" id="dstats"></div>
+        <div class="dnote" id="dnote"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- tab bar = feed facets -->
+  <nav class="tabbar">
+    <button class="tab active" data-f="all"><span class="ticon">🦆</span>Everything</button>
+    <button class="tab" data-f="agents"><span class="ticon">🛰</span>Agents</button>
+    <button class="tab" data-f="trades"><span class="ticon">⇄</span>Trades<span class="nbadge">1</span></button>
+    <button class="tab" data-f="news"><span class="ticon">🗞</span>News</button>
+  </nav>
+  <div class="homebar"></div>
+</div>
+
+<script>
+'use strict';
+/* ============================== utils ============================== */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function money(v,dec){if(dec===undefined)dec=2;return '$'+v.toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});}
+function sgn(v){return v>=0?'+':'-';}
+function pctStr(v){return sgn(v)+Math.abs(v).toFixed(2)+'%';}
+function absMoney(v,dec){return sgn(v)+money(Math.abs(v),dec===undefined?2:dec).slice(0);}
+var MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+var NOW=new Date(2026,5,9,13,24); // Tue Jun 9 2026, 1:24 PM ET
+
+function clockStr(d){
+  var h=d.getHours(),m=d.getMinutes(),ap=h>=12?'PM':'AM';h=h%12;if(h===0)h=12;
+  return h+':'+(m<10?'0':'')+m+' '+ap;
+}
+
+/* ============================== subjects (detail data) ============================== */
+var SUBJECTS={
+  PORT:{ name:'Portfolio', sub:'Schwab Individual ···8201', price:284512.40, money:true, seed:11,
+    ranges:{'1D':1.14,'1W':2.62,'1M':4.91,'3M':7.84,'YTD':11.32,'ALL':38.45},
+    stats:[['Cash','$48,210.00'],['Buying power','$96,420.00'],['Positions value','$236,302.40'],['Day P/L','+$3,214.88'],['Positions','6'],['Pending approvals','1']],
+    note:'<b>5 longs + cash.</b> NVDA is 34.7% of equity — earnings-watch flagged concentration into Thursday’s print. Intraday high-water mark $285,012 at 11:42 AM.<span class="src">BROKER · account + positions</span>'},
+  NVDA:{ name:'NVIDIA Corp', sub:'NVDA · 120 sh · avg $612.40', price:682.92, money:false, seed:22,
+    ranges:{'1D':-0.61,'1W':2.34,'1M':8.12,'3M':14.71,'YTD':19.38,'ALL':311.6},
+    stats:[['Open','$688.10'],['Day range','$679.04 – $691.55'],['52-wk range','$418.20 – $702.40'],['Volume','28.4M'],['Mkt cap','$1.68T'],['P/E','41.2'],['Your return','+$8,462.40 (+11.51%)'],['Position value','$81,950.40']],
+    note:'<b>Earnings Thursday Jun 11, after close.</b> Street at $1.42 EPS; options imply a ±7.2% move. IV30 58 vs 41 three-month average.<span class="src">EVENTS · earnings_calendar &nbsp;·&nbsp; OPTIONS · IV history</span>'},
+  ARM:{ name:'Arm Holdings', sub:'ARM · 150 sh · avg $148.32 · new today', price:148.95, money:false, seed:33,
+    ranges:{'1D':2.41,'1W':5.18,'1M':11.42,'3M':-3.27,'YTD':9.86,'ALL':124.3},
+    stats:[['Open','$145.62'],['Day range','$145.10 – $149.40'],['52-wk range','$96.18 – $164.85'],['Volume','9.1M'],['Mkt cap','$156.2B'],['RSI (14)','61.3'],['Your return','+$94.50 (+0.42%)'],['Position value','$22,342.50']],
+    note:'<b>arm-watch’s thesis:</b> reclaimed the 50-day with RSI 61 and rising volume. Bought 150 sh this morning after you approved at 10:04 AM.<span class="src">MARKET DATA · technical_indicators &nbsp;·&nbsp; AGENTS · run events</span>'},
+  SPY:{ name:'S&P 500', sub:'SPY · index proxy', price:671.18, money:false, seed:44,
+    ranges:{'1D':0.52,'1W':1.21,'1M':2.84,'3M':5.12,'YTD':8.41,'ALL':86.2},
+    stats:[['VIX','13.8'],['Put/call','0.84'],['Adv / Dec','2,104 / 1,287'],['10Y yield','4.18%'],['Best sector','Tech +1.8%'],['Worst sector','Energy −1.4%']],
+    note:'<b>Risk-on tape.</b> Breadth positive 1.6:1, vol suppressed ahead of Wednesday CPI. Tech and communications carrying the index.<span class="src">MARKET CONTEXT · market_overview + sector_performance</span>'}
+};
+var RANGES=['1D','1W','1M','3M','YTD','ALL'];
+var RANGE_N={'1D':64,'1W':80,'1M':88,'3M':92,'YTD':96,'ALL':110};
+
+var seriesCache={};
+function getSeries(key,range){
+  var ck=key+'|'+range;
+  if(seriesCache[ck])return seriesCache[ck];
+  var s=SUBJECTS[key],n=RANGE_N[range],pct=s.ranges[range];
+  var r=mulberry32(s.seed*97+range.length*13+range.charCodeAt(0));
+  var start=s.price/(1+pct/100),v=start,a=[start];
+  var vol=(Math.max(Math.abs(pct),0.7)/100)/Math.sqrt(n)*1.9;
+  for(var i=1;i<n;i++){v=v*(1+(r()-0.5)*2*vol+(pct/100)/n);a.push(v);}
+  var fix=s.price-a[n-1];
+  for(var j=0;j<n;j++)a[j]+=fix*(j/(n-1));
+  seriesCache[ck]=a;return a;
+}
+function labelFor(range,i,n){
+  var f=i/(n-1);
+  if(range==='1D'){
+    var mins=Math.round(f*234); // 9:30 -> 1:24
+    return clockStr(new Date(2026,5,9,9,30+mins));
+  }
+  var daysBack={'1W':7,'1M':30,'3M':91,'YTD':158,'ALL':1825}[range];
+  var d=new Date(NOW.getTime()-(1-f)*daysBack*864e5);
+  if(range==='ALL')return MONTHS[d.getMonth()]+' '+d.getFullYear();
+  if(range==='1W')return MONTHS[d.getMonth()]+' '+d.getDate()+', '+clockStr(d);
+  return MONTHS[d.getMonth()]+' '+d.getDate();
+}
+function rangeCaption(range){
+  return {'1D':'Today','1W':'Past week','1M':'Past month','3M':'Past 3 months','YTD':'Year to date','ALL':'All time'}[range];
+}
+
+/* ============================== sparkline helper ============================== */
+function sparkSVG(seed,pct,color){
+  var r=mulberry32(seed),n=36,a=[],v=50;
+  for(var i=0;i<n;i++){v+= (r()-0.5)*9+(pct>=0?0.9:-0.9);a.push(v);}
+  var mn=Math.min.apply(null,a),mx=Math.max.apply(null,a),sp=mx-mn||1;
+  var pts='';
+  for(var j=0;j<n;j++){
+    pts+=(j*(320/(n-1))).toFixed(1)+','+(50-((a[j]-mn)/sp)*44+3).toFixed(1)+' ';
+  }
+  return '<svg class="spark" viewBox="0 0 320 56" preserveAspectRatio="none">'+
+    '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+}
+
+/* ============================== feed cards ============================== */
+var SECTORS=[
+  {n:'Tech',p:1.8,c:'s6'},{n:'Comm Svcs',p:1.1,c:'s4'},
+  {n:'Cons Disc',p:0.7,c:'s3'},{n:'Financials',p:0.4,c:'s3'},{n:'Industrials',p:0.2,c:'s2'},
+  {n:'Staples',p:-0.1,c:'s2'},{n:'Health',p:-0.3,c:'s2'},
+  {n:'Materials',p:-0.5,c:'s2'},{n:'Real Estate',p:-0.8,c:'s2'},{n:'Utilities',p:-0.9,c:'s2'},
+  {n:'Energy',p:-1.4,c:'s6'}
+];
+function tileColor(p){
+  var t=Math.min(Math.abs(p)/1.8,1);
+  return p>=0
+    ? 'rgb('+Math.round(22+30*(1-t))+','+Math.round(110+50*t)+','+Math.round(70+18*t)+')'
+    : 'rgb('+Math.round(165+60*t)+','+Math.round(80-22*t)+','+Math.round(72-20*t)+')';
+}
+function heatmapHTML(){
+  var h='<div class="hmap">';
+  SECTORS.forEach(function(s){
+    h+='<div class="tile '+s.c+'" style="background:'+tileColor(s.p)+'"><span class="tn">'+s.n+'</span><span class="tp">'+pctStr(s.p)+'</span></div>';
+  });
+  return h+'</div>';
+}
+
+var CARDS=[
+  { id:'card-proposal', tags:'all agents trades', subj:'NVDA', cls:'prop',
+    av:'gate', emoji:'🚦', name:'approvals-gate', tag:'<span class="ptag a">needs you</span>', time:'1:12 PM',
+    ctx:'Proposal · approvals-gate · 1:12 PM',
+    body:'<div class="body"><b>earnings-watch wants to trim NVDA before Thursday.</b> Position is 34.7% of equity and the options market is pricing a ±7.2% earnings move.</div>'+
+      '<div class="propbox">'+
+        '<div class="proprow"><span class="k">Action</span><span class="v">SELL 15 NVDA · limit</span></div>'+
+        '<div class="proprow"><span class="k">Limit</span><span class="v">$682.90</span></div>'+
+        '<div class="proprow"><span class="k">Est. proceeds</span><span class="v">$10,243.50</span></div>'+
+        '<div class="proprow"><span class="k">After fill</span><span class="v">105 sh · 28.9% of equity</span></div>'+
+      '</div>'+
+      '<div class="decide"><button class="yes" data-act="approve">Approve</button><button class="no" data-act="deny">Not now</button></div>'+
+      '<div class="propstatus" id="propstatus">Expires at close · rationale attached</div>' },
+
+  { id:'card-iv', tags:'all agents', subj:'NVDA', cls:'',
+    av:'ew', emoji:'📡', name:'earnings-watch', tag:'<span class="ptag v">insight</span>', time:'12:58 PM',
+    ctx:'earnings-watch · 12:58 PM',
+    body:'<div class="body"><b>NVDA</b> IV30 hit <b class="num">58</b> — vs a 3-month average of 41. Implied move for Thursday’s print is <b class="num">±7.2%</b>. Your 120 sh is <span class="num">$81,950</span> of exposure.</div>'+
+      sparkSVG(71,1,'#7a5fd0')+
+      '<button class="chip" data-goto="card-proposal">⚡ Queued a trim → approvals-gate</button>' },
+
+  { id:'card-heat', tags:'all news', subj:'SPY', cls:'',
+    av:'duck', emoji:'🦆', name:'duck', tag:'<span class="ptag a">midday</span>', time:'12:30 PM',
+    ctx:'Sector check · 12:30 PM',
+    body:'<div class="body"><b>Midday sector check.</b> Tech is doing the lifting; energy is the anchor. Breadth 1.6:1 positive.</div>'+heatmapHTML() },
+
+  { id:'card-mile', tags:'all trades', subj:'PORT', cls:'mile',
+    av:'duck', emoji:'🎈', name:'duck', tag:'<span class="ptag">milestone</span>', time:'11:42 AM',
+    ctx:'Milestone · 11:42 AM',
+    body:'<div class="mileglow"></div><div class="milenum" id="milenum">$285,000</div>'+
+      '<div class="milecap">New high-water mark, crossed at 11:42 AM.<br>Up <b class="up num">+38.4%</b> all time. Nice and boring. Keep going.</div>' },
+
+  { id:'card-news', tags:'all news', subj:'NVDA', cls:'',
+    av:'news', emoji:'🗞', name:'news-digest', tag:'<span class="ptag a">NVDA</span>', time:'11:05 AM',
+    ctx:'News · NVDA · 11:05 AM',
+    body:'<div class="body">Three worth your time on your largest holding:</div>'+
+      '<div style="margin-top:6px">'+
+      '<div class="nrow"><span class="ndot"></span><div><div class="nh">Nvidia’s Rubin platform said to be sold out through mid-2027 as hyperscalers lock capacity</div><div class="nsrc">Bloomberg · 2h ago</div></div></div>'+
+      '<div class="nrow"><span class="ndot"></span><div><div class="nh">TSMC May revenue jumps 38% year-over-year on AI accelerator demand</div><div class="nsrc">Reuters · 4h ago</div></div></div>'+
+      '<div class="nrow"><span class="ndot"></span><div><div class="nh">Options market prices a 7.2% swing for Nvidia’s Thursday report</div><div class="nsrc">Barron’s · 6h ago</div></div></div>'+
+      '</div>' },
+
+  { id:'card-fill', tags:'all trades', subj:'ARM', cls:'receipt',
+    av:'gate', emoji:'🧾', name:'approvals-gate', tag:'<span class="ptag">via Schwab</span>', time:'10:04 AM',
+    ctx:'Fill · ARM · 10:04 AM',
+    body:'<div class="rcptbox"><div class="stampseal">Filled</div>'+
+      '<div class="rcptbig">BUY 150 ARM @ 148.32</div>'+
+      '<div class="rcptline"><span>Order</span><span class="rv">limit 148.40 · day</span></div>'+
+      '<div class="rcptline"><span>Filled</span><span class="rv">10:04:13 AM ET</span></div>'+
+      '<div class="rcptline"><span>Total</span><span class="rv">$22,248.00</span></div>'+
+      '<div class="rcptline"><span>Approved by</span><span class="rv">you · 9:58 AM</span></div>'+
+      '<div class="rcptline"><span>Order #</span><span class="rv">SW-8201-94417</span></div>'+
+      '</div>'+
+      '<div class="body" style="margin-top:10px">You approved arm-watch’s entry. Filled 8¢ under your limit. 🤝</div>' },
+
+  { id:'card-arm', tags:'all agents', subj:'ARM', cls:'',
+    av:'aw', emoji:'🦾', name:'arm-watch', tag:'<span class="ptag b">insight</span>', time:'9:48 AM',
+    ctx:'arm-watch · 9:48 AM',
+    body:'<div class="body"><b>ARM</b> reclaimed its 50-day (<span class="num">$143.85</span>) on 1.7× average volume. RSI 61 and rising — momentum confirmed, not stretched.</div>'+
+      sparkSVG(52,2,'#2f6fd0')+
+      '<button class="chip bchip" data-goto="card-fill">→ Sent a buy to approvals-gate</button>' },
+
+  { id:'card-brief', tags:'all news', subj:'PORT', cls:'',
+    av:'duck', emoji:'☕', name:'duck', tag:'<span class="ptag a">morning brief</span>', time:'7:02 AM',
+    ctx:'Morning brief · Tue Jun 9',
+    body:'<div class="body"><b>Good morning.</b> Quiet open expected, loud week ahead.</div>'+
+      '<div class="briefhead">Pre-market</div>'+
+      '<div class="brow"><span class="bk">S&P futures</span><span class="bv up">+0.4%</span></div>'+
+      '<div class="brow"><span class="bk">Nasdaq futures</span><span class="bv up">+0.6%</span></div>'+
+      '<div class="brow"><span class="bk">10Y Treasury</span><span class="bv">4.18%</span></div>'+
+      '<div class="briefhead">Calendar</div>'+
+      '<div class="brow"><span class="bk">Fed’s Waller speaks</span><span class="bv">11:30 AM today</span></div>'+
+      '<div class="brow"><span class="bk">10Y Note auction</span><span class="bv">1:00 PM today</span></div>'+
+      '<div class="brow"><span class="bk">CPI (May)</span><span class="bv">Wed 8:30 AM</span></div>'+
+      '<div class="brow"><span class="bk">NVDA reports</span><span class="bv">Thu, after close</span></div>' }
+];
+
+/* render feed */
+var feedEl=document.getElementById('feed');
+CARDS.forEach(function(c){
+  var el=document.createElement('article');
+  el.className='fcard '+c.cls;
+  el.id=c.id;
+  el.dataset.tags=c.tags; el.dataset.subj=c.subj; el.dataset.ctx=c.ctx;
+  el.innerHTML='<div class="chead"><div class="avatar '+c.av+'">'+c.emoji+'</div>'+
+    '<div class="poster"><div class="pname">'+c.name+' '+c.tag+'</div><div class="ptime">'+c.time+' · Tue Jun 9</div></div></div>'+
+    c.body+
+    '<div class="cfoot"><button class="heart"><span class="hic">♡</span><span class="hct">0</span></button><span class="openhint">tap to open ↗</span></div>';
+  feedEl.appendChild(el);
+});
+
+/* animate-in + celebrations on first sight */
+var seen=new WeakSet();
+var io=new IntersectionObserver(function(entries){
+  entries.forEach(function(en){
+    if(!en.isIntersecting)return;
+    var el=en.target;
+    if(seen.has(el))return; seen.add(el);
+    el.classList.add('in');
+    if(el.id==='card-fill')el.classList.add('stamped');
+    if(el.id==='card-mile'){
+      el.classList.add('celebrated');
+      countUp(document.getElementById('milenum'),250000,285000,1100,function(v){return money(v,0);});
+      setTimeout(function(){confetti(el);},650);
+    }
+  });
+},{root:feedEl,threshold:0.25});
+document.querySelectorAll('.fcard').forEach(function(el){io.observe(el);});
+
+function countUp(el,from,to,dur,fmt){
+  var t0=null;
+  function step(ts){
+    if(t0===null)t0=ts;
+    var f=Math.min((ts-t0)/dur,1),e=1-Math.pow(1-f,3);
+    el.textContent=fmt(from+(to-from)*e);
+    if(f<1)requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+/* confetti */
+var CCOLORS=['#168f52','#e8a020','#7a5fd0','#2f6fd0','#d8453c','#1fb872'];
+function confetti(host){
+  var box=document.createElement('div');
+  box.className='confetti';
+  var r=Math.random;
+  for(var i=0;i<26;i++){
+    var p=document.createElement('i');
+    var ang=r()*Math.PI*2,dist=60+r()*120;
+    p.style.setProperty('--tx',(Math.cos(ang)*dist).toFixed(0)+'px');
+    p.style.setProperty('--ty',(Math.sin(ang)*dist-40).toFixed(0)+'px');
+    p.style.setProperty('--r',(r()*720-360).toFixed(0)+'deg');
+    p.style.setProperty('--c',CCOLORS[i%CCOLORS.length]);
+    p.style.animationDelay=(r()*0.12)+'s';
+    box.appendChild(p);
+  }
+  host.appendChild(box);
+  setTimeout(function(){box.remove();},1300);
+}
+
+/* ============================== header shrink ============================== */
+var phead=document.getElementById('phead');
+var slim=false,raf=false;
+feedEl.addEventListener('scroll',function(){
+  if(raf)return; raf=true;
+  requestAnimationFrame(function(){
+    raf=false;
+    var want=feedEl.scrollTop>34;
+    if(want!==slim){slim=want;phead.classList.toggle('slim',slim);}
+  });
+},{passive:true});
+
+/* header balance count-up on load */
+countUp(document.getElementById('hbal'),281297.52,284512.40,1200,function(v){return money(v);});
+
+/* ============================== feed facets (tab bar) ============================== */
+document.querySelectorAll('.tab').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active');});
+    t.classList.add('active');
+    var f=t.dataset.f;
+    document.querySelectorAll('.fcard').forEach(function(c){
+      var show=f==='all'||c.dataset.tags.indexOf(f)>=0;
+      c.classList.toggle('hidden',!show);
+      if(show){c.classList.remove('in');requestAnimationFrame(function(){requestAnimationFrame(function(){c.classList.add('in');});});}
+    });
+    feedEl.scrollTo({top:0,behavior:'auto'});
+  });
+});
+
+/* ============================== card taps: open (single) / heart (double) ============================== */
+var tapTimer=null,lastCard=null;
+feedEl.addEventListener('click',function(e){
+  var card=e.target.closest('.fcard');
+  if(!card)return;
+  var btn=e.target.closest('button');
+  if(btn){
+    if(btn.dataset.act)return decide(card,btn.dataset.act);
+    if(btn.dataset.goto)return gotoCard(btn.dataset.goto);
+    if(btn.classList.contains('heart'))return likeCard(card,true);
+    return;
+  }
+  if(tapTimer&&lastCard===card){
+    clearTimeout(tapTimer);tapTimer=null;
+    likeCard(card,false);
+  }else{
+    lastCard=card;
+    clearTimeout(tapTimer);
+    tapTimer=setTimeout(function(){tapTimer=null;openDetail(card.dataset.subj,card);},270);
+  }
+});
+
+function likeCard(card,quiet){
+  var h=card.querySelector('.heart'),ct=card.querySelector('.hct');
+  var liked=h.classList.toggle('liked');
+  h.querySelector('.hic').textContent=liked?'♥':'♡';
+  ct.textContent=liked?'1':'0';
+  if(liked&&!quiet){
+    var pop=document.createElement('div');
+    pop.className='heartpop';pop.textContent='♥';pop.style.color='var(--down)';
+    card.appendChild(pop);
+    setTimeout(function(){pop.remove();},900);
+  }
+}
+function gotoCard(id){
+  var el=document.getElementById(id);
+  if(!el)return;
+  el.scrollIntoView({behavior:'smooth',block:'start'});
+  setTimeout(function(){el.classList.remove('flash');void el.offsetWidth;el.classList.add('flash');},420);
+}
+
+/* approve / deny */
+function decide(card,act){
+  var st=document.getElementById('propstatus');
+  if(act==='approve'){
+    st.textContent='Sending to Schwab…';
+    setTimeout(function(){
+      card.classList.add('approved');
+      st.textContent='✓ Approved — working at $682.90 limit. earnings-watch will post the fill.';
+      confetti(card);
+      var badge=document.querySelector('.tab .nbadge');
+      if(badge)badge.remove();
+    },650);
+  }else{
+    card.classList.add('denied');
+    st.textContent='Dismissed. earnings-watch will re-check after the print.';
+  }
+}
+
+/* ============================== detail view ============================== */
+var detail=document.getElementById('detail');
+var dname=document.getElementById('dname'),dsub=document.getElementById('dsub');
+var bignum=document.getElementById('bignum'),changeline=document.getElementById('changeline');
+var scrubtime=document.getElementById('scrubtime'),dctx=document.getElementById('dctx');
+var dstats=document.getElementById('dstats'),dnote=document.getElementById('dnote');
+var rangesEl=document.getElementById('ranges');
+var cline=document.getElementById('cline'),carea=document.getElementById('carea');
+var xlineEl=document.getElementById('xline'),xdot=document.getElementById('xdot');
+var chartwrap=document.getElementById('chartwrap');
+var dlike=document.getElementById('dlike');
+
+var curKey=null,curRange='1D',curSeries=null,curPts=null,srcCard=null;
+var W=360,H=224,PT=10,PB=12;
+
+RANGES.forEach(function(r){
+  var b=document.createElement('button');
+  b.className='rpill'+(r==='1D'?' active':'');
+  b.textContent=r;
+  b.addEventListener('click',function(){
+    document.querySelectorAll('.rpill').forEach(function(x){x.classList.remove('active');});
+    b.classList.add('active');
+    setRange(r);
+  });
+  rangesEl.appendChild(b);
+});
+
+function openDetail(key,card){
+  curKey=key;srcCard=card||null;
+  var s=SUBJECTS[key];
+  dname.textContent=s.name;dsub.textContent=s.sub;
+  dctx.textContent=card?card.dataset.ctx:s.name;
+  dstats.innerHTML=s.stats.map(function(p){return '<div class="stat"><span class="sk">'+p[0]+'</span><span class="sv">'+p[1]+'</span></div>';}).join('');
+  dnote.innerHTML=s.note;
+  if(card){
+    var hl=card.querySelector('.heart').classList.contains('liked');
+    dlike.classList.toggle('liked',hl);dlike.textContent=hl?'♥':'♡';
+  }else{dlike.classList.remove('liked');dlike.textContent='♡';}
+  document.querySelectorAll('.rpill').forEach(function(x){x.classList.toggle('active',x.textContent==='1D');});
+  setRange('1D');
+  detail.classList.add('open');
+}
+document.getElementById('dback').addEventListener('click',function(){detail.classList.remove('open');});
+phead.addEventListener('click',function(){openDetail('PORT',null);});
+dlike.addEventListener('click',function(){
+  if(srcCard){likeCard(srcCard,true);}
+  var liked=dlike.classList.toggle('liked');
+  dlike.textContent=liked?'♥':'♡';
+});
+
+function setRange(r){
+  curRange=r;
+  curSeries=getSeries(curKey,r);
+  drawChart();
+  showRest();
+}
+function drawChart(){
+  var a=curSeries,n=a.length;
+  var mn=Math.min.apply(null,a),mx=Math.max.apply(null,a),sp=mx-mn||1;
+  curPts=[];
+  var d='';
+  for(var i=0;i<n;i++){
+    var x=i/(n-1)*W;
+    var y=PT+(1-(a[i]-mn)/sp)*(H-PT-PB);
+    curPts.push([x,y]);
+    d+=(i===0?'M':'L')+x.toFixed(1)+' '+y.toFixed(1);
+  }
+  var up=a[n-1]>=a[0];
+  var col=up?'var(--up)':'var(--down)';
+  cline.setAttribute('d',d);
+  cline.setAttribute('stroke',col);
+  carea.setAttribute('d',d+'L'+W+' '+H+'L0 '+H+'Z');
+  carea.setAttribute('fill',up?'url(#gUp)':'url(#gDown)');
+  xdot.setAttribute('stroke',col);
+  // redraw pop
+  cline.style.opacity='0';carea.style.opacity='0';
+  requestAnimationFrame(function(){
+    cline.style.transition='opacity .3s';carea.style.transition='opacity .35s';
+    cline.style.opacity='1';carea.style.opacity='.9';
+    setTimeout(function(){cline.style.transition='';carea.style.transition='';},380);
+  });
+}
+function fmtVal(v){
+  var s=SUBJECTS[curKey];
+  return money(v,s.money?2:2);
+}
+function showAt(idx){
+  var a=curSeries,n=a.length,s=SUBJECTS[curKey];
+  var v=a[idx],base=a[0];
+  var ch=v-base,chp=ch/base*100;
+  bignum.textContent=fmtVal(v);
+  var up=ch>=0;
+  changeline.style.color=up?'var(--up)':'var(--down)';
+  var absCh=s.money?money(Math.abs(ch)):money(Math.abs(ch));
+  changeline.innerHTML=(up?'+':'−')+absCh+' ('+(up?'+':'−')+Math.abs(chp).toFixed(2)+'%) <span class="span">'+rangeCaption(curRange)+'</span>';
+  scrubtime.textContent=labelFor(curRange,idx,n);
+}
+function showRest(){
+  var a=curSeries;
+  showAt(a.length-1);
+  scrubtime.textContent='·';
+}
+
+/* scrubbing */
+var scrubbing=false;
+function svgX(e){
+  var rect=chartwrap.getBoundingClientRect();
+  return Math.max(0,Math.min(1,(e.clientX-rect.left)/rect.width));
+}
+chartwrap.addEventListener('pointerdown',function(e){
+  scrubbing=true;
+  detail.classList.add('scrubbing');
+  chartwrap.setPointerCapture(e.pointerId);
+  scrubTo(svgX(e));
+});
+chartwrap.addEventListener('pointermove',function(e){
+  if(!scrubbing)return;
+  scrubTo(svgX(e));
+});
+function endScrub(){
+  if(!scrubbing)return;
+  scrubbing=false;
+  detail.classList.remove('scrubbing');
+  showRest();
+}
+chartwrap.addEventListener('pointerup',endScrub);
+chartwrap.addEventListener('pointercancel',endScrub);
+function scrubTo(f){
+  var n=curSeries.length;
+  var idx=Math.round(f*(n-1));
+  var p=curPts[idx];
+  xlineEl.setAttribute('x1',p[0]);xlineEl.setAttribute('x2',p[0]);
+  xdot.setAttribute('cx',p[0]);xdot.setAttribute('cy',p[1]);
+  showAt(idx);
+}
+</script>
+</body>
+</html>
