@@ -206,7 +206,13 @@ var mkdirRemote = func(addr, rel string) error {
 //
 // -p (perms) is intentionally KEPT (own-file chmod never fails) so the exec bit
 // still seeds and mutagen has no exec-bit conflict to resolve.
-var commonFlags = []string{"-a", "--no-owner", "--no-group", "--omit-dir-times", "--info=progress2"}
+//	-s (--secluded-args)  send the remote path over the rsync PROTOCOL, not via
+//	  the hub's shell. REQUIRED: it both (a) bypasses remote-shell word-splitting
+//	  so a space/$/;/`/* in the path is safe WITHOUT manual quoting, and (b) is
+//	  why the path must NOT be single-quoted — under -s the quotes would be a
+//	  LITERAL part of the path (rsync 3.4.x would then (l)stat "'dir'" and fail
+//	  with exit 23). Present since rsync 3.0, so safe across every 3.x build.
+var commonFlags = []string{"-a", "--no-owner", "--no-group", "--omit-dir-times", "-s", "--info=progress2"}
 
 // Reconcile seeds tildeDir between this machine and the hub per dir, so the
 // force-merge that follows has nothing for mutagen to resolve. addr is the hub
@@ -238,11 +244,12 @@ func Reconcile(addr, tildeDir string, dir Direction, report func(string)) error 
 	sshTransport := "ssh " + strings.Join(opts, " ")
 
 	localContents := local + "/"
-	// SINGLE-QUOTE the remote path (paths.Quote — the shared single-quote helper)
-	// so the hub shell treats it as ONE literal word: a space/$/;/`/* can neither
-	// be interpreted by the remote shell nor corrupt the transfer. The trailing
-	// slash stays OUTSIDE the quotes so rsync still sees CONTENTS form.
-	hubContents := addr + ":" + paths.Quote(rel) + "/"
+	// The remote path is NOT shell-quoted: commonFlags carries -s (--secluded-args),
+	// so rsync sends it over the protocol — the hub's shell never sees it, and a
+	// space/$/;/`/* is safe as-is. Quoting here would be WRONG: under -s the quotes
+	// become literal path chars (rsync 3.4.x then (l)stats "'rel'" and fails). The
+	// trailing slash gives rsync CONTENTS form.
+	hubContents := addr + ":" + rel + "/"
 
 	// pass runs one rsync direction. extra adds per-direction flags (-u for Merge,
 	// --delete for Push/Pull). src/dst stay LAST (the safety test reads them there).

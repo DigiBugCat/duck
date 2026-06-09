@@ -60,9 +60,10 @@ func TestReconcileNewestBuildsTwoNewestWinsRsyncs(t *testing.T) {
 		t.Fatalf("paths.Expand: %v", err)
 	}
 	wantLocalContents := wantLocal + "/"
-	// The remote path is SINGLE-QUOTED (one literal shell word) with the trailing
-	// slash OUTSIDE the quotes so rsync still parses CONTENTS form: me@hub:'dev/foo'/
-	wantHubContents := addr + ":" + paths.Quote(hub.RemoteSyncPath(tildeDir)) + "/"
+	// The remote path is NOT shell-quoted: -s (--secluded-args) sends it over the
+	// rsync protocol, so the hub shell never parses it. Trailing slash → CONTENTS
+	// form: me@hub:dev/foo/
+	wantHubContents := addr + ":" + hub.RemoteSyncPath(tildeDir) + "/"
 
 	got, restore := swapRun(t, nil)
 	defer restore()
@@ -97,16 +98,21 @@ func TestReconcileNewestBuildsTwoNewestWinsRsyncs(t *testing.T) {
 		if !strings.HasSuffix(src, "/") || !strings.HasSuffix(dst, "/") {
 			t.Fatalf("cmd %d operands must have trailing slashes (contents form); got src=%q dst=%q", i, src, dst)
 		}
-		// The REMOTE operand (the one carrying addr:) must be single-quoted so the
-		// hub shell treats the path as one literal word (no injection / space-split).
+		// -s (--secluded-args) must be present: it sends the remote path over the
+		// rsync protocol (no hub shell), which is BOTH the injection/space-split
+		// guard AND why the remote operand must NOT be shell-quoted (under -s the
+		// quotes would be literal path chars → rsync 3.4.x (l)stats "'rel'", exit 23).
+		if !contains(c.args, "-s") {
+			t.Fatalf("cmd %d must carry -s (--secluded-args); got args=%v", i, c.args)
+		}
 		var remote string
 		if strings.HasPrefix(src, addr+":") {
 			remote = src
 		} else {
 			remote = dst
 		}
-		if !strings.Contains(remote, ":'") || !strings.Contains(remote, "'/") {
-			t.Fatalf("cmd %d remote operand must be single-quoted (addr:'rel'/); got %q", i, remote)
+		if strings.ContainsAny(remote, "'") {
+			t.Fatalf("cmd %d remote operand must NOT be shell-quoted under -s; got %q", i, remote)
 		}
 		// Transport must be duck's multiplexed, non-interactive ssh passed via -e:
 		// an "ssh …" string carrying BatchMode (never hang on a prompt) and the
@@ -221,7 +227,7 @@ func TestReconcilePushMirrors(t *testing.T) {
 	if contains(c, "-u") {
 		t.Fatalf("push must NOT carry -u (local always wins); got %v", c)
 	}
-	if c[len(c)-2] != local+"/" || c[len(c)-1] != addr+":"+paths.Quote(hub.RemoteSyncPath(tildeDir))+"/" {
+	if c[len(c)-2] != local+"/" || c[len(c)-1] != addr+":"+hub.RemoteSyncPath(tildeDir)+"/" {
 		t.Fatalf("push must be local→hub; got src=%q dst=%q", c[len(c)-2], c[len(c)-1])
 	}
 }
@@ -243,7 +249,7 @@ func TestReconcilePullMirrors(t *testing.T) {
 	if !contains(c, "--delete") {
 		t.Fatalf("pull must carry --delete (mirror); got %v", c)
 	}
-	if c[len(c)-2] != addr+":"+paths.Quote(hub.RemoteSyncPath(tildeDir))+"/" || c[len(c)-1] != local+"/" {
+	if c[len(c)-2] != addr+":"+hub.RemoteSyncPath(tildeDir)+"/" || c[len(c)-1] != local+"/" {
 		t.Fatalf("pull must be hub→local; got src=%q dst=%q", c[len(c)-2], c[len(c)-1])
 	}
 }
