@@ -117,6 +117,39 @@ func TestInstallScriptsAndTmuxConf(t *testing.T) {
 	}
 }
 
+// TestOpenInterceptorInstall pins the hub-side open-interceptor install: the
+// shim lands in ~/.duck/bin, open/xdg-open symlink to it, the rc block is
+// idempotent (marker-guarded) and exports the env Claude Code and bare openers
+// both need, and the embedded shim itself routes to the reverse-forwarded port.
+func TestOpenInterceptorInstall(t *testing.T) {
+	if !strings.Contains(writeDuckOpenCmd(), "~/.duck/bin/duck-open") {
+		t.Errorf("shim must be written to ~/.duck/bin/duck-open: %s", writeDuckOpenCmd())
+	}
+	inst := installOpenInterceptorCmd()
+	for _, want := range []string{
+		"chmod +x ~/.duck/bin/duck-open",
+		"ln -sf ~/.duck/bin/duck-open ~/.duck/bin/open",
+		"ln -sf ~/.duck/bin/duck-open ~/.duck/bin/xdg-open",
+		`export BROWSER="$HOME/.duck/bin/duck-open"`,
+		`export PATH="$HOME/.duck/bin:$PATH"`,
+		openInterceptorMarker, // idempotency guard present
+		"grep -q",             // skip-if-present check makes it idempotent
+	} {
+		if !strings.Contains(inst, want) {
+			t.Errorf("install script missing %q:\n%s", want, inst)
+		}
+	}
+	// The rc block must target both zsh rc files so non-login (interactive) and
+	// login panes both pick it up.
+	if !strings.Contains(inst, "~/.zshrc") || !strings.Contains(inst, "~/.zprofile") {
+		t.Errorf("install script must write both ~/.zshrc and ~/.zprofile:\n%s", inst)
+	}
+	// The shim asset must POST to the forwarded port and pass the target through.
+	if !strings.Contains(assets.DuckOpen, "DUCK_OPEN_PORT") || !strings.Contains(assets.DuckOpen, "/open") {
+		t.Errorf("duck-open shim must curl the DUCK_OPEN_PORT /open endpoint:\n%s", assets.DuckOpen)
+	}
+}
+
 // TestEmbeddedTmuxConfDropsHooks asserts the shipped conf is the flok-era one
 // MINUS the client-detached rename hook, `bind R`, and `bind-key T` (d1),
 // while KEEPING resurrect/continuum.

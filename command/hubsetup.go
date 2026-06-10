@@ -13,6 +13,7 @@ import (
 	"github.com/DigiBugCat/duck/assets"
 	"github.com/DigiBugCat/duck/internal/config"
 	"github.com/DigiBugCat/duck/internal/hub"
+	"github.com/DigiBugCat/duck/internal/openfwd"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -250,6 +251,18 @@ func runHubSetup(addr string, h *hub.Hub) error {
 		return fmt.Errorf("installing tmux plugins: %w", err)
 	}
 
+	// 4. install the open-interceptor: the duck-open shim, its open/xdg-open
+	// symlinks, and the shell-rc env block ($BROWSER + PATH + DUCK_OPEN_PORT) so
+	// URLs/files anything in a hub session tries to open get routed to the
+	// attached laptop.
+	fmt.Println("installing open-interceptor (duck-open) ...")
+	if _, err := h.RunInput(writeDuckOpenCmd(), strings.NewReader(assets.DuckOpen)); err != nil {
+		return fmt.Errorf("writing duck-open shim: %w", err)
+	}
+	if _, err := h.Run(installOpenInterceptorCmd()); err != nil {
+		return fmt.Errorf("installing open-interceptor: %w", err)
+	}
+
 	// persist the hub for subsequent commands.
 	cfg, err := config.Load()
 	if err != nil {
@@ -360,6 +373,47 @@ func writeTmuxConfCmd() string {
 	// overwriting it, so the user can always restore their previous setup. The
 	// ~ is left unquoted so the shell expands it to the hub's $HOME.
 	return `[ -f ~/.tmux.conf ] && cp ~/.tmux.conf ~/.tmux.conf.pre-duck-$(date +%Y%m%d%H%M%S).bak; cat > ~/.tmux.conf`
+}
+
+// writeDuckOpenCmd writes the duck-open shim (streamed over stdin, so its own
+// quoting/`$` never needs escaping) to ~/.duck/bin/duck-open.
+func writeDuckOpenCmd() string {
+	return `mkdir -p ~/.duck/bin && cat > ~/.duck/bin/duck-open`
+}
+
+// openInterceptorMarker brackets the duck-managed block in the hub's shell rc
+// files so installOpenInterceptorCmd can stay idempotent (skip if already
+// present) and a user can find/remove it.
+const openInterceptorMarker = "duck open-interceptor"
+
+// installOpenInterceptorCmd makes the shim executable, symlinks the platform
+// opener names (open, xdg-open) to it so a bare `open foo` / `xdg-open url` from
+// a hub shell hits duck even without $BROWSER, and appends the env block to the
+// hub's zsh rc files (idempotently, guarded by openInterceptorMarker). The
+// block prepends ~/.duck/bin to PATH (so the symlinks win over the system
+// opener), points $BROWSER at the shim (so Claude Code's own opener and
+// $BROWSER-respecting tools route through it), and sets DUCK_OPEN_PORT. The
+// heredoc body is single-quoted ('EOF') so $HOME/$PATH stay LITERAL in the rc
+// file and expand at the hub shell's startup, not now.
+func installOpenInterceptorCmd() string {
+	return strings.Join([]string{
+		`set -e`,
+		`chmod +x ~/.duck/bin/duck-open`,
+		`ln -sf ~/.duck/bin/duck-open ~/.duck/bin/open`,
+		`ln -sf ~/.duck/bin/duck-open ~/.duck/bin/xdg-open`,
+		`for rc in ~/.zshrc ~/.zprofile; do`,
+		`  if ! grep -q '` + openInterceptorMarker + `' "$rc" 2>/dev/null; then`,
+		`    cat >> "$rc" <<'EOF'`,
+		``,
+		`# >>> ` + openInterceptorMarker + ` >>>`,
+		`export PATH="$HOME/.duck/bin:$PATH"`,
+		`export BROWSER="$HOME/.duck/bin/duck-open"`,
+		fmt.Sprintf(`export DUCK_OPEN_PORT=%d`, openfwd.HubPort),
+		`# <<< ` + openInterceptorMarker + ` <<<`,
+		`EOF`,
+		`  fi`,
+		`done`,
+	}, "\n")
 }
 
 // ── ssh-key bootstrap (ported verbatim from flok/cmd/hub.go) ────────────────

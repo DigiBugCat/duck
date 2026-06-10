@@ -57,6 +57,10 @@ func build() (*wiring, error) {
 		model = defaultCodexModel
 	}
 
+	// Arm the open-interceptor for every interactive attach this process makes:
+	// runAttachLoop wraps its attach in withOpenForwarding, which uses this hook.
+	startOpenForwarding = newOpenForwarding(client)
+
 	sess := session.NewManager(client, client)
 	store := names.NewStore(client)
 	nm := namer.NewCodexExec(client, codexLocal{}, model)

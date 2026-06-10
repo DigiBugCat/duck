@@ -193,6 +193,93 @@ func (c *Client) RunInput(remoteCmd string, stdin io.Reader) (string, error) {
 	return run(argv, stdin)
 }
 
+// controlArgv builds an `ssh -O <action> [-R/-L spec] addr` control-command
+// argv against the existing master socket. `-O` operations talk to the warmed
+// ControlMaster (they need it up — call WarmUp first); they print nothing and
+// exit 0 on success. The forward/cancel specs reuse the SAME Control* flags so
+// they resolve the same socket as every other duck call.
+func (c *Client) controlArgv(action string, forwardSpec ...string) ([]string, error) {
+	opts, err := Options()
+	if err != nil {
+		return nil, err
+	}
+	argv := []string{sshBinary}
+	argv = append(argv, opts...)
+	argv = append(argv, "-O", action)
+	argv = append(argv, forwardSpec...)
+	argv = append(argv, c.Addr)
+	return argv, nil
+}
+
+// RemoteForward asks the master to add a reverse forward: the hub's
+// 127.0.0.1:hubPort connects back to the laptop's 127.0.0.1:localPort. This is
+// the channel the hub-side `duck-open` shim uses to reach the laptop's opener
+// listener. It cancels any pre-existing forward on the same spec first so a
+// stale forward (left by a crashed prior attach) does not make the add fail.
+func (c *Client) RemoteForward(hubPort, localPort int) error {
+	if err := EnsureControlDir(); err != nil {
+		return err
+	}
+	spec := fmt.Sprintf("%d:127.0.0.1:%d", hubPort, localPort)
+	// Best-effort cancel of a stale identical forward; ignore its error (none to
+	// cancel is the common case and reports failure).
+	if argv, err := c.controlArgv("cancel", "-R", spec); err == nil {
+		_, _ = run(argv, nil)
+	}
+	argv, err := c.controlArgv("forward", "-R", spec)
+	if err != nil {
+		return err
+	}
+	_, err = run(argv, nil)
+	return err
+}
+
+// CancelRemoteForward tears down the reverse forward added by RemoteForward.
+// Best-effort by nature (the master may already be gone); the error is returned
+// for the caller to log/ignore.
+func (c *Client) CancelRemoteForward(hubPort, localPort int) error {
+	argv, err := c.controlArgv("cancel", "-R", fmt.Sprintf("%d:127.0.0.1:%d", hubPort, localPort))
+	if err != nil {
+		return err
+	}
+	_, err = run(argv, nil)
+	return err
+}
+
+// LocalForward adds a forward so the laptop's 127.0.0.1:localPort reaches the
+// hub's 127.0.0.1:hubPort. The opener listener uses it to make a hub-local URL
+// (a dev server on localhost:<port>) reachable from the laptop browser before
+// it opens the rewritten URL.
+func (c *Client) LocalForward(localPort, hubPort int) error {
+	if err := EnsureControlDir(); err != nil {
+		return err
+	}
+	spec := fmt.Sprintf("%d:127.0.0.1:%d", localPort, hubPort)
+	if argv, err := c.controlArgv("cancel", "-L", spec); err == nil {
+		_, _ = run(argv, nil)
+	}
+	argv, err := c.controlArgv("forward", "-L", spec)
+	if err != nil {
+		return err
+	}
+	_, err = run(argv, nil)
+	return err
+}
+
+// ReadFile returns the bytes of a file on the hub by streaming it through `cat`
+// over the multiplexed connection. Used by the opener listener to pull a file
+// that is NOT in a synced folder (so it has no local twin) into a laptop temp
+// dir before opening it. remotePath is single-quoted into the login-shell'd
+// command. Whole-file-in-memory is fine for the screenshots/PDFs/HTML this
+// serves; it is not meant for large blobs.
+func (c *Client) ReadFile(remotePath string) ([]byte, error) {
+	out, err := c.Run("cat -- " + singleQuote(remotePath))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(out), nil
+}
+
 // WarmUp issues a single serialized handshake (`ssh duck true`) to establish
 // the control-master socket before the laptop fans out parallel refresh calls,
 // so they reuse the master instead of racing to create it (design fix c1).

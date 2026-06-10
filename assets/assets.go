@@ -19,3 +19,12 @@ var TmuxConf string
 //
 //go:embed hammerspoon-snap.lua
 var HammerspoonSnap string
+
+// DuckOpen is the hub-side open interceptor written to ~/.duck/bin/duck-open by
+// `duck hub setup` (with `open` and `xdg-open` symlinked to it, and exported as
+// $BROWSER). It forwards http(s) URLs and existing files to the attached
+// laptop's opener listener over the reverse-forwarded port, and passes
+// everything else through to the real platform opener.
+//
+//go:embed duck-open.sh
+var DuckOpen string

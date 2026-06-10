@@ -225,9 +225,15 @@ func productionRemember(tmuxName string) { _ = ttyMemSet(CurrentTTY(), tmuxName)
 // It runs the reconnect loop and, on a GaveUp, records the session per-terminal.
 // Returns the terminal Outcome.
 func runAttachLoop(sessions SessionAttacher, tmuxName string) Outcome {
-	rc := newReconnector()
-	rc.remember = productionRemember
-	return rc.run(sessions, tmuxName)
+	// Wrap the whole interactive attach in the open-interceptor: while attached,
+	// the hub's open attempts route to this laptop. A no-op when the hook is unset
+	// (tests / no hub wired). It spans the reconnect loop so a transport drop and
+	// reconnect keeps the same forwarding session.
+	return withOpenForwarding(func() Outcome {
+		rc := newReconnector()
+		rc.remember = productionRemember
+		return rc.run(sessions, tmuxName)
+	})
 }
 
 // run executes the reconnect loop and applies the GaveUp side effect (per-

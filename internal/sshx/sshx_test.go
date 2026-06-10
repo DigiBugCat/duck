@@ -166,3 +166,62 @@ func TestAttachArgvBuildsInteractiveAttach(t *testing.T) {
 		t.Errorf("AttachArgv tail = %q, want login-shell-wrapped tmux attach with TERM guard", argv[len(argv)-1])
 	}
 }
+
+// TestRemoteForwardArgvShape pins the reverse-forward control command: it
+// cancels any stale identical forward first, then issues `-O forward -R
+// <hub>:127.0.0.1:<local>` carrying the same Control* flags as every other call.
+func TestRemoteForwardArgvShape(t *testing.T) {
+	calls := recordRun(t)
+	c := New("me@hub")
+	if err := c.RemoteForward(4774, 55001); err != nil {
+		t.Fatalf("RemoteForward: %v", err)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("want cancel-then-forward (2 calls), got %d: %v", len(*calls), *calls)
+	}
+	cancel := strings.Join((*calls)[0], " ")
+	fwd := strings.Join((*calls)[1], " ")
+	if !strings.Contains(cancel, "-O cancel") || !strings.Contains(cancel, "-R 4774:127.0.0.1:55001") {
+		t.Errorf("first call should cancel the stale forward: %s", cancel)
+	}
+	if !strings.Contains(fwd, "-O forward") || !strings.Contains(fwd, "-R 4774:127.0.0.1:55001") {
+		t.Errorf("second call should add the forward: %s", fwd)
+	}
+	if !strings.Contains(fwd, "ControlPath=") {
+		t.Errorf("forward must carry Control* flags: %s", fwd)
+	}
+	if (*calls)[1][len((*calls)[1])-1] != "me@hub" {
+		t.Errorf("addr must be the last arg (no remote command): %v", (*calls)[1])
+	}
+}
+
+// TestLocalForwardArgvShape pins the -L forward used to tunnel a hub dev server
+// to the laptop.
+func TestLocalForwardArgvShape(t *testing.T) {
+	calls := recordRun(t)
+	c := New("me@hub")
+	if err := c.LocalForward(5173, 5173); err != nil {
+		t.Fatalf("LocalForward: %v", err)
+	}
+	fwd := strings.Join((*calls)[len(*calls)-1], " ")
+	if !strings.Contains(fwd, "-O forward") || !strings.Contains(fwd, "-L 5173:127.0.0.1:5173") {
+		t.Errorf("local forward argv wrong: %s", fwd)
+	}
+}
+
+// TestReadFileCats pins that ReadFile streams the file through a login-shell cat
+// with the path single-quoted.
+func TestReadFileCats(t *testing.T) {
+	calls := recordRun(t)
+	c := New("h")
+	if _, err := c.ReadFile("/tmp/a b.png"); err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	// The cat command is login-shell-wrapped, so the path's own single quotes are
+	// escaped as '\'' — the wrapped form below is the correct single shell word.
+	last := (*calls)[0][len((*calls)[0])-1]
+	want := `zsh -lc 'cat -- '\''/tmp/a b.png'\'''`
+	if last != want {
+		t.Errorf("ReadFile cmd = %q, want %q", last, want)
+	}
+}
