@@ -139,6 +139,7 @@ func (a *App) refresh(autoName bool) ([]model.Row, error) {
 	for _, s := range live {
 		rows = append(rows, model.Row{
 			Display:  names.Resolve(n, s.Name, s.Dir, s.PaneTitle),
+			Title:    s.PaneTitle,
 			Dir:      s.Dir,
 			Age:      humanizeAge(now.Sub(s.LastActive)),
 			Attached: s.Attached,

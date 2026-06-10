@@ -25,6 +25,7 @@ import (
 // dispatch tmux operations and must never be shown as the label.
 type Row struct {
 	Display  string    // resolved raw display name (user ▸ codex ▸ dir-derived)
+	Title    string    // raw pane title — Claude Code's live task summary (empty for evicted/foreign sessions)
 	Dir      string    // tilde-form working directory, e.g. ~/dev/foo
 	Age      string    // humanized last-active age, e.g. "2m", "1h", "3d"
 	Attached bool      // a client is currently attached
