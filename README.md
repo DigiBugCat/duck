@@ -21,11 +21,20 @@ binary just drives the hub over SSH.
 ## Install
 
 ```sh
-brew install DigiBugCat/tap/duck
+curl -sSL https://raw.githubusercontent.com/DigiBugCat/duck/main/install.sh | sh
 ```
 
-That pulls `mutagen` (the only runtime dependency on your laptop — `rsync`, `ssh`
-and `tmux` come from macOS / the hub). macOS, Apple Silicon + Intel.
+That drops a raw binary at `~/.local/bin/duck` (no Homebrew); from then on
+`duck update` self-updates straight from the latest GitHub release. Also install
+[Mutagen](https://mutagen.io) — the only runtime dependency on your laptop
+(`rsync`, `ssh` and `tmux` come from macOS / the hub):
+
+```sh
+brew install mutagen-io/mutagen/mutagen
+```
+
+macOS, Apple Silicon + Intel. If you previously installed duck via the old brew
+cask, remove it so it doesn't shadow this one: `brew uninstall --cask duck`.
 
 ## Quickstart
 
@@ -179,8 +188,8 @@ it.
 
 ## Requirements
 
-- **Laptop:** macOS, `mutagen` (installed by the brew formula); `codex` optional
-  (naming only).
+- **Laptop:** macOS, `mutagen` (`brew install mutagen-io/mutagen/mutagen`);
+  `codex` optional (naming only).
 - **Hub:** any always-on macOS box reachable over SSH; `duck setup` provisions
   `tmux` + `mutagen` + TPM for you. Same `$HOME`/username on both machines (duck
   mirrors each path at its natural location).
