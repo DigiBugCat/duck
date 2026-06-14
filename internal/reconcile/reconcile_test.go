@@ -221,6 +221,25 @@ func TestReconcileNewestRelaxesOwnershipAndStreamsProgress(t *testing.T) {
 	}
 }
 
+// TestReconcileSeedExcludesJunk pins that every seed pass carries --exclude for
+// the VCS dirs and the mutagen DefaultIgnores, so the seed never floods the hub
+// with .git/node_modules/build trees that the live session ignores anyway.
+func TestReconcileSeedExcludesJunk(t *testing.T) {
+	got, restore := swapRun(t, nil)
+	defer restore()
+	if err := Reconcile("me@hub", "~/dev/foo", Merge, nil); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	want := []string{"--exclude=.git", "--exclude=node_modules", "--exclude=.venv"}
+	for i, c := range *got {
+		for _, w := range want {
+			if !contains(c.args, w) {
+				t.Fatalf("cmd %d missing %s; got args=%v", i, w, c.args)
+			}
+		}
+	}
+}
+
 // TestReconcilePushMirrors pins push = local CLOBBERS hub: EXACTLY ONE pass,
 // local→hub, carrying --delete (mirror) — and never -u.
 func TestReconcilePushMirrors(t *testing.T) {
