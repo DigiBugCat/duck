@@ -35,6 +35,7 @@ import (
 	"strings"
 
 	"github.com/DigiBugCat/duck/internal/hub"
+	"github.com/DigiBugCat/duck/internal/mutagen"
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/sshx"
 )
@@ -246,6 +247,22 @@ exit 1`
 //	  with exit 23). Present since rsync 3.0, so safe across every 3.x build.
 var commonFlags = []string{"-a", "--no-owner", "--no-group", "--omit-dir-times", "-s", "--info=progress2"}
 
+// seedExcludes are the rsync --exclude patterns applied to EVERY reconcile pass
+// so the seed never transfers what the live mutagen session ignores anyway.
+// Without these the seed rsync'd whole trees of .git/node_modules/build caches
+// to the hub (mutagen's --ignore-vcs + DefaultIgnores only apply to the live
+// session, never the seed) — a single ~/dev run flooded the hub with 100GB+ of
+// junk. VCS dirs mirror mutagen's --ignore-vcs (.git/.svn/.hg/.bzr); the rest
+// reuse mutagen.DefaultIgnores so the two stages stay in lockstep.
+var seedExcludes = func() []string {
+	vcs := []string{".git", ".svn", ".hg", ".bzr"}
+	out := make([]string, 0, len(vcs)+len(mutagen.DefaultIgnores))
+	for _, p := range append(append([]string{}, vcs...), mutagen.DefaultIgnores...) {
+		out = append(out, "--exclude="+p)
+	}
+	return out
+}()
+
 // Reconcile seeds tildeDir between this machine and the hub per dir, so the
 // force-merge that follows has nothing for mutagen to resolve. addr is the hub
 // user@host; tildeDir is the tilde-form path (e.g. "~/dev/foo"). report, when
@@ -295,6 +312,7 @@ func Reconcile(addr, tildeDir string, dir Direction, report func(string)) error 
 	// --delete for Push/Pull). src/dst stay LAST (the safety test reads them there).
 	pass := func(prefix string, extra []string, src, dst string) error {
 		args := append([]string{}, commonFlags...)
+		args = append(args, seedExcludes...)
 		args = append(args, "--rsync-path="+hubBin)
 		args = append(args, extra...)
 		args = append(args, "-e", sshTransport, src, dst)
