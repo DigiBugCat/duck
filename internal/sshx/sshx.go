@@ -26,6 +26,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/DigiBugCat/duck/internal/paths"
 )
 
 // sshBinary is the ssh executable. ExecAttach needs an absolute path for
@@ -167,13 +169,7 @@ const termGuard = `infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color
 // `ssh duck tmux` → "command not found", `ssh duck "zsh -lc 'tmux -V'"` → ok).
 // Mirrors the old duck scripts' `/bin/zsh -lc` pattern.
 func LoginShellWrap(remoteCmd string) string {
-	return "zsh -lc " + singleQuote(remoteCmd)
-}
-
-// singleQuote wraps s in single quotes for safe inclusion as one shell word,
-// escaping embedded single quotes as the standard '\” sequence.
-func singleQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	return "zsh -lc " + paths.Quote(remoteCmd)
 }
 
 // Run executes a remote command over the multiplexed connection and returns its
@@ -217,16 +213,21 @@ func (c *Client) controlArgv(action string, forwardSpec ...string) ([]string, er
 // listener. It cancels any pre-existing forward on the same spec first so a
 // stale forward (left by a crashed prior attach) does not make the add fail.
 func (c *Client) RemoteForward(hubPort, localPort int) error {
+	return c.ensureForward("-R", fmt.Sprintf("%d:127.0.0.1:%d", hubPort, localPort))
+}
+
+// ensureForward adds a forward (flag -R or -L) on the control master,
+// best-effort cancelling a stale identical forward first (left by a crashed
+// prior attach) so the add never fails on "already forwarded"; the cancel's
+// error is ignored because none-to-cancel is the common case.
+func (c *Client) ensureForward(flag, spec string) error {
 	if err := EnsureControlDir(); err != nil {
 		return err
 	}
-	spec := fmt.Sprintf("%d:127.0.0.1:%d", hubPort, localPort)
-	// Best-effort cancel of a stale identical forward; ignore its error (none to
-	// cancel is the common case and reports failure).
-	if argv, err := c.controlArgv("cancel", "-R", spec); err == nil {
+	if argv, err := c.controlArgv("cancel", flag, spec); err == nil {
 		_, _ = run(argv, nil)
 	}
-	argv, err := c.controlArgv("forward", "-R", spec)
+	argv, err := c.controlArgv("forward", flag, spec)
 	if err != nil {
 		return err
 	}
@@ -251,19 +252,7 @@ func (c *Client) CancelRemoteForward(hubPort, localPort int) error {
 // (a dev server on localhost:<port>) reachable from the laptop browser before
 // it opens the rewritten URL.
 func (c *Client) LocalForward(localPort, hubPort int) error {
-	if err := EnsureControlDir(); err != nil {
-		return err
-	}
-	spec := fmt.Sprintf("%d:127.0.0.1:%d", localPort, hubPort)
-	if argv, err := c.controlArgv("cancel", "-L", spec); err == nil {
-		_, _ = run(argv, nil)
-	}
-	argv, err := c.controlArgv("forward", "-L", spec)
-	if err != nil {
-		return err
-	}
-	_, err = run(argv, nil)
-	return err
+	return c.ensureForward("-L", fmt.Sprintf("%d:127.0.0.1:%d", localPort, hubPort))
 }
 
 // ReadFile returns the bytes of a file on the hub by streaming it through `cat`
@@ -273,7 +262,7 @@ func (c *Client) LocalForward(localPort, hubPort int) error {
 // command. Whole-file-in-memory is fine for the screenshots/PDFs/HTML this
 // serves; it is not meant for large blobs.
 func (c *Client) ReadFile(remotePath string) ([]byte, error) {
-	out, err := c.Run("cat -- " + singleQuote(remotePath))
+	out, err := c.Run("cat -- " + paths.Quote(remotePath))
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +302,7 @@ func (c *Client) EnsureTerminfo(term string) error {
 	// `tic -x -` reads source from stdin. Guard with a remote infocmp so we only
 	// compile when the entry is genuinely absent. LoginShellWrap puts tic on the
 	// hub's Homebrew PATH (same as tmux).
-	remote := "infocmp " + singleQuote(term) + " >/dev/null 2>&1 || tic -x -"
+	remote := "infocmp " + paths.Quote(term) + " >/dev/null 2>&1 || tic -x -"
 	_, err = c.RunInput(LoginShellWrap(remote), bytes.NewReader(src))
 	return err
 }

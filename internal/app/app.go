@@ -212,9 +212,10 @@ func (a *App) autoNameOnFirstSight(live []session.Sess, n names.Names, now time.
 // breadcrumb whose name is live again (revived out-of-band, or the name was
 // reclaimed) is skipped — the live row already covers it. Names resolve through
 // the SAME precedence as live rows (the names.json entry survives eviction);
-// there is no live pane title, so a frozen codex/user name or the dir floor
-// shows. A breadcrumb read error degrades to no evicted rows rather than
-// failing the refresh.
+// the breadcrumb's captured pane title (freshly /rename-d by the sweep when
+// Claude was running) stands in for the live #{pane_title}, so an evicted
+// Claude session keeps its task summary as its name. A breadcrumb read error
+// degrades to no evicted rows rather than failing the refresh.
 func (a *App) evictedRows(live []session.Sess, n names.Names, now time.Time) []model.Row {
 	evicted, err := a.sessions.ListEvicted()
 	if err != nil || len(evicted) == 0 {
@@ -230,7 +231,8 @@ func (a *App) evictedRows(live []session.Sess, n names.Names, now time.Time) []m
 			continue
 		}
 		rows = append(rows, model.Row{
-			Display:  names.Resolve(n, e.Name, e.Dir, ""),
+			Display:  names.Resolve(n, e.Name, e.Dir, e.Title),
+			Title:    e.Title,
 			Dir:      e.Dir,
 			Age:      humanizeAge(now.Sub(e.EvictedAt)),
 			TmuxName: e.Name,

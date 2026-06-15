@@ -40,7 +40,16 @@ func Start(d Deps) (*Listener, error) {
 	l := &Listener{ln: ln, deps: d}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/open", l.handleOpen)
-	l.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	l.srv = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		// A shim request is one tiny form; full timeouts keep a stalled hub-side
+		// client from pinning goroutines for the life of the attach. The write
+		// timeout is generous because Handle may fetch a file over SSH first.
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 2 * time.Minute,
+		IdleTimeout:  time.Minute,
+	}
 	go l.srv.Serve(ln)
 	return l, nil
 }
@@ -62,6 +71,9 @@ func (l *Listener) handleOpen(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	// The shim sends three short url-encoded fields; anything near this cap is
+	// not a legitimate request.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "bad form: "+err.Error(), http.StatusBadRequest)
 		return

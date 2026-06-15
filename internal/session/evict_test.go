@@ -29,15 +29,18 @@ func (f *evictRunner) RunInput(cmd string, stdin io.Reader) (string, error) {
 
 func TestEvictStreamsScriptAndParsesNames(t *testing.T) {
 	f := &evictRunner{out: map[string]string{
-		"AGE_SECS=43200 sh -s": "evicted foo\nevicted bar-2\n",
+		"AGE_SECS=43200 RENAME_SECS=900 sh -s": "renamed baz\nevicted foo\nevicted bar-2\n",
 	}}
 	m := NewManager(f, &fakeAttacher{})
-	names, err := m.Evict(12 * time.Hour)
+	names, renamed, err := m.Evict(12*time.Hour, 15*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(names) != 2 || names[0] != "foo" || names[1] != "bar-2" {
 		t.Fatalf("parsed names = %v", names)
+	}
+	if len(renamed) != 1 || renamed[0] != "baz" {
+		t.Fatalf("parsed renamed = %v", renamed)
 	}
 	if f.stdin != EvictScript {
 		t.Fatalf("Evict must stream EvictScript on stdin (got %d bytes)", len(f.stdin))
@@ -49,7 +52,7 @@ func TestListEvictedDedupesKeepLast(t *testing.T) {
 		"cat ~/.duck/evicted.tsv 2>/dev/null || true": strings.Join([]string{
 			"foo\t~/dev/foo\t100\tcid-old\t",
 			"bar\t~/dev/bar\t200\t",
-			"foo\t~/dev/foo\t300\tcid-new\t--model opus", // re-evicted: this line wins
+			"foo\t~/dev/foo\t300\tcid-new\t--model opus\t✳ Fix login flow", // re-evicted: this line wins
 			"",
 		}, "\n"),
 	}}
@@ -61,7 +64,7 @@ func TestListEvictedDedupesKeepLast(t *testing.T) {
 	if len(ev) != 2 {
 		t.Fatalf("want 2 deduped entries, got %v", ev)
 	}
-	if ev[0].Name != "foo" || ev[0].ClaudeID != "cid-new" || ev[0].ResumeArgs != "--model opus" || !ev[0].EvictedAt.Equal(time.Unix(300, 0)) {
+	if ev[0].Name != "foo" || ev[0].ClaudeID != "cid-new" || ev[0].ResumeArgs != "--model opus" || ev[0].Title != "✳ Fix login flow" || !ev[0].EvictedAt.Equal(time.Unix(300, 0)) {
 		t.Fatalf("keep-last dedupe failed: %+v", ev[0])
 	}
 	if ev[1].Name != "bar" || ev[1].ClaudeID != "" || ev[1].Dir != "~/dev/bar" {
@@ -140,5 +143,47 @@ func TestEvictScriptCapturesResumeArgs(t *testing.T) {
 	}
 	if !strings.Contains(EvictScript, `"$cid" "$rargs"`) {
 		t.Fatal("EvictScript must write the resume args into the breadcrumb")
+	}
+}
+
+func TestEvictScriptRenamesAndCapturesTitle(t *testing.T) {
+	// Before killing a Claude pane the sweep types `/rename` (no args — Claude
+	// regenerates the session name from the conversation history), waits, then
+	// captures the pane title into the breadcrumb's 6th field so the picker can
+	// show a meaningful name for the dead session.
+	for _, want := range []string{
+		`tmux send-keys -t "$1" -l '/rename'`,
+		`'#{pane_title}'`,
+		`"$rargs" "$title"`,
+	} {
+		if !strings.Contains(EvictScript, want) {
+			t.Fatalf("EvictScript missing rename/title capture step %q", want)
+		}
+	}
+	// The /rename nudge must be gated on the pane actually running Claude, so a
+	// bare shell never gets a junk command typed into it.
+	if !strings.Contains(EvictScript, `'#{pane_current_command}'`) {
+		t.Fatal("rename nudge must be gated on pane_current_command")
+	}
+}
+
+func TestEvictScriptPeriodicRenamePass(t *testing.T) {
+	// The periodic title-refresh pass must be disable-able, never type into an
+	// attached pane, and only re-rename after NEW activity since the last nudge
+	// (@duck_renamed_at), so an idle session isn't renamed every sweep.
+	for _, want := range []string{
+		`: "${RENAME_SECS:=900}"`,
+		`if [ "$RENAME_SECS" -gt 0 ] 2>/dev/null; then`,
+		`[ $((now - activity)) -lt "$RENAME_SECS" ] && continue`,
+		`[ -n "$renamed" ] && [ "$renamed" -ge "$activity" ] 2>/dev/null && continue`,
+		`tmux set-option -t "$1" @duck_renamed_at "$now"`,
+		`echo "renamed $name"`,
+		// node/bun only count as Claude when the hook stamped a session id, so a
+		// bare REPL is never typed into.
+		`node|bun) [ -n "$2" ] && return 0 ;;`,
+	} {
+		if !strings.Contains(EvictScript, want) {
+			t.Fatalf("EvictScript rename pass missing %q", want)
+		}
 	}
 }

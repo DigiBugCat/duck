@@ -68,10 +68,11 @@ tmux set-option @claude_resume_args "${keep# }" 2>/dev/null
 exit 0`
 
 var (
-	evictAge       time.Duration
-	evictEvery     time.Duration
-	evictInstall   bool
-	evictUninstall bool
+	evictAge        time.Duration
+	evictEvery      time.Duration
+	evictRenameIdle time.Duration
+	evictInstall    bool
+	evictUninstall  bool
 )
 
 var evictCmd = &cobra.Command{
@@ -83,6 +84,10 @@ leaves a breadcrumb (~/.duck/evicted.tsv on the hub): the picker shows it as ⊘
 and enter revives it — a fresh tmux session in the same directory that runs
 'claude --resume' on the conversation that was active there.
 
+Each sweep also refreshes titles: detached Claude sessions idle past
+--rename-idle get '/rename' typed into them (once per burst of activity), so
+their names track the conversation instead of freezing on the first task.
+
 --install puts the same sweep on the hub as a launchd agent (runs every
 --every), so the hub evicts on its own; --uninstall removes the agent.`,
 	Args: cobra.NoArgs,
@@ -93,19 +98,28 @@ and enter revives it — a fresh tmux session in the same directory that runs
 		}
 		switch {
 		case evictInstall:
-			return installEvictAgent(w, evictAge, evictEvery)
+			return installEvictAgent(w, evictAge, evictEvery, evictRenameIdle)
 		case evictUninstall:
 			return uninstallEvictAgent(w)
 		}
-		names, err := w.sessions.Evict(evictAge)
+		// Best-effort hook install on manual sweeps too — otherwise a user who
+		// never runs --install gets no @claude_session_id stamps and every
+		// eviction falls back to the newest-jsonl heuristic. Idempotent.
+		if err := installClaudeIDHook(w); err != nil {
+			fmt.Printf("warning: could not install Claude session-id hook: %v\n", err)
+		}
+		evicted, renamed, err := w.sessions.Evict(evictAge, evictRenameIdle)
 		if err != nil {
 			return err
 		}
-		if len(names) == 0 {
+		for _, n := range renamed {
+			fmt.Printf("refreshed title of %s (/rename)\n", n)
+		}
+		if len(evicted) == 0 {
 			fmt.Printf("no sessions idle longer than %s\n", evictAge)
 			return nil
 		}
-		for _, n := range names {
+		for _, n := range evicted {
 			fmt.Printf("evicted %s\n", n)
 		}
 		fmt.Println("revive any of them from `duck --resume` (shown as ⊘)")
@@ -116,6 +130,7 @@ and enter revives it — a fresh tmux session in the same directory that runs
 func init() {
 	evictCmd.Flags().DurationVar(&evictAge, "age", 12*time.Hour, "idle threshold; detached sessions older than this are evicted")
 	evictCmd.Flags().DurationVar(&evictEvery, "every", 30*time.Minute, "sweep interval for the installed launchd agent (with --install)")
+	evictCmd.Flags().DurationVar(&evictRenameIdle, "rename-idle", 15*time.Minute, "idle threshold after which a detached Claude session gets a /rename title refresh (0 disables)")
 	evictCmd.Flags().BoolVar(&evictInstall, "install", false, "install the sweep as a launchd agent on the hub")
 	evictCmd.Flags().BoolVar(&evictUninstall, "uninstall", false, "remove the hub launchd agent")
 }
@@ -123,7 +138,7 @@ func init() {
 // installEvictAgent writes the eviction script and a launchd plist onto the hub
 // and (re)loads the agent, so the hub sweeps itself every `every` with the
 // given idle threshold. Re-running with new flags overwrites and reloads.
-func installEvictAgent(w *wiring, age, every time.Duration) error {
+func installEvictAgent(w *wiring, age, every, renameIdle time.Duration) error {
 	if err := installClaudeIDHook(w); err != nil {
 		// The hook is an accuracy upgrade, not a requirement: without it eviction
 		// falls back to the newest-conversation-in-dir heuristic. Warn and continue.
@@ -142,14 +157,14 @@ func installEvictAgent(w *wiring, age, every time.Duration) error {
 	<array>
 		<string>/bin/sh</string>
 		<string>-c</string>
-		<string>AGE_SECS=%d /bin/sh "$HOME/.duck/evict.sh"</string>
+		<string>AGE_SECS=%d RENAME_SECS=%d /bin/sh "$HOME/.duck/evict.sh"</string>
 	</array>
 	<key>StartInterval</key><integer>%d</integer>
 	<key>StandardOutPath</key><string>/tmp/duck-evict.log</string>
 	<key>StandardErrorPath</key><string>/tmp/duck-evict.log</string>
 </dict>
 </plist>
-`, evictLabel, int64(age/time.Second), int64(every/time.Second))
+`, evictLabel, int64(age/time.Second), int64(renameIdle/time.Second), int64(every/time.Second))
 	plistPath := "~/Library/LaunchAgents/" + evictLabel + ".plist"
 	if _, err := w.client.RunInput(
 		"mkdir -p ~/Library/LaunchAgents && cat > "+plistPath, strings.NewReader(plist)); err != nil {
@@ -165,6 +180,9 @@ func installEvictAgent(w *wiring, age, every time.Duration) error {
 		return fmt.Errorf("load launchd agent: %w", err)
 	}
 	fmt.Printf("installed: hub evicts sessions idle >%s every %s (%s)\n", age, every, evictLabel)
+	if renameIdle > 0 {
+		fmt.Printf("each sweep also /rename-refreshes Claude titles on sessions idle >%s\n", renameIdle)
+	}
 	return nil
 }
 

@@ -32,9 +32,11 @@ func newOpenForwarding(client *sshx.Client) func() (stop func()) {
 		noop := func() {}
 		ln, err := openfwd.Start(productionOpenDeps(client))
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (listener: %v); hub opens will run on the hub\n", err)
 			return noop
 		}
 		if err := client.RemoteForward(openfwd.HubPort, ln.LocalPort()); err != nil {
+			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (reverse forward: %v); hub opens will run on the hub\n", err)
 			_ = ln.Close()
 			return noop
 		}

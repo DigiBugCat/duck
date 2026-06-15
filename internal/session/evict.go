@@ -23,9 +23,9 @@ import (
 )
 
 // evictedPath is the hub-side breadcrumb file: one tab-separated line per
-// evicted session — name \t @duck_dir \t evicted-epoch \t claude-session-id.
-// Append-only from the script; the laptop dedupes keep-last and prunes lines on
-// revive/kill.
+// evicted session — name \t @duck_dir \t evicted-epoch \t claude-session-id
+// \t resume-args \t pane-title. Append-only from the script; the laptop
+// dedupes keep-last and prunes lines on revive/kill.
 const evictedPath = "~/.duck/evicted.tsv"
 
 // claudeIDOption is the tmux user option carrying the EXACT Claude Code session
@@ -37,17 +37,37 @@ const evictedPath = "~/.duck/evicted.tsv"
 // for the session's dir.
 const claudeIDOption = "@claude_session_id"
 
-// EvictScript is the hub-side eviction sweep, parameterized by $AGE_SECS (idle
-// threshold in seconds). For every tmux session that is detached, not running a
+// EvictScript is the hub-side sweep, parameterized by $AGE_SECS (eviction idle
+// threshold in seconds) and $RENAME_SECS (title-refresh idle threshold; 0
+// disables the rename pass).
+//
+// PASS 1 (rename): for every detached, non-looped session idle past
+// $RENAME_SECS whose pane is still running Claude (claude_pane: an exact
+// 'claude' process, or node/bun with a hook-stamped @claude_session_id), it
+// types `/rename` (no args
+// — Claude regenerates the session name from the conversation history) so the
+// pane title tracks the session's overall work instead of freezing on the
+// first task. @duck_renamed_at (stamped after each nudge) gates the pass: a
+// session is only re-renamed when there has been activity SINCE the last
+// nudge, so an idle session gets exactly one rename per burst of work, not one
+// per sweep. Attached sessions are never typed into (the user may be mid-
+// composition); looped sessions are never touched.
+//
+// PASS 2 (evict): for every tmux session that is detached, not running a
 // /loop (@duck_loop), and idle past the threshold, it:
 //
 //  1. resolves the Claude Code conversation to resume: the exact id from the
 //     @claude_session_id option when the SessionStart hook stamped one, else
 //     the newest jsonl for the session's @duck_dir (~/.claude/projects/<slug>/,
 //     slug = dir with non-alphanumerics collapsed to '-'),
-//  2. kills the tmux session,
-//  3. appends a breadcrumb line to ~/.duck/evicted.tsv,
-//  4. prints "evicted <name>" so callers can count/report.
+//  2. if the pane is still running Claude, types `/rename` (no args — Claude
+//     auto-generates a fresh name from the conversation history) and waits,
+//     so the title captured next reflects the whole session, not just the
+//     last task; then captures the pane title into the breadcrumb so the
+//     picker can show a meaningful name for the dead session,
+//  3. kills the tmux session,
+//  4. appends a breadcrumb line to ~/.duck/evicted.tsv,
+//  5. prints "evicted <name>" so callers can count/report.
 //
 // Attached and looped sessions are NEVER evicted (same safety contract as
 // `duck clean`). The newest-jsonl fallback can pick a sibling session's
@@ -55,15 +75,51 @@ const claudeIDOption = "@claude_session_id"
 // revive still lands in the right directory and `claude --resume` opens the
 // most recent conversation there — the same thing `claude --continue` would do.
 const EvictScript = `: "${AGE_SECS:=43200}"
+: "${RENAME_SECS:=900}"
 now=$(date +%s)
 mkdir -p "$HOME/.duck"
-tmux list-sessions -F '#{session_name}	#{@duck_dir}	#{session_attached}	#{session_activity}	#{@duck_loop}	#{@claude_session_id}	#{@claude_resume_args}' 2>/dev/null |
-while IFS='	' read -r name dir attached activity loop cid rargs; do
+# claude_pane <session> <stamped-cid>: is the session's pane running Claude?
+# An exact 'claude' process always counts; node/bun only count when the
+# SessionStart hook stamped a session id, so a bare REPL never gets typed into.
+claude_pane() {
+  pcmd=$(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null)
+  case "$pcmd" in
+    claude) return 0 ;;
+    node|bun) [ -n "$2" ] && return 0 ;;
+  esac
+  return 1
+}
+# nudge_rename <session>: type /rename (no args — Claude regenerates the name
+# from the conversation history) and stamp @duck_renamed_at so the session is
+# not re-nudged until it sees new activity.
+nudge_rename() {
+  tmux send-keys -t "$1" -l '/rename' 2>/dev/null
+  sleep 1
+  tmux send-keys -t "$1" Enter 2>/dev/null
+  tmux set-option -t "$1" @duck_renamed_at "$now" 2>/dev/null
+}
+if [ "$RENAME_SECS" -gt 0 ] 2>/dev/null; then
+tmux list-sessions -F '#{session_name}	#{session_attached}	#{session_activity}	#{@duck_loop}	#{@duck_renamed_at}	#{@claude_session_id}' 2>/dev/null |
+while IFS='	' read -r name attached activity loop renamed cid; do
+  [ -z "$name" ] && continue
+  [ -n "$attached" ] && [ "$attached" != "0" ] && continue
+  [ -n "$loop" ] && [ "$loop" != "0" ] && continue
+  [ -z "$activity" ] && continue
+  [ $((now - activity)) -lt "$RENAME_SECS" ] && continue
+  [ -n "$renamed" ] && [ "$renamed" -ge "$activity" ] 2>/dev/null && continue
+  claude_pane "$name" "$cid" || continue
+  nudge_rename "$name"
+  echo "renamed $name"
+done
+fi
+tmux list-sessions -F '#{session_name}	#{@duck_dir}	#{session_attached}	#{session_activity}	#{@duck_loop}	#{@claude_session_id}	#{@claude_resume_args}	#{@duck_renamed_at}' 2>/dev/null |
+while IFS='	' read -r name dir attached activity loop cid rargs renamed; do
   [ -z "$name" ] && continue
   [ -n "$attached" ] && [ "$attached" != "0" ] && continue
   [ -n "$loop" ] && [ "$loop" != "0" ] && continue
   [ -z "$activity" ] && continue
   [ $((now - activity)) -lt "$AGE_SECS" ] && continue
+  stamped=$cid
   if [ -z "$cid" ] && [ -n "$dir" ]; then
     case "$dir" in
       "~") rdir="$HOME" ;;
@@ -77,8 +133,17 @@ while IFS='	' read -r name dir attached activity loop cid rargs; do
       [ -n "$newest" ] && cid=$(basename "$newest" .jsonl)
     fi
   fi
+  # Skip the pre-evict nudge (and its wait) when the rename pass already
+  # refreshed the title since the session's last activity.
+  if ! { [ -n "$renamed" ] && [ "$renamed" -ge "$activity" ] 2>/dev/null; }; then
+    if claude_pane "$name" "$stamped"; then
+      nudge_rename "$name"
+      sleep 8
+    fi
+  fi
+  title=$(tmux display-message -p -t "$name" '#{pane_title}' 2>/dev/null | tr -d '\t\r\n' | head -c 200)
   tmux kill-session -t "$name" 2>/dev/null || continue
-  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$dir" "$now" "$cid" "$rargs" >> "$HOME/.duck/evicted.tsv"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$dir" "$now" "$cid" "$rargs" "$title" >> "$HOME/.duck/evicted.tsv"
   echo "evicted $name"
 done`
 
@@ -91,25 +156,30 @@ type Evicted struct {
 	EvictedAt  time.Time // when the sweep killed it
 	ClaudeID   string    // Claude Code session id to `claude --resume`; "" = none found
 	ResumeArgs string    // allowlisted launch flags captured by the hook (e.g. "--model opus"); replayed on revive
+	Title      string    // pane title at eviction time, freshly re-generated via /rename when Claude was running; "" = none captured
 }
 
-// Evict runs one eviction sweep on the hub NOW with the given idle threshold,
-// returning the names of the sessions it evicted. It streams EvictScript over
-// SSH so the manual sweep and the installed launchd timer execute identical
-// logic.
-func (m *Manager) Evict(maxAge time.Duration) ([]string, error) {
-	secs := int64(maxAge / time.Second)
-	out, err := m.run.RunInput(fmt.Sprintf("AGE_SECS=%d sh -s", secs), strings.NewReader(EvictScript))
+// Evict runs one sweep on the hub NOW: the title-refresh pass with renameIdle
+// (0 disables it) and the eviction pass with maxAge. It returns the names of
+// the sessions evicted and the names whose titles were nudged via /rename. It
+// streams EvictScript over SSH so the manual sweep and the installed launchd
+// timer execute identical logic.
+func (m *Manager) Evict(maxAge, renameIdle time.Duration) (evicted, renamed []string, err error) {
+	cmd := fmt.Sprintf("AGE_SECS=%d RENAME_SECS=%d sh -s",
+		int64(maxAge/time.Second), int64(renameIdle/time.Second))
+	out, err := m.run.RunInput(cmd, strings.NewReader(EvictScript))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var names []string
 	for _, line := range strings.Split(out, "\n") {
 		if n, ok := strings.CutPrefix(strings.TrimSpace(line), "evicted "); ok && n != "" {
-			names = append(names, n)
+			evicted = append(evicted, n)
+		}
+		if n, ok := strings.CutPrefix(strings.TrimSpace(line), "renamed "); ok && n != "" {
+			renamed = append(renamed, n)
 		}
 	}
-	return names, nil
+	return evicted, renamed, nil
 }
 
 // ListEvicted reads the hub's eviction breadcrumbs, deduped keep-last per name
@@ -136,6 +206,11 @@ func (m *Manager) ListEvicted() ([]Evicted, error) {
 		}
 		if len(fields) >= 5 {
 			e.ResumeArgs = strings.TrimSpace(fields[4])
+		}
+		if len(fields) >= 6 {
+			// The script caps the title with `head -c` (bytes, not runes), which can
+			// split a trailing multibyte char; drop any invalid remainder.
+			e.Title = strings.TrimSpace(strings.ToValidUTF8(fields[5], ""))
 		}
 		if i, ok := byName[e.Name]; ok {
 			order[i] = e
