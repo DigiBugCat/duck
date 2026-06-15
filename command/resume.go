@@ -47,7 +47,7 @@ func runResume(name string) error {
 	if name != "" {
 		// Direct attach by internal tmux name, through the reconnect loop so a
 		// transport drop reconnects and a ^c give-up is remembered per-terminal.
-		runAttachLoop(w.sessions, name)
+		runAttachLoop(w.sessions, name, w.moshAttach)
 		return nil
 	}
 
@@ -69,7 +69,7 @@ func runResume(name string) error {
 		return nil // user quit without choosing
 	}
 	// The TUI has fully torn down; hand the process off to the reconnect loop.
-	runAttachLoop(w.sessions, chosen)
+	runAttachLoop(w.sessions, chosen, w.moshAttach)
 	return nil
 }
 

@@ -20,6 +20,14 @@ type Config struct {
 	// (DESIGN §5). Empty falls back to the built-in default in command/wiring.go.
 	CodexModel string `toml:"codex_model,omitempty"`
 
+	// AttachTransport selects the INTERACTIVE-ATTACH transport: "ssh" (default,
+	// empty) or "mosh". mosh is opt-in and only replaces the interactive
+	// `tmux attach` — the SSH control plane (Run, the opener's port forwards,
+	// ReadFile, naming, provisioning, terminfo) and mosh's own bootstrap always
+	// stay on ssh, and ssh is the fallback when the local `mosh` client is absent.
+	// Read via Transport() so the ssh default lives in exactly one place.
+	AttachTransport string `toml:"attach_transport,omitempty"`
+
 	// AutoName is the per-dir auto-naming toggle (DESIGN §5 / §M3): the key is a
 	// tilde-form dir, the value whether duck may send that dir's remote terminal
 	// content to the codex model when it first sees an unnamed session. A missing
@@ -50,6 +58,17 @@ func (c *Config) AutoNameEnabled(dir string) bool {
 		return false
 	}
 	return c.AutoName[dir]
+}
+
+// Transport returns the configured interactive-attach transport, defaulting to
+// "ssh" for an empty/unset value (and a nil receiver) so callers need no guard.
+// "ssh" and "mosh" are the meaningful values; the setter (`duck config
+// attach-transport`) validates input, so any stored value is one of those.
+func (c *Config) Transport() string {
+	if c == nil || c.AttachTransport == "" {
+		return "ssh"
+	}
+	return c.AttachTransport
 }
 
 func path() (string, error) {

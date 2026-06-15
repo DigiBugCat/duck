@@ -20,6 +20,37 @@ func TestCodexModelRoundTrips(t *testing.T) {
 	}
 }
 
+// TestAttachTransportRoundTrips pins that the interactive-attach transport field
+// decodes from the config TOML and is reflected by Transport().
+func TestAttachTransportRoundTrips(t *testing.T) {
+	c := &Config{}
+	if _, err := toml.Decode("hub = \"me@host\"\nattach_transport = \"mosh\"\n", c); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if c.AttachTransport != "mosh" {
+		t.Fatalf("AttachTransport = %q, want mosh", c.AttachTransport)
+	}
+	if c.Transport() != "mosh" {
+		t.Fatalf("Transport() = %q, want mosh", c.Transport())
+	}
+}
+
+// TestTransportDefaultsToSSH pins the ssh default: empty/unset, a nil receiver,
+// and an explicit value all resolve through the one accessor so callers need no
+// guard and the default lives in exactly one place.
+func TestTransportDefaultsToSSH(t *testing.T) {
+	if got := (&Config{}).Transport(); got != "ssh" {
+		t.Fatalf("(&Config{}).Transport() = %q, want ssh", got)
+	}
+	var nilCfg *Config
+	if got := nilCfg.Transport(); got != "ssh" {
+		t.Fatalf("nil *Config Transport() = %q, want ssh", got)
+	}
+	if got := (&Config{AttachTransport: "mosh"}).Transport(); got != "mosh" {
+		t.Fatalf("explicit mosh Transport() = %q, want mosh", got)
+	}
+}
+
 // TestAutoNameEnabledReflectsPerDirToggle pins the per-dir naming toggle: a
 // dir in the map with true is ON, a dir set false or absent is OFF, and a nil
 // map / nil receiver is OFF (the opt-in default).

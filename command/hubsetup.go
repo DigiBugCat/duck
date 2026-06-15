@@ -233,13 +233,21 @@ func runHubSetup(addr string, h *hub.Hub) error {
 	}
 	fmt.Printf("hub platform: %s/%s\n", goos, goarch)
 
-	// 2. install the toolchain (tmux + mutagen + TPM).
-	fmt.Println("installing tmux + mutagen + TPM ...")
+	// 2. install the toolchain (tmux + mutagen + rsync + mosh + TPM).
+	fmt.Println("installing tmux + mutagen + mosh + TPM ...")
 	if _, err := h.Run(installToolchainScript()); err != nil {
 		return fmt.Errorf("installing toolchain: %w", err)
 	}
 	if _, err := h.Run(installTPMScript()); err != nil {
 		return fmt.Errorf("installing TPM: %w", err)
+	}
+	// mosh is the opt-in interactive-attach transport (`duck config
+	// attach-transport mosh`); it needs mosh-server on the hub's PATH. The
+	// toolchain step above installs it, so this only warns if it is somehow still
+	// missing (e.g. an unsupported package manager). Best-effort: a probe failure
+	// is ignored — mosh's own connect-time error is the real source of truth.
+	if out, err := h.Run(moshServerProbeCmd()); err == nil && strings.TrimSpace(out) != "yes" {
+		fmt.Println("note: mosh-server not found on the hub PATH; `duck config attach-transport mosh` will fall back to ssh until it is installed.")
 	}
 
 	// 3. write the de-hooked tmux.conf and run TPM plugin install.
@@ -344,13 +352,21 @@ func installToolchainScript() string {
 		`  brew list tmux >/dev/null 2>&1 || brew install tmux`,
 		`  brew list mutagen-io/mutagen/mutagen >/dev/null 2>&1 || brew install mutagen-io/mutagen/mutagen`,
 		`  brew list rsync >/dev/null 2>&1 || brew install rsync`,
+		`  brew list mosh >/dev/null 2>&1 || brew install mosh`,
 		`elif command -v apt-get >/dev/null 2>&1; then`,
-		`  sudo apt-get update && sudo apt-get install -y tmux rsync`,
+		`  sudo apt-get update && sudo apt-get install -y tmux rsync mosh`,
 		`  command -v mutagen >/dev/null 2>&1 || echo "install mutagen manually: https://mutagen.io/documentation/introduction/installation"`,
 		`else`,
 		`  echo "no supported package manager (brew/apt-get) found on hub" >&2; exit 1`,
 		`fi`,
 	}, "\n")
+}
+
+// moshServerProbeCmd reports whether mosh-server is on the hub's login-shell
+// PATH (it prints "yes" or "no"). Run via hub.Run (login-wrapped) so the
+// Homebrew bin dir where `brew install mosh` lands mosh-server is on PATH.
+func moshServerProbeCmd() string {
+	return `command -v mosh-server >/dev/null 2>&1 && echo yes || echo no`
 }
 
 // installTPMScript clones the Tmux Plugin Manager if it is not already present.

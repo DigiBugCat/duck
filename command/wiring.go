@@ -7,6 +7,7 @@ package command
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -34,6 +35,28 @@ type wiring struct {
 	namer    namer.Namer
 	flow     *flow.Flow
 	app      *app.App
+	// moshAttach is the EFFECTIVE interactive-attach transport for this process:
+	// true only when the config selects mosh AND a local `mosh` client exists
+	// (else build() warns and falls back to ssh). The attach call sites pass it to
+	// runAttachLoop so the reconnect loop knows mosh self-heals (no ssh-255 backoff).
+	moshAttach bool
+}
+
+// effectiveMoshAttach resolves the EFFECTIVE interactive-attach transport: mosh
+// only when the config selects it AND a local `mosh` client is on PATH;
+// otherwise ssh. When mosh is selected but the client is absent it returns
+// (false, <warning>) so the caller warns once and falls back to ssh — the user
+// is never locked out by a missing client. The hub side (mosh-server) and UDP
+// reachability surface later via mosh's own connect-time stderr. lookPath is
+// exec.LookPath in production (injected so the three branches are unit-testable).
+func effectiveMoshAttach(transport string, lookPath func(string) (string, error)) (useMosh bool, warn string) {
+	if transport != "mosh" {
+		return false, ""
+	}
+	if _, err := lookPath("mosh"); err != nil {
+		return false, "duck: attach-transport is mosh but the `mosh` client isn't on your PATH; using ssh. install it with: brew install mosh"
+	}
+	return true, ""
 }
 
 // build assembles the wiring from the configured hub, warming the SSH
@@ -43,7 +66,16 @@ func build() (*wiring, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := sshx.New(cfg.Hub)
+	// Resolve the EFFECTIVE attach transport once: mosh only when the user opted
+	// in AND the local `mosh` client is installed; otherwise fall back to ssh with
+	// a one-line warning so the user is never locked out by a missing client. The
+	// hub side (mosh-server) and UDP reachability surface at connect time via
+	// mosh's own stderr. Only the interactive attach is affected — see Client.Mosh.
+	useMosh, warn := effectiveMoshAttach(cfg.Transport(), exec.LookPath)
+	if warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
+	}
+	client := sshx.NewWithTransport(cfg.Hub, useMosh)
 	// Best-effort warm-up; failures surface on the first real call with a
 	// clearer message.
 	_ = client.WarmUp()
@@ -71,7 +103,7 @@ func build() (*wiring, error) {
 	// on a CleanLeave outcome — the sole outcome that permits flow's existing
 	// fresh-untouched cleanup.
 	fl.SetInteractiveAttach(func(tmuxName string, _ bool) (bool, error) {
-		return runAttachLoop(sess, tmuxName) == CleanLeave, nil
+		return runAttachLoop(sess, tmuxName, useMosh) == CleanLeave, nil
 	})
 	// Per-folder Claude history co-sync (OFF by default): when on, a bare `duck`
 	// that mirrors a folder also co-syncs that folder's ~/.claude/projects/<slug>.
@@ -85,13 +117,14 @@ func build() (*wiring, error) {
 	ap.SetAutoName(cfg.AutoNameEnabled)
 
 	return &wiring{
-		addr:     cfg.Hub,
-		client:   client,
-		sessions: sess,
-		names:    store,
-		namer:    nm,
-		flow:     fl,
-		app:      ap,
+		addr:       cfg.Hub,
+		client:     client,
+		sessions:   sess,
+		names:      store,
+		namer:      nm,
+		flow:       fl,
+		app:        ap,
+		moshAttach: useMosh,
 	}, nil
 }
 

@@ -50,6 +50,7 @@ var configCmd = &cobra.Command{
 			claudeSync = "on"
 		}
 		fmt.Fprintf(tw, "claude history sync\t%s  (duck config claude-sync on|off)\n", claudeSync)
+		fmt.Fprintf(tw, "attach transport\t%s  (duck config attach-transport ssh|mosh)\n", cfg.Transport())
 		tw.Flush()
 
 		// Per-folder sync memory: what duck remembers about where it auto-mirrors.
@@ -152,8 +153,47 @@ var configClaudeSyncCmd = &cobra.Command{
 	},
 }
 
+// configAttachTransportCmd selects the interactive-attach transport. ssh
+// (default) is also the always-on control plane and the fallback; mosh is
+// opt-in (UDP, resilient roaming over Tailscale) and only replaces the
+// interactive `tmux attach`. The SSH control plane (sync forwards, the opener,
+// naming, provisioning) always stays on ssh — mosh cannot port-forward.
+var configAttachTransportCmd = &cobra.Command{
+	Use:       "attach-transport <ssh|mosh>",
+	Short:     "Select the interactive attach transport (ssh default; mosh is opt-in)",
+	Args:      cobra.ExactArgs(1),
+	ValidArgs: []string{"ssh", "mosh"},
+	RunE: func(c *cobra.Command, args []string) error {
+		// ValidArgs only drives shell completion; enforce the allowed set here.
+		var stored, shown string
+		switch args[0] {
+		case "ssh":
+			stored, shown = "", "ssh" // empty == ssh default; keeps config.toml clean
+		case "mosh":
+			stored, shown = "mosh", "mosh"
+		default:
+			return fmt.Errorf("expected ssh or mosh, got %q", args[0])
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		cfg.AttachTransport = stored
+		if err := config.Save(cfg); err != nil {
+			return err
+		}
+		out := c.OutOrStdout()
+		fmt.Fprintf(out, "attach transport: %s\n", shown)
+		if shown == "mosh" {
+			fmt.Fprintln(out, "  needs `mosh` on your laptop and mosh-server on the hub (duck hub setup installs it).")
+			fmt.Fprintln(out, "  SSH stays the control plane + fallback; only the interactive attach uses mosh.")
+		}
+		return nil
+	},
+}
+
 func init() {
-	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd)
+	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd, configAttachTransportCmd)
 }
 
 func sortedKeys(m map[string]string) []string {

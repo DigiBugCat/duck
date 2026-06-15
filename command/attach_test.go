@@ -81,12 +81,45 @@ func TestAttachFailedStopsNoReconnect(t *testing.T) {
 	}
 	var surfaced bool
 	for _, m := range msgs {
-		if strings.Contains(m, "could not start ssh attach") {
+		// The message is transport-aware now ("could not start %s attach"), so
+		// match the stable prefix rather than the ssh-specific wording.
+		if strings.Contains(m, "could not start") {
 			surfaced = true
 		}
 	}
 	if !surfaced {
 		t.Fatalf("AttachFailed must surface the error; messages = %v", msgs)
+	}
+}
+
+// TestSelfHealingMoshNoReconnect: with the mosh (self-healing) transport, a
+// non-zero exit that would be a TransportDrop on ssh is terminal — the loop
+// returns SessionGone on the FIRST attach and never backoff-retries (mosh roams
+// on its own; the only non-zero exits are gone-session / bootstrap failures,
+// which retrying forever would be wrong).
+func TestSelfHealingMoshNoReconnect(t *testing.T) {
+	a := &fakeLoopAttacher{errs: []error{exitErr(t, 255)}}
+	var msgs []string
+	rc := newTestReconnector(nil, &msgs, nil)
+	rc.selfHealing = true
+
+	if got := rc.attachWithReconnect(a, "foo"); got != SessionGone {
+		t.Fatalf("outcome = %v, want SessionGone (mosh exit is terminal)", got)
+	}
+	if a.calls != 1 {
+		t.Fatalf("attach calls = %d, want 1 (mosh must not backoff-retry)", a.calls)
+	}
+	// The user-facing message must take the mosh-specific branch, not the ssh
+	// "no longer on the hub" wording. (newTestReconnector's printf records the
+	// format string, so match on it.)
+	var sawMosh bool
+	for _, m := range msgs {
+		if strings.Contains(m, "mosh attach for") {
+			sawMosh = true
+		}
+	}
+	if !sawMosh {
+		t.Fatalf("want the mosh-specific ended message; got %v", msgs)
 	}
 }
 

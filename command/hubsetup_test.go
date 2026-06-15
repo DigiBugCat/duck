@@ -102,8 +102,14 @@ func TestParseUname(t *testing.T) {
 
 func TestInstallScriptsAndTmuxConf(t *testing.T) {
 	tool := installToolchainScript()
-	if !strings.Contains(tool, "tmux") || !strings.Contains(tool, "mutagen") || !strings.Contains(tool, "rsync") {
-		t.Errorf("toolchain script must install tmux, mutagen, and rsync:\n%s", tool)
+	if !strings.Contains(tool, "tmux") || !strings.Contains(tool, "mutagen") || !strings.Contains(tool, "rsync") || !strings.Contains(tool, "mosh") {
+		t.Errorf("toolchain script must install tmux, mutagen, rsync, and mosh:\n%s", tool)
+	}
+	// mosh must be installed under BOTH package managers — a single Contains("mosh")
+	// would pass if a refactor dropped it from the apt branch, leaving Linux hubs
+	// without mosh-server (and attach-transport=mosh silently falling back to ssh).
+	if !strings.Contains(tool, "brew install mosh") || !strings.Contains(tool, "apt-get install -y tmux rsync mosh") {
+		t.Errorf("mosh must be installed under both the brew and apt branches:\n%s", tool)
 	}
 	tpm := installTPMScript()
 	if !strings.Contains(tpm, "tmux-plugins/tpm") || !strings.Contains(tpm, "~/.tmux/plugins/tpm") {
@@ -114,6 +120,15 @@ func TestInstallScriptsAndTmuxConf(t *testing.T) {
 	}
 	if !strings.Contains(writeTmuxConfCmd(), "~/.tmux.conf") {
 		t.Errorf("tmux.conf must be written to ~/.tmux.conf: %s", writeTmuxConfCmd())
+	}
+}
+
+// TestMoshServerProbe pins the hub mosh-server readiness probe used after the
+// toolchain install (so `duck config attach-transport mosh` has a server to reach).
+func TestMoshServerProbe(t *testing.T) {
+	probe := moshServerProbeCmd()
+	if !strings.Contains(probe, "mosh-server") || !strings.Contains(probe, "command -v") {
+		t.Errorf("mosh-server probe must `command -v mosh-server`: %s", probe)
 	}
 }
 
