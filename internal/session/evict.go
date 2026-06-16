@@ -74,7 +74,12 @@ const claudeIDOption = "@claude_session_id"
 // conversation when several un-stamped sessions share one dir; in that case
 // revive still lands in the right directory and `claude --resume` opens the
 // most recent conversation there — the same thing `claude --continue` would do.
-const EvictScript = `: "${AGE_SECS:=43200}"
+const EvictScript = `# Ensure tmux is reachable: a launchd agent runs with a bare PATH
+# (/usr/bin:/bin:/usr/sbin:/sbin) that excludes Homebrew, so a bare 'tmux'
+# silently fails (every call redirects stderr to /dev/null) and the sweep
+# becomes a no-op. Prepend the Homebrew bin dirs (Apple Silicon + Intel).
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+: "${AGE_SECS:=43200}"
 : "${RENAME_SECS:=900}"
 now=$(date +%s)
 mkdir -p "$HOME/.duck"
