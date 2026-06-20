@@ -21,16 +21,24 @@ type Config struct {
 	CodexModel string `toml:"codex_model,omitempty"`
 
 	// AttachTransport selects the INTERACTIVE-ATTACH transport. The default
-	// (empty) is "auto": use mosh when the local `mosh` client is present, else
-	// ssh — so a client opts in just by installing mosh, no config needed (the
-	// hub always supports it, `duck hub setup` installs mosh-server). The two
-	// explicit overrides are "ssh" (force ssh even if mosh is installed) and
-	// "mosh" (force mosh, warning + ssh fallback when the client is absent).
-	// Either way mosh only replaces the interactive `tmux attach` — the SSH
-	// control plane (Run, the opener's port forwards, ReadFile, naming,
-	// provisioning, terminfo) and mosh's own bootstrap always stay on ssh.
-	// Read via Transport() so the auto default lives in exactly one place.
+	// (empty) is "auto": use tssh (trzsz-ssh, UDP/QUIC roaming) when the local
+	// `tssh` client is present, else ssh — so a client opts in just by installing
+	// tssh, no config needed (the hub always supports it, `duck hub setup`
+	// installs tsshd). The two explicit overrides are "ssh" (force ssh even if
+	// tssh is installed) and "tssh" (force tssh, warning + ssh fallback when the
+	// client is absent). Either way tssh only replaces the interactive `tmux
+	// attach` — the SSH control plane (Run, the opener's port forwards, ReadFile,
+	// naming, provisioning, terminfo) always stays on ssh. Read via Transport()
+	// so the auto default lives in exactly one place.
 	AttachTransport string `toml:"attach_transport,omitempty"`
+
+	// HubTsshdPath is the absolute path to tsshd on the hub, detected by `duck hub
+	// setup` over a login shell (`command -v tsshd`). The tssh attach passes it via
+	// --tsshd-path so the hub's non-login ssh shell finds tsshd even when it lives
+	// off the default PATH (Homebrew's /opt/homebrew/bin on Apple Silicon). Empty
+	// when detection found nothing (e.g. a Linux hub where tssh auto-installs tsshd
+	// itself) — the attach then omits --tsshd-path and lets tssh self-resolve.
+	HubTsshdPath string `toml:"hub_tsshd_path,omitempty"`
 
 	// AutoName is the per-dir auto-naming toggle (DESIGN §5 / §M3): the key is a
 	// tilde-form dir, the value whether duck may send that dir's remote terminal
@@ -66,7 +74,7 @@ func (c *Config) AutoNameEnabled(dir string) bool {
 
 // Transport returns the configured interactive-attach transport, defaulting to
 // "auto" for an empty/unset value (and a nil receiver) so callers need no guard.
-// "auto" (mosh-if-present, else ssh), "ssh", and "mosh" are the meaningful
+// "auto" (tssh-if-present, else ssh), "ssh", and "tssh" are the meaningful
 // values; the setter (`duck config attach-transport`) validates input, so any
 // stored value is one of those — and "auto" is stored as empty to keep the
 // config.toml clean.

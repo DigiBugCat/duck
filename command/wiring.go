@@ -35,39 +35,39 @@ type wiring struct {
 	namer    namer.Namer
 	flow     *flow.Flow
 	app      *app.App
-	// moshAttach is the EFFECTIVE interactive-attach transport for this process:
-	// true only when the config selects mosh AND a local `mosh` client exists
+	// tsshAttach is the EFFECTIVE interactive-attach transport for this process:
+	// true only when the config selects tssh AND a local `tssh` client exists
 	// (else build() warns and falls back to ssh). The attach call sites pass it to
-	// runAttachLoop so the reconnect loop knows mosh self-heals (no ssh-255 backoff).
-	moshAttach bool
+	// runAttachLoop so the reconnect loop knows tssh self-heals (no ssh-255 backoff).
+	tsshAttach bool
 }
 
-// effectiveMoshAttach resolves the EFFECTIVE interactive-attach transport from
+// effectiveTsshAttach resolves the EFFECTIVE interactive-attach transport from
 // the configured value:
 //
-//   - "auto" (the default): use mosh when a local `mosh` client is on PATH,
+//   - "auto" (the default): use tssh when a local `tssh` client is on PATH,
 //     else ssh — silently, because auto-detect is the whole point: a client
-//     opts in just by installing mosh, and the hub always supports it
-//     (`duck hub setup` installs mosh-server). No warning on absence.
-//   - "mosh" (explicit force): use mosh, but when the client is absent return
+//     opts in just by installing tssh, and the hub always supports it
+//     (`duck hub setup` installs tsshd). No warning on absence.
+//   - "tssh" (explicit force): use tssh, but when the client is absent return
 //     (false, <warning>) so the caller warns once and falls back to ssh — an
 //     explicit request that can't be honored is worth a word.
-//   - "ssh" (explicit force): always ssh, even if mosh is installed.
+//   - "ssh" (explicit force): always ssh, even if tssh is installed.
 //
-// The hub side (mosh-server) and UDP reachability surface later via mosh's own
+// The hub side (tsshd) and UDP reachability surface later via tssh's own
 // connect-time stderr. lookPath is exec.LookPath in production (injected so the
 // branches are unit-testable).
-func effectiveMoshAttach(transport string, lookPath func(string) (string, error)) (useMosh bool, warn string) {
+func effectiveTsshAttach(transport string, lookPath func(string) (string, error)) (useTssh bool, warn string) {
 	switch transport {
 	case "ssh":
 		return false, ""
-	case "mosh":
-		if _, err := lookPath("mosh"); err != nil {
-			return false, "duck: attach-transport is mosh but the `mosh` client isn't on your PATH; using ssh. install it with: brew install mosh"
+	case "tssh":
+		if _, err := lookPath("tssh"); err != nil {
+			return false, "duck: attach-transport is tssh but the `tssh` client isn't on your PATH; using ssh. install it with: brew install trzsz-ssh"
 		}
 		return true, ""
-	default: // "auto": prefer mosh when present, silently fall back to ssh.
-		if _, err := lookPath("mosh"); err != nil {
+	default: // "auto": prefer tssh when present, silently fall back to ssh.
+		if _, err := lookPath("tssh"); err != nil {
 			return false, ""
 		}
 		return true, ""
@@ -81,16 +81,16 @@ func build() (*wiring, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Resolve the EFFECTIVE attach transport once: mosh only when the user opted
-	// in AND the local `mosh` client is installed; otherwise fall back to ssh with
+	// Resolve the EFFECTIVE attach transport once: tssh only when the user opted
+	// in AND the local `tssh` client is installed; otherwise fall back to ssh with
 	// a one-line warning so the user is never locked out by a missing client. The
-	// hub side (mosh-server) and UDP reachability surface at connect time via
-	// mosh's own stderr. Only the interactive attach is affected — see Client.Mosh.
-	useMosh, warn := effectiveMoshAttach(cfg.Transport(), exec.LookPath)
+	// hub side (tsshd) and UDP reachability surface at connect time via tssh's own
+	// stderr. Only the interactive attach is affected — see Client.Tssh.
+	useTssh, warn := effectiveTsshAttach(cfg.Transport(), exec.LookPath)
 	if warn != "" {
 		fmt.Fprintln(os.Stderr, warn)
 	}
-	client := sshx.NewWithTransport(cfg.Hub, useMosh)
+	client := sshx.NewWithTransport(cfg.Hub, useTssh, cfg.HubTsshdPath)
 	// Best-effort warm-up; failures surface on the first real call with a
 	// clearer message.
 	_ = client.WarmUp()
@@ -118,7 +118,7 @@ func build() (*wiring, error) {
 	// on a CleanLeave outcome — the sole outcome that permits flow's existing
 	// fresh-untouched cleanup.
 	fl.SetInteractiveAttach(func(tmuxName string, _ bool) (bool, error) {
-		return runAttachLoop(sess, tmuxName, useMosh) == CleanLeave, nil
+		return runAttachLoop(sess, tmuxName, useTssh) == CleanLeave, nil
 	})
 	// Per-folder Claude history co-sync (OFF by default): when on, a bare `duck`
 	// that mirrors a folder also co-syncs that folder's ~/.claude/projects/<slug>.
@@ -139,7 +139,7 @@ func build() (*wiring, error) {
 		namer:      nm,
 		flow:       fl,
 		app:        ap,
-		moshAttach: useMosh,
+		tsshAttach: useTssh,
 	}, nil
 }
 

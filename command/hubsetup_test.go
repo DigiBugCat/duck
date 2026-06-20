@@ -102,14 +102,17 @@ func TestParseUname(t *testing.T) {
 
 func TestInstallScriptsAndTmuxConf(t *testing.T) {
 	tool := installToolchainScript()
-	if !strings.Contains(tool, "tmux") || !strings.Contains(tool, "mutagen") || !strings.Contains(tool, "rsync") || !strings.Contains(tool, "mosh") {
-		t.Errorf("toolchain script must install tmux, mutagen, rsync, and mosh:\n%s", tool)
+	if !strings.Contains(tool, "tmux") || !strings.Contains(tool, "mutagen") || !strings.Contains(tool, "rsync") {
+		t.Errorf("toolchain script must install tmux, mutagen, and rsync:\n%s", tool)
 	}
-	// mosh must be installed under BOTH package managers — a single Contains("mosh")
-	// would pass if a refactor dropped it from the apt branch, leaving Linux hubs
-	// without mosh-server (and attach-transport=mosh silently falling back to ssh).
-	if !strings.Contains(tool, "brew install mosh") || !strings.Contains(tool, "apt-get install -y tmux rsync mosh") {
-		t.Errorf("mosh must be installed under both the brew and apt branches:\n%s", tool)
+	// tsshd is installed via Homebrew on macOS hubs. On Linux tssh deploys tsshd
+	// itself over ssh (--install-tsshd), so the apt branch deliberately does NOT
+	// install it and must stay tmux+rsync only.
+	if !strings.Contains(tool, "brew install tsshd") {
+		t.Errorf("tsshd must be installed under the brew branch:\n%s", tool)
+	}
+	if !strings.Contains(tool, "apt-get install -y tmux rsync") || strings.Contains(tool, "apt-get install -y tmux rsync tsshd") {
+		t.Errorf("apt branch must install tmux+rsync only (tssh auto-deploys tsshd on Linux):\n%s", tool)
 	}
 	tpm := installTPMScript()
 	if !strings.Contains(tpm, "tmux-plugins/tpm") || !strings.Contains(tpm, "~/.tmux/plugins/tpm") {
@@ -123,12 +126,17 @@ func TestInstallScriptsAndTmuxConf(t *testing.T) {
 	}
 }
 
-// TestMoshServerProbe pins the hub mosh-server readiness probe used after the
-// toolchain install (so `duck config attach-transport mosh` has a server to reach).
-func TestMoshServerProbe(t *testing.T) {
-	probe := moshServerProbeCmd()
-	if !strings.Contains(probe, "mosh-server") || !strings.Contains(probe, "command -v") {
-		t.Errorf("mosh-server probe must `command -v mosh-server`: %s", probe)
+// TestTsshdPathProbe pins the hub tsshd path probe used after the toolchain
+// install: it `command -v tsshd` so the detected absolute path can be stored and
+// passed to tssh via --tsshd-path. It must tolerate absence (|| true) so an empty
+// result on a Linux hub is not a hard failure.
+func TestTsshdPathProbe(t *testing.T) {
+	probe := tsshdPathProbeCmd()
+	if !strings.Contains(probe, "tsshd") || !strings.Contains(probe, "command -v") {
+		t.Errorf("tsshd path probe must `command -v tsshd`: %s", probe)
+	}
+	if !strings.Contains(probe, "|| true") {
+		t.Errorf("tsshd path probe must tolerate absence with `|| true`: %s", probe)
 	}
 }
 

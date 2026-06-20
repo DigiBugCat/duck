@@ -97,11 +97,11 @@ type reconnector struct {
 	// remember records a GaveUp session per-terminal (productionRemember in prod;
 	// a recording fake in tests).
 	remember rememberFunc
-	// selfHealing is set when the transport reconnects on its OWN (mosh): a
-	// network drop never makes mosh exit, so the only non-zero exits are terminal
+	// selfHealing is set when the transport reconnects on its OWN (tssh/QUIC): a
+	// network drop never makes tssh exit, so the only non-zero exits are terminal
 	// (clean detach is 0). With it set, a would-be TransportDrop is treated as
 	// SessionGone — the ssh-255 backoff loop is never entered (retrying a
-	// mosh-server/bootstrap failure forever would be wrong).
+	// tsshd/bootstrap failure forever would be wrong).
 	selfHealing bool
 }
 
@@ -122,7 +122,7 @@ func (rc *reconnector) attachWithReconnect(sessions SessionAttacher, tmuxName st
 		err := sessions.AttachAndWait(tmuxName)
 		outcome := classifyAttach(err)
 		if rc.selfHealing && outcome == TransportDrop {
-			// mosh self-roams: a dropped link never makes mosh exit, so a non-zero
+			// tssh self-roams: a dropped link never makes tssh exit, so a non-zero
 			// exit is terminal (clean detach is 0). Treat it as SessionGone so the
 			// backoff loop below is never entered.
 			outcome = SessionGone
@@ -137,9 +137,9 @@ func (rc *reconnector) attachWithReconnect(sessions SessionAttacher, tmuxName st
 			return AttachFailed
 		case SessionGone:
 			if rc.selfHealing {
-				// mosh exited non-zero: gone session or a bootstrap/mosh-server
-				// failure (mosh prints its own diagnostic to stderr). Don't retry.
-				rc.printf("mosh attach for %s ended\n", tmuxName)
+				// tssh exited non-zero: gone session or a bootstrap/tsshd
+				// failure (tssh prints its own diagnostic to stderr). Don't retry.
+				rc.printf("tssh attach for %s ended\n", tmuxName)
 			} else {
 				rc.printf("session %s is no longer on the hub\n", tmuxName)
 			}
@@ -179,7 +179,7 @@ func (rc *reconnector) backoffInterrupted(d time.Duration) bool {
 // transportName labels the attach transport in user-facing notices.
 func (rc *reconnector) transportName() string {
 	if rc.selfHealing {
-		return "mosh"
+		return "tssh"
 	}
 	return "ssh"
 }
@@ -251,14 +251,14 @@ func productionRemember(tmuxName string) { _ = ttyMemSet(CurrentTTY(), tmuxName)
 
 // runAttachLoop is the single entry point every interactive attach path calls.
 // It runs the reconnect loop and, on a GaveUp, records the session per-terminal.
-// Returns the terminal Outcome. selfHealing is true for the mosh transport (mosh
+// Returns the terminal Outcome. selfHealing is true for the tssh transport (tssh
 // roams on its own, so duck skips the ssh-255 backoff retry — see attachWithReconnect).
 func runAttachLoop(sessions SessionAttacher, tmuxName string, selfHealing bool) Outcome {
 	// Wrap the whole interactive attach in the open-interceptor: while attached,
 	// the hub's open attempts route to this laptop. A no-op when the hook is unset
 	// (tests / no hub wired). It spans the reconnect loop so a transport drop and
 	// reconnect keeps the same forwarding session. The opener forwards ride the ssh
-	// control master regardless of the attach transport, so this works under mosh too.
+	// control master regardless of the attach transport, so this works under tssh too.
 	return withOpenForwarding(func() Outcome {
 		rc := newReconnector(selfHealing)
 		rc.remember = productionRemember

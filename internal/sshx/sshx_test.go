@@ -167,71 +167,72 @@ func TestAttachArgvBuildsInteractiveAttach(t *testing.T) {
 	}
 }
 
-// TestMoshAttachArgvBuildsInteractiveAttach pins the mosh interactive-attach
-// argv: the mosh client (absolute) bootstrapping over a single --ssh string that
-// carries the DUCKSSH Control* flags, then the remote command as SEPARATE words
-// after `--` (mosh execs them directly, no remote shell). Contrast with the ssh
-// path (TestAttachArgvBuildsInteractiveAttach), which hands sshd ONE quoted
-// command — that test staying green is the proof mosh is opt-in.
-func TestMoshAttachArgvBuildsInteractiveAttach(t *testing.T) {
-	c := NewWithTransport("me@hub.local", true)
+// TestTsshAttachArgvBuildsInteractiveAttach pins the tssh interactive-attach
+// argv: the tssh client (absolute), -t, isolated from ~/.ssh/config via
+// -F /dev/null, StrictHostKeyChecking=accept-new, --udp, then --tsshd-path (when
+// a hub path is known), the addr, and the remote command as SEPARATE words
+// `zsh -lc <script>` (tssh runs trailing argv as the command). Contrast with the
+// ssh path (TestAttachArgvBuildsInteractiveAttach), which hands sshd ONE quoted
+// command — that test staying green is the proof tssh is opt-in.
+func TestTsshAttachArgvBuildsInteractiveAttach(t *testing.T) {
+	c := NewWithTransport("me@hub.local", true, "/opt/homebrew/bin/tsshd")
 	argv, err := c.AttachArgv("cc-1234")
 	if err != nil {
 		t.Fatalf("AttachArgv: %v", err)
 	}
-	// argv[0] is the mosh client, absolute so ExecAttach's syscall.Exec can launch it.
+	// argv[0] is the tssh client, absolute so ExecAttach's syscall.Exec can launch it.
 	if !filepath.IsAbs(argv[0]) {
-		t.Errorf("AttachArgv[0] = %q, want absolute mosh path", argv[0])
+		t.Errorf("AttachArgv[0] = %q, want absolute tssh path", argv[0])
 	}
-	if filepath.Base(argv[0]) != "mosh" {
-		t.Errorf("AttachArgv[0] base = %q, want mosh", filepath.Base(argv[0]))
+	if filepath.Base(argv[0]) != "tssh" {
+		t.Errorf("AttachArgv[0] base = %q, want tssh", filepath.Base(argv[0]))
 	}
-	// The DUCKSSH options must be ONE argv element (mosh shell-splits the --ssh
-	// string itself). Asserting the exact element — not just a substring of the
-	// joined argv — catches a regression that appended each `-o` flag as its own
-	// argv word (which would still contain "ControlPath="/"ControlMaster=auto" in
-	// the join but break mosh, which would parse the loose -o words as ITS options).
-	opts, err := Options()
-	if err != nil {
-		t.Fatalf("Options: %v", err)
+	// Exact head: -t, -F /dev/null (config isolation), accept-new host keys, --udp.
+	wantHead := []string{argv[0], "-t", "-F", "/dev/null", "-o", "StrictHostKeyChecking=accept-new", "--udp"}
+	for i, w := range wantHead {
+		if argv[i] != w {
+			t.Errorf("argv[%d] = %q, want %q (full: %v)", i, argv[i], w, argv)
+		}
 	}
-	wantSSH := "--ssh=" + strings.Join(append([]string{"ssh"}, opts...), " ")
-	if argv[1] != wantSSH {
-		t.Errorf("argv[1] must be the single --ssh element\n got %q\nwant %q", argv[1], wantSSH)
+	// --tsshd-path is present (we passed a hub path) so the hub finds tsshd off its
+	// non-login PATH. It must be two argv words: the flag and the absolute path.
+	if argv[7] != "--tsshd-path" || argv[8] != "/opt/homebrew/bin/tsshd" {
+		t.Errorf("argv[7:9] = %v, want [--tsshd-path /opt/homebrew/bin/tsshd]: %v", argv[7:9], argv)
 	}
-	// --server points mosh at mosh-server through a PATH that includes Homebrew's
-	// bin dirs — without it the hub's non-login ssh shell can't find mosh-server
-	// (Apple Silicon brew is off the default PATH) and the attach drops. One argv
-	// element so mosh getopt-parses it as a single --server value.
-	if argv[2] != "--server="+moshServerCmd {
-		t.Errorf("argv[2] = %q, want the single --server element %q", argv[2], "--server="+moshServerCmd)
+	// Tail: addr, then the remote command as SEPARATE words zsh -lc <script>.
+	if len(argv) != 13 {
+		t.Errorf("argv len = %d, want 13 (tssh -t -F /dev/null -o … --udp --tsshd-path P addr zsh -lc script): %v", len(argv), argv)
 	}
-	if argv[3] != "--no-init" {
-		t.Errorf("argv[3] = %q, want --no-init (tmux owns the alt screen)", argv[3])
-	}
-	// Exact head + length pins the structure: mosh, --ssh=<one element>, --server=,
-	// --no-init, addr, --, zsh, -lc, script. A split of opts into extra words fails
-	// on length.
-	if len(argv) != 9 {
-		t.Errorf("argv len = %d, want 9 (mosh, --ssh=, --server=, --no-init, addr, --, zsh, -lc, script): %v", len(argv), argv)
-	}
-	if argv[4] != "me@hub.local" {
-		t.Errorf("argv[4] = %q, want addr immediately before the `--` separator: %v", argv[4], argv)
-	}
-	// Tail: addr, then `--`, then the remote command as SEPARATE words zsh -lc <script>.
 	n := len(argv)
-	if argv[n-5] != "me@hub.local" {
-		t.Errorf("addr must precede the `--` separator: %v", argv)
-	}
-	if argv[n-4] != "--" {
-		t.Errorf("want `--` before the remote command: %v", argv)
+	if argv[n-4] != "me@hub.local" {
+		t.Errorf("addr must precede the remote command: %v", argv)
 	}
 	if argv[n-3] != "zsh" || argv[n-2] != "-lc" {
-		t.Errorf("remote command must be a separate `zsh -lc` invocation (mosh execs argv directly): %v", argv)
+		t.Errorf("remote command must be a separate `zsh -lc` invocation: %v", argv)
 	}
 	want := `infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; tmux attach-session -t cc-1234`
 	if argv[n-1] != want {
-		t.Errorf("mosh remote script = %q, want the termGuard+tmux attach (unquoted, one word): %q", argv[n-1], want)
+		t.Errorf("tssh remote script = %q, want the termGuard+tmux attach: %q", argv[n-1], want)
+	}
+}
+
+// TestTsshAttachArgvOmitsTsshdPathWhenEmpty pins that an empty hub tsshd path
+// (the Linux auto-deploy case) drops the --tsshd-path flag entirely rather than
+// passing an empty value — tssh then self-resolves / auto-installs tsshd.
+func TestTsshAttachArgvOmitsTsshdPathWhenEmpty(t *testing.T) {
+	c := NewWithTransport("me@hub.local", true, "")
+	argv, err := c.AttachArgv("cc-1234")
+	if err != nil {
+		t.Fatalf("AttachArgv: %v", err)
+	}
+	for _, a := range argv {
+		if a == "--tsshd-path" {
+			t.Fatalf("--tsshd-path must be omitted when the hub path is empty: %v", argv)
+		}
+	}
+	// Without the two --tsshd-path words the argv is 11 elements.
+	if len(argv) != 11 {
+		t.Errorf("argv len = %d, want 11 without --tsshd-path: %v", len(argv), argv)
 	}
 }
 

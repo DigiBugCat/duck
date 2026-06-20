@@ -24,19 +24,19 @@ func TestCodexModelRoundTrips(t *testing.T) {
 // decodes from the config TOML and is reflected by Transport().
 func TestAttachTransportRoundTrips(t *testing.T) {
 	c := &Config{}
-	if _, err := toml.Decode("hub = \"me@host\"\nattach_transport = \"mosh\"\n", c); err != nil {
+	if _, err := toml.Decode("hub = \"me@host\"\nattach_transport = \"tssh\"\n", c); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if c.AttachTransport != "mosh" {
-		t.Fatalf("AttachTransport = %q, want mosh", c.AttachTransport)
+	if c.AttachTransport != "tssh" {
+		t.Fatalf("AttachTransport = %q, want tssh", c.AttachTransport)
 	}
-	if c.Transport() != "mosh" {
-		t.Fatalf("Transport() = %q, want mosh", c.Transport())
+	if c.Transport() != "tssh" {
+		t.Fatalf("Transport() = %q, want tssh", c.Transport())
 	}
 }
 
 // TestTransportDefaultsToAuto pins the auto default: empty/unset and a nil
-// receiver resolve to "auto" (mosh-if-present, else ssh — decided in the
+// receiver resolve to "auto" (tssh-if-present, else ssh — decided in the
 // wiring), while explicit values pass through unchanged, all through the one
 // accessor so callers need no guard and the default lives in exactly one place.
 func TestTransportDefaultsToAuto(t *testing.T) {
@@ -47,8 +47,8 @@ func TestTransportDefaultsToAuto(t *testing.T) {
 	if got := nilCfg.Transport(); got != "auto" {
 		t.Fatalf("nil *Config Transport() = %q, want auto", got)
 	}
-	if got := (&Config{AttachTransport: "mosh"}).Transport(); got != "mosh" {
-		t.Fatalf("explicit mosh Transport() = %q, want mosh", got)
+	if got := (&Config{AttachTransport: "tssh"}).Transport(); got != "tssh" {
+		t.Fatalf("explicit tssh Transport() = %q, want tssh", got)
 	}
 	if got := (&Config{AttachTransport: "ssh"}).Transport(); got != "ssh" {
 		t.Fatalf("explicit ssh Transport() = %q, want ssh", got)

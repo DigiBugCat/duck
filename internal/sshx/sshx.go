@@ -34,20 +34,10 @@ import (
 // syscall.Exec; run/output go through exec.Command which does its own lookup.
 const sshBinary = "ssh"
 
-// moshBinary is the mosh client wrapper (it bootstraps mosh-server over ssh,
-// then hands off to mosh-client over UDP). Only the interactive attach uses it.
-const moshBinary = "mosh"
-
-// moshServerCmd is the value passed to mosh's --server. mosh launches the server
-// over a NON-login ssh shell, whose PATH lacks Homebrew's bin dirs — on an Apple
-// Silicon hub /opt/homebrew/bin is NOT on the default PATH, so a bare
-// `mosh-server` dies with "command not found: mosh-server" and the attach drops
-// (the same bare-PATH-can't-see-Homebrew trap as the login-shell wrap and the
-// launchd sweep). Wrap it: prepend the Homebrew dirs (Apple Silicon + Intel),
-// then exec mosh-server forwarding the args mosh appends after it (new -s -c …
-// -l …) via "$@". The trailing `--` is the $0 placeholder so those appended
-// words land in "$@" rather than being consumed by `sh -c`.
-const moshServerCmd = `sh -c 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH exec mosh-server "$@"' --`
+// tsshBinary is the tssh client (trzsz-ssh). With --udp it bootstraps tsshd on
+// the hub over ssh, then carries the session over UDP/QUIC. Only the interactive
+// attach uses it; duck's control plane stays on plain ssh.
+const tsshBinary = "tssh"
 
 // execAttachPath resolves the ssh binary to an absolute path for syscall.Exec,
 // which (unlike exec.Command) does not search $PATH. It prefers the same ssh
@@ -61,17 +51,17 @@ func execAttachPath() string {
 	return "/usr/bin/ssh"
 }
 
-// moshClientPath resolves the mosh client wrapper to an absolute path (mirroring
+// tsshClientPath resolves the tssh client to an absolute path (mirroring
 // execAttachPath) so ExecAttach's syscall.Exec — which does no $PATH lookup —
-// can launch it. Falls back to the Homebrew location (where `brew install mosh`
-// lands it on macOS, the same PATH LoginShellWrap exists to reach). Callers
-// resolve local mosh availability separately (command/wiring.go) and only build
-// a mosh argv when the client is actually present, falling back to ssh otherwise.
-func moshClientPath() string {
-	if p, err := exec.LookPath(moshBinary); err == nil {
+// can launch it. Falls back to the Homebrew location (where `brew install
+// trzsz-ssh` lands it on macOS). Callers resolve local tssh availability
+// separately (command/wiring.go) and only build a tssh argv when the client is
+// actually present, falling back to ssh otherwise.
+func tsshClientPath() string {
+	if p, err := exec.LookPath(tsshBinary); err == nil {
 		return p
 	}
-	return "/opt/homebrew/bin/mosh"
+	return "/opt/homebrew/bin/tssh"
 }
 
 // runFunc is the seam tests swap to record argv / stdin and inject failures
@@ -102,20 +92,28 @@ func realRun(argv []string, stdin io.Reader) (string, error) {
 // Client drives the hub over multiplexed SSH.
 type Client struct {
 	Addr string // user@host
-	// Mosh, when true, makes AttachArgv build a mosh interactive attach instead
-	// of `ssh -t`. It affects ONLY AttachArgv — every other call (Run, the
-	// opener's RemoteForward/LocalForward, ReadFile, naming, EnsureTerminfo, and
-	// mosh's own bootstrap ssh) stays on ssh, because mosh cannot port-forward.
-	Mosh bool
+	// Tssh, when true, makes AttachArgv build a tssh (UDP/QUIC) interactive attach
+	// instead of `ssh -t`. It affects ONLY AttachArgv — every other call (Run, the
+	// opener's RemoteForward/LocalForward, ReadFile, naming, EnsureTerminfo) stays
+	// on ssh, since duck's control plane relies on OpenSSH multiplexing.
+	Tssh bool
+	// TsshdPath is the hub's absolute tsshd path, passed to tssh via --tsshd-path
+	// so the hub finds tsshd even off the default PATH. Empty omits the flag (tssh
+	// self-resolves / auto-installs). Only consulted when Tssh is true.
+	TsshdPath string
 }
 
 // New returns a Client for the given hub address (ssh interactive-attach
 // transport — the default).
 func New(addr string) *Client { return &Client{Addr: addr} }
 
-// NewWithTransport returns a Client whose interactive attach uses mosh when
-// mosh is true, ssh otherwise. The control plane is unaffected either way.
-func NewWithTransport(addr string, mosh bool) *Client { return &Client{Addr: addr, Mosh: mosh} }
+// NewWithTransport returns a Client whose interactive attach uses tssh when
+// tssh is true, ssh otherwise. tsshdPath is the hub's tsshd path for
+// --tsshd-path (ignored when tssh is false or the path is empty). The control
+// plane is unaffected either way.
+func NewWithTransport(addr string, tssh bool, tsshdPath string) *Client {
+	return &Client{Addr: addr, Tssh: tssh, TsshdPath: tsshdPath}
+}
 
 // homeDir returns the Go-expanded $HOME (never a literal "~"). Split out so the
 // ControlPath and the cm-dir MkdirAll share one source of truth (c2).
@@ -349,8 +347,8 @@ func (c *Client) EnsureTerminfo(term string) error {
 // SAME multiplexed control path. Pure (no side effects) so it is unit-testable;
 // ExecAttach wraps it with the actual syscall.Exec.
 func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
-	if c.Mosh {
-		return c.moshAttachArgv(tmuxSession)
+	if c.Tssh {
+		return c.tsshAttachArgv(tmuxSession)
 	}
 	opts, err := Options()
 	if err != nil {
@@ -371,44 +369,41 @@ func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
 	return argv, nil
 }
 
-// moshAttachArgv builds the argv for an interactive mosh attach. mosh bootstraps
-// mosh-server over the SAME multiplexed ssh (so the one-time launch reuses the
-// warmed ControlMaster), then carries the session over UDP — which is why duck
-// must NOT wrap a mosh attach in the ssh-255 backoff loop (a network drop never
-// makes mosh exit; mosh roams). Pure (no side effects), so it is unit-testable.
+// tsshAttachArgv builds the argv for an interactive tssh attach. tssh bootstraps
+// tsshd on the hub over its own ssh connection, then carries the session over
+// UDP/QUIC — which is why duck must NOT wrap a tssh attach in the ssh-255 backoff
+// loop (a network drop never makes tssh exit; QUIC roams). Pure (no side
+// effects), so it is unit-testable.
 //
-// Two shapes differ from AttachArgv on purpose:
-//   - The DUCKSSH options are joined into ONE "--ssh=ssh <opts>" string; mosh
-//     splits that on whitespace itself (our -o flags and the ~/.duck/cm
-//     ControlPath contain no spaces on a normal $HOME).
-//   - After "--", mosh execs the remote argv DIRECTLY (no remote shell), so the
-//     login-shell wrap is passed as SEPARATE words ["zsh","-lc",<script>] rather
-//     than LoginShellWrap's single quoted string (which the remote sshd would
-//     shell-split, but mosh would not). The zsh -lc wrap is still required so
-//     tmux resolves on the hub's Homebrew PATH; termGuard degrades TERM the same.
+// Shape notes:
+//   - -F /dev/null isolates tssh from ~/.ssh/config (duck never depends on the
+//     user's ssh config); tssh still loads the default ~/.ssh/id_* identities and
+//     the agent, so key auth to the hub works without an explicit -i.
+//   - StrictHostKeyChecking=accept-new lets a first-time hub key be trusted
+//     without an interactive prompt (the same posture as duck's other ssh calls).
+//   - --tsshd-path points tssh at the hub's absolute tsshd, so the hub's non-login
+//     ssh shell finds it even off the default PATH (Homebrew on Apple Silicon).
+//     Omitted when TsshdPath is empty (Linux: tssh self-resolves / auto-installs).
+//   - The remote command is the login-shell-wrapped tmux attach as SEPARATE words
+//     ["zsh","-lc",<script>] (tssh runs trailing argv as the command); the zsh -lc
+//     wrap puts tmux on the hub's Homebrew PATH and termGuard degrades TERM.
 //
-// --server (see moshServerCmd) is required because mosh launches mosh-server over
-// a non-login ssh shell whose PATH excludes Homebrew — without it the hub reports
-// "command not found: mosh-server" and the attach drops.
-//
-// --no-init keeps mosh-client from driving its own alternate-screen init: tmux
-// already owns the alt screen on the hub, so this avoids a double switch.
-func (c *Client) moshAttachArgv(tmuxSession string) ([]string, error) {
-	opts, err := Options()
-	if err != nil {
-		return nil, err
-	}
-	sshCmd := strings.Join(append([]string{sshBinary}, opts...), " ")
+// duck's OpenSSH ControlMaster Options() are intentionally NOT passed here: tssh
+// is a Go ssh client with its own connection, not OpenSSH, so the warmed master
+// socket does not apply to it.
+func (c *Client) tsshAttachArgv(tmuxSession string) ([]string, error) {
 	remote := termGuard + "tmux attach-session -t " + tmuxSession
 	argv := []string{
-		moshClientPath(),
-		"--ssh=" + sshCmd,
-		"--server=" + moshServerCmd,
-		"--no-init",
-		c.Addr,
-		"--",
-		"zsh", "-lc", remote,
+		tsshClientPath(),
+		"-t",
+		"-F", "/dev/null",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"--udp",
 	}
+	if c.TsshdPath != "" {
+		argv = append(argv, "--tsshd-path", c.TsshdPath)
+	}
+	argv = append(argv, c.Addr, "zsh", "-lc", remote)
 	return argv, nil
 }
 

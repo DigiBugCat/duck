@@ -222,6 +222,11 @@ func resolveAddrArg(args []string, verb string) (string, error) {
 // of the unit tests (it shells out to the hub); the pure command-string
 // builders it calls (below) carry the testable logic.
 func runHubSetup(addr string, h *hub.Hub) error {
+	// tsshdPath is the hub's detected tsshd location (step 2), persisted to config
+	// at the end so the tssh attach can pass it via --tsshd-path. Empty stays empty
+	// (Linux auto-deploy path).
+	var tsshdPath string
+
 	// 1. detect the hub's platform.
 	unameOut, err := h.Run(remoteUnameCmd())
 	if err != nil {
@@ -233,21 +238,25 @@ func runHubSetup(addr string, h *hub.Hub) error {
 	}
 	fmt.Printf("hub platform: %s/%s\n", goos, goarch)
 
-	// 2. install the toolchain (tmux + mutagen + rsync + mosh + TPM).
-	fmt.Println("installing tmux + mutagen + mosh + TPM ...")
+	// 2. install the toolchain (tmux + mutagen + rsync + tsshd + TPM).
+	fmt.Println("installing tmux + mutagen + tsshd + TPM ...")
 	if _, err := h.Run(installToolchainScript()); err != nil {
 		return fmt.Errorf("installing toolchain: %w", err)
 	}
 	if _, err := h.Run(installTPMScript()); err != nil {
 		return fmt.Errorf("installing TPM: %w", err)
 	}
-	// mosh is the opt-in interactive-attach transport (`duck config
-	// attach-transport mosh`); it needs mosh-server on the hub's PATH. The
-	// toolchain step above installs it, so this only warns if it is somehow still
-	// missing (e.g. an unsupported package manager). Best-effort: a probe failure
-	// is ignored — mosh's own connect-time error is the real source of truth.
-	if out, err := h.Run(moshServerProbeCmd()); err == nil && strings.TrimSpace(out) != "yes" {
-		fmt.Println("note: mosh-server not found on the hub PATH; `duck config attach-transport mosh` will fall back to ssh until it is installed.")
+	// tsshd backs the tssh interactive-attach transport (the default when the
+	// local `tssh` client is installed). Detect its absolute path on the hub now
+	// and store it so the attach can pass --tsshd-path (tssh launches tsshd over a
+	// non-login ssh shell that may not have Homebrew on PATH). Best-effort: an
+	// empty result is fine — on a Linux hub tssh auto-deploys tsshd itself, and the
+	// attach simply omits the flag. A probe failure is non-fatal.
+	if out, err := h.Run(tsshdPathProbeCmd()); err == nil {
+		tsshdPath = strings.TrimSpace(out)
+	}
+	if tsshdPath == "" {
+		fmt.Println("note: tsshd not found on the hub PATH; tssh will deploy it on first connect (Linux) or `brew install tsshd` on the hub.")
 	}
 
 	// 3. write the de-hooked tmux.conf and run TPM plugin install.
@@ -278,6 +287,7 @@ func runHubSetup(addr string, h *hub.Hub) error {
 	}
 	cfg.Hub = addr
 	cfg.HubName, _ = h.Hostname()
+	cfg.HubTsshdPath = tsshdPath
 	if err := config.Save(cfg); err != nil {
 		return err
 	}
@@ -345,6 +355,11 @@ func parseUname(out string) (goos, goarch string, err error) {
 // mutagen. It prefers Homebrew (the hub is macOS in the verified setup) and
 // falls back to apt-get on Debian/Ubuntu. Idempotent: re-running is a no-op if
 // the tools are already present.
+//
+// tsshd (the UDP/QUIC attach server) is installed via Homebrew on macOS; on
+// Linux it is NOT installed here because tssh deploys tsshd itself over ssh on
+// first connect (`--install-tsshd` supports Linux targets), so apt only needs
+// tmux + rsync.
 func installToolchainScript() string {
 	return strings.Join([]string{
 		`set -e`,
@@ -352,9 +367,9 @@ func installToolchainScript() string {
 		`  brew list tmux >/dev/null 2>&1 || brew install tmux`,
 		`  brew list mutagen-io/mutagen/mutagen >/dev/null 2>&1 || brew install mutagen-io/mutagen/mutagen`,
 		`  brew list rsync >/dev/null 2>&1 || brew install rsync`,
-		`  brew list mosh >/dev/null 2>&1 || brew install mosh`,
+		`  brew list tsshd >/dev/null 2>&1 || brew install tsshd`,
 		`elif command -v apt-get >/dev/null 2>&1; then`,
-		`  sudo apt-get update && sudo apt-get install -y tmux rsync mosh`,
+		`  sudo apt-get update && sudo apt-get install -y tmux rsync`,
 		`  command -v mutagen >/dev/null 2>&1 || echo "install mutagen manually: https://mutagen.io/documentation/introduction/installation"`,
 		`else`,
 		`  echo "no supported package manager (brew/apt-get) found on hub" >&2; exit 1`,
@@ -362,11 +377,14 @@ func installToolchainScript() string {
 	}, "\n")
 }
 
-// moshServerProbeCmd reports whether mosh-server is on the hub's login-shell
-// PATH (it prints "yes" or "no"). Run via hub.Run (login-wrapped) so the
-// Homebrew bin dir where `brew install mosh` lands mosh-server is on PATH.
-func moshServerProbeCmd() string {
-	return `command -v mosh-server >/dev/null 2>&1 && echo yes || echo no`
+// tsshdPathProbeCmd prints the absolute path to tsshd on the hub's login-shell
+// PATH, or nothing when it is absent. Run via hub.Run (login-wrapped) so the
+// Homebrew bin dir where `brew install tsshd` lands the binary is on PATH. The
+// detected path is stored in config and passed to tssh via --tsshd-path so the
+// attach finds tsshd even off the hub's non-login PATH. An empty result (e.g. a
+// Linux hub where tssh auto-installs tsshd) is fine — the attach omits the flag.
+func tsshdPathProbeCmd() string {
+	return `command -v tsshd 2>/dev/null || true`
 }
 
 // installTPMScript clones the Tmux Plugin Manager if it is not already present.
