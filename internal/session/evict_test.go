@@ -178,9 +178,13 @@ func TestEvictScriptPeriodicRenamePass(t *testing.T) {
 		`[ -n "$renamed" ] && [ "$renamed" -ge "$activity" ] 2>/dev/null && continue`,
 		`tmux set-option -t "$1" @duck_renamed_at "$now"`,
 		`echo "renamed $name"`,
-		// node/bun only count as Claude when the hook stamped a session id, so a
-		// bare REPL is never typed into.
-		`node|bun) [ -n "$2" ] && return 0 ;;`,
+		// A hook-stamped session id makes a pane count as Claude regardless of its
+		// process title (newer Claude builds retitle to their version string).
+		`[ -n "$2" ] && return 0`,
+		// Non-whitespace field separator so empty @duck_loop/@duck_renamed_at fields
+		// don't collapse and shift the cid into $loop (which wrongly skips eviction).
+		`SEP=$(printf '\037')`,
+		`while IFS="$SEP" read -r name attached activity loop renamed cid; do`,
 	} {
 		if !strings.Contains(EvictScript, want) {
 			t.Fatalf("EvictScript rename pass missing %q", want)

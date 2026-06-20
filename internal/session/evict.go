@@ -82,15 +82,26 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 : "${AGE_SECS:=43200}"
 : "${RENAME_SECS:=900}"
 now=$(date +%s)
+# Field separator for the list-sessions reads below. MUST be non-whitespace: a
+# whitespace IFS (like a tab) makes 'read' COLLAPSE runs of the separator and
+# drop EMPTY fields, so a session with an empty @duck_loop/@duck_renamed_at
+# shifts every later field left — the @claude_session_id lands in $loop, the
+# "is it looping?" test sees non-empty, and the session is wrongly skipped (the
+# sweep then evicts almost nothing). US (unit separator, \037) never appears in
+# a session name, dir, cid, flag list, or title, and preserves empty fields.
+SEP=$(printf '\037')
 mkdir -p "$HOME/.duck"
 # claude_pane <session> <stamped-cid>: is the session's pane running Claude?
-# An exact 'claude' process always counts; node/bun only count when the
-# SessionStart hook stamped a session id, so a bare REPL never gets typed into.
+# A hook-stamped session id ($2) means this pane IS a Claude session regardless
+# of pane_current_command — newer Claude builds set their process title to the
+# version string (e.g. "2.1.177"), which defeats a plain name match. Without a
+# stamp, only an exact 'claude' command counts; a bare node/bun REPL never does
+# (so the sweep never types /rename into it).
 claude_pane() {
+  [ -n "$2" ] && return 0
   pcmd=$(tmux display-message -p -t "$1" '#{pane_current_command}' 2>/dev/null)
   case "$pcmd" in
     claude) return 0 ;;
-    node|bun) [ -n "$2" ] && return 0 ;;
   esac
   return 1
 }
@@ -104,8 +115,8 @@ nudge_rename() {
   tmux set-option -t "$1" @duck_renamed_at "$now" 2>/dev/null
 }
 if [ "$RENAME_SECS" -gt 0 ] 2>/dev/null; then
-tmux list-sessions -F '#{session_name}	#{session_attached}	#{session_activity}	#{@duck_loop}	#{@duck_renamed_at}	#{@claude_session_id}' 2>/dev/null |
-while IFS='	' read -r name attached activity loop renamed cid; do
+tmux list-sessions -F "#{session_name}${SEP}#{session_attached}${SEP}#{session_activity}${SEP}#{@duck_loop}${SEP}#{@duck_renamed_at}${SEP}#{@claude_session_id}" 2>/dev/null |
+while IFS="$SEP" read -r name attached activity loop renamed cid; do
   [ -z "$name" ] && continue
   [ -n "$attached" ] && [ "$attached" != "0" ] && continue
   [ -n "$loop" ] && [ "$loop" != "0" ] && continue
@@ -117,8 +128,8 @@ while IFS='	' read -r name attached activity loop renamed cid; do
   echo "renamed $name"
 done
 fi
-tmux list-sessions -F '#{session_name}	#{@duck_dir}	#{session_attached}	#{session_activity}	#{@duck_loop}	#{@claude_session_id}	#{@claude_resume_args}	#{@duck_renamed_at}' 2>/dev/null |
-while IFS='	' read -r name dir attached activity loop cid rargs renamed; do
+tmux list-sessions -F "#{session_name}${SEP}#{@duck_dir}${SEP}#{session_attached}${SEP}#{session_activity}${SEP}#{@duck_loop}${SEP}#{@claude_session_id}${SEP}#{@claude_resume_args}${SEP}#{@duck_renamed_at}" 2>/dev/null |
+while IFS="$SEP" read -r name dir attached activity loop cid rargs renamed; do
   [ -z "$name" ] && continue
   [ -n "$attached" ] && [ "$attached" != "0" ] && continue
   [ -n "$loop" ] && [ "$loop" != "0" ] && continue
