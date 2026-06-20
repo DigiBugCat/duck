@@ -199,16 +199,24 @@ func TestMoshAttachArgvBuildsInteractiveAttach(t *testing.T) {
 	if argv[1] != wantSSH {
 		t.Errorf("argv[1] must be the single --ssh element\n got %q\nwant %q", argv[1], wantSSH)
 	}
-	if argv[2] != "--no-init" {
-		t.Errorf("argv[2] = %q, want --no-init (tmux owns the alt screen)", argv[2])
+	// --server points mosh at mosh-server through a PATH that includes Homebrew's
+	// bin dirs — without it the hub's non-login ssh shell can't find mosh-server
+	// (Apple Silicon brew is off the default PATH) and the attach drops. One argv
+	// element so mosh getopt-parses it as a single --server value.
+	if argv[2] != "--server="+moshServerCmd {
+		t.Errorf("argv[2] = %q, want the single --server element %q", argv[2], "--server="+moshServerCmd)
 	}
-	// Exact head + length pins the structure: mosh, --ssh=<one element>, --no-init,
-	// addr, --, zsh, -lc, script. A split of opts into extra words fails on length.
-	if len(argv) != 8 {
-		t.Errorf("argv len = %d, want 8 (mosh, --ssh=, --no-init, addr, --, zsh, -lc, script): %v", len(argv), argv)
+	if argv[3] != "--no-init" {
+		t.Errorf("argv[3] = %q, want --no-init (tmux owns the alt screen)", argv[3])
 	}
-	if argv[3] != "me@hub.local" {
-		t.Errorf("argv[3] = %q, want addr immediately before the `--` separator: %v", argv[3], argv)
+	// Exact head + length pins the structure: mosh, --ssh=<one element>, --server=,
+	// --no-init, addr, --, zsh, -lc, script. A split of opts into extra words fails
+	// on length.
+	if len(argv) != 9 {
+		t.Errorf("argv len = %d, want 9 (mosh, --ssh=, --server=, --no-init, addr, --, zsh, -lc, script): %v", len(argv), argv)
+	}
+	if argv[4] != "me@hub.local" {
+		t.Errorf("argv[4] = %q, want addr immediately before the `--` separator: %v", argv[4], argv)
 	}
 	// Tail: addr, then `--`, then the remote command as SEPARATE words zsh -lc <script>.
 	n := len(argv)

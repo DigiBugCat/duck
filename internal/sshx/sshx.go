@@ -38,6 +38,17 @@ const sshBinary = "ssh"
 // then hands off to mosh-client over UDP). Only the interactive attach uses it.
 const moshBinary = "mosh"
 
+// moshServerCmd is the value passed to mosh's --server. mosh launches the server
+// over a NON-login ssh shell, whose PATH lacks Homebrew's bin dirs — on an Apple
+// Silicon hub /opt/homebrew/bin is NOT on the default PATH, so a bare
+// `mosh-server` dies with "command not found: mosh-server" and the attach drops
+// (the same bare-PATH-can't-see-Homebrew trap as the login-shell wrap and the
+// launchd sweep). Wrap it: prepend the Homebrew dirs (Apple Silicon + Intel),
+// then exec mosh-server forwarding the args mosh appends after it (new -s -c …
+// -l …) via "$@". The trailing `--` is the $0 placeholder so those appended
+// words land in "$@" rather than being consumed by `sh -c`.
+const moshServerCmd = `sh -c 'PATH=/opt/homebrew/bin:/usr/local/bin:$PATH exec mosh-server "$@"' --`
+
 // execAttachPath resolves the ssh binary to an absolute path for syscall.Exec,
 // which (unlike exec.Command) does not search $PATH. It prefers the same ssh
 // that run/exec.Command would pick via PATH, so the attach reuses the warmed
@@ -376,6 +387,10 @@ func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
 //     shell-split, but mosh would not). The zsh -lc wrap is still required so
 //     tmux resolves on the hub's Homebrew PATH; termGuard degrades TERM the same.
 //
+// --server (see moshServerCmd) is required because mosh launches mosh-server over
+// a non-login ssh shell whose PATH excludes Homebrew — without it the hub reports
+// "command not found: mosh-server" and the attach drops.
+//
 // --no-init keeps mosh-client from driving its own alternate-screen init: tmux
 // already owns the alt screen on the hub, so this avoids a double switch.
 func (c *Client) moshAttachArgv(tmuxSession string) ([]string, error) {
@@ -388,6 +403,7 @@ func (c *Client) moshAttachArgv(tmuxSession string) ([]string, error) {
 	argv := []string{
 		moshClientPath(),
 		"--ssh=" + sshCmd,
+		"--server=" + moshServerCmd,
 		"--no-init",
 		c.Addr,
 		"--",
