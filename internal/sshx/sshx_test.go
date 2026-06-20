@@ -207,13 +207,17 @@ func TestTsshAttachArgvBuildsInteractiveAttach(t *testing.T) {
 	if argv[5] != "--tsshd-path" || argv[6] != "/opt/homebrew/bin/tsshd" {
 		t.Errorf("argv[5:7] = %v, want [--tsshd-path /opt/homebrew/bin/tsshd]: %v", argv[5:7], argv)
 	}
-	// Tail: addr, then the remote command as SEPARATE words zsh -lc <script>.
-	if len(argv) != 11 {
-		t.Errorf("argv len = %d, want 11 (tssh -t -o … --udp --tsshd-path P addr zsh -lc script): %v", len(argv), argv)
+	// Tail: addr, then `--` (stops tssh parsing -lc as -l c), then the remote
+	// command as SEPARATE words zsh -lc <script>.
+	if len(argv) != 12 {
+		t.Errorf("argv len = %d, want 12 (tssh -t -o … --udp --tsshd-path P addr -- zsh -lc script): %v", len(argv), argv)
 	}
 	n := len(argv)
-	if argv[n-4] != "me@hub.local" {
-		t.Errorf("addr must precede the remote command: %v", argv)
+	if argv[n-5] != "me@hub.local" {
+		t.Errorf("addr must precede the `--` separator: %v", argv)
+	}
+	if argv[n-4] != "--" {
+		t.Errorf("want `--` before the remote command (else tssh reads -lc as -l c): %v", argv)
 	}
 	if argv[n-3] != "zsh" || argv[n-2] != "-lc" {
 		t.Errorf("remote command must be a separate `zsh -lc` invocation: %v", argv)
@@ -238,9 +242,9 @@ func TestTsshAttachArgvOmitsTsshdPathWhenEmpty(t *testing.T) {
 			t.Fatalf("--tsshd-path must be omitted when the hub path is empty: %v", argv)
 		}
 	}
-	// Without the two --tsshd-path words the argv is 9 elements.
-	if len(argv) != 9 {
-		t.Errorf("argv len = %d, want 9 without --tsshd-path: %v", len(argv), argv)
+	// Without the two --tsshd-path words the argv is 10 elements.
+	if len(argv) != 10 {
+		t.Errorf("argv len = %d, want 10 without --tsshd-path: %v", len(argv), argv)
 	}
 }
 

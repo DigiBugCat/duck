@@ -386,9 +386,14 @@ func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
 //   - --tsshd-path points tssh at the hub's absolute tsshd, so the hub's non-login
 //     ssh shell finds it even off the default PATH (Homebrew on Apple Silicon).
 //     Omitted when TsshdPath is empty (Linux: tssh self-resolves / auto-installs).
+//   - A `--` after the addr terminates tssh's own option parsing before the
+//     remote command. Without it tssh greedily scans the trailing argv and reads
+//     the "-lc" of `zsh -lc` as its OWN `-l c` flag (login name "c"), so the
+//     attach tries to log in as user "c" and drops to a password prompt. The `--`
+//     is consumed by tssh, not forwarded to the hub.
 //   - The remote command is the login-shell-wrapped tmux attach as SEPARATE words
-//     ["zsh","-lc",<script>] (tssh runs trailing argv as the command); the zsh -lc
-//     wrap puts tmux on the hub's Homebrew PATH and termGuard degrades TERM.
+//     ["zsh","-lc",<script>] (tssh execs the trailing argv as the command); the
+//     zsh -lc wrap puts tmux on the hub's Homebrew PATH and termGuard degrades TERM.
 //
 // duck's OpenSSH ControlMaster Options() are intentionally NOT passed here: tssh
 // is a Go ssh client with its own connection, not OpenSSH, so the warmed master
@@ -404,7 +409,7 @@ func (c *Client) tsshAttachArgv(tmuxSession string) ([]string, error) {
 	if c.TsshdPath != "" {
 		argv = append(argv, "--tsshd-path", c.TsshdPath)
 	}
-	argv = append(argv, c.Addr, "zsh", "-lc", remote)
+	argv = append(argv, c.Addr, "--", "zsh", "-lc", remote)
 	return argv, nil
 }
 
