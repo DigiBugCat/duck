@@ -136,7 +136,7 @@ laptop; codex is **not** required on the hub.
 | `duck snap` | capture a screen selection → upload it to the hub → copy the remote path to your clipboard (paste into a Claude session on the hub) |
 | `duck config` (`path`, `edit`) | show / locate / edit the config (hub, codex model, per-folder policy) |
 | `duck config claude-sync on\|off` | toggle per-folder Claude history sync (transcripts + memory) to the hub |
-| `duck config attach-transport ssh\|mosh` | pick the interactive-attach transport — `ssh` (default) or `mosh` (opt-in, UDP roaming) |
+| `duck config attach-transport auto\|ssh\|mosh` | interactive-attach transport — `auto` (default: mosh if the client is installed, else ssh), `ssh` (force), or `mosh` (force, UDP roaming) |
 | `duck hub set/setup/show` | set, provision, or print the hub |
 | `duck setup` | the interactive first-run wizard |
 | `duck sync …` | explicit Mutagen bundles: `new/add/get/ls/show/rm/drop/status/prune` |
@@ -187,22 +187,25 @@ into the same session when the network returns. `^c` gives up to your local shel
 — and remembers that session for *this terminal*, so `duck -c` resumes exactly
 it.
 
-Prefer [mosh](https://mosh.org)? `duck config attach-transport mosh` runs the
-**interactive attach over mosh** instead of `ssh -t` — UDP, instant local echo,
-and seamless roaming across network changes and sleep (no reconnect backoff;
-mosh just keeps up). Only the interactive attach moves: the **SSH control plane
-stays on ssh** (sync forwards, the `duck-open` opener, naming, provisioning) —
-mosh can't port-forward — and mosh even bootstraps `mosh-server` over duck's
-warmed SSH master before going UDP. It needs `mosh` on your laptop and
-`mosh-server` on the hub (`duck setup` installs it); if the local `mosh` client
-is missing, duck warns and falls back to `ssh`. Works great over Tailscale,
-which carries the UDP for you.
+duck runs the **interactive attach over [mosh](https://mosh.org)** instead of
+`ssh -t` whenever the `mosh` client is installed on your laptop — UDP, instant
+local echo, and seamless roaming across network changes and sleep (no reconnect
+backoff; mosh just keeps up). It's **automatic**: the default transport is
+`auto`, so a client opts in just by `brew install mosh` — the hub always
+supports it (`duck setup` installs `mosh-server`), so no per-client config is
+needed. Only the interactive attach moves: the **SSH control plane stays on
+ssh** (sync forwards, the `duck-open` opener, naming, provisioning) — mosh can't
+port-forward — and mosh even bootstraps `mosh-server` over duck's warmed SSH
+master before going UDP. Works great over Tailscale, which carries the UDP for
+you. To override the auto-detect: `duck config attach-transport ssh` forces ssh
+even with mosh installed; `mosh` forces mosh and warns + falls back to ssh if
+the client is missing.
 
 ## Requirements
 
 - **Laptop:** macOS, `mutagen` (`brew install mutagen-io/mutagen/mutagen`);
-  `codex` optional (naming only); `mosh` optional (only if you opt into the mosh
-  attach transport — `brew install mosh`).
+  `codex` optional (naming only); `mosh` optional but recommended — install it
+  (`brew install mosh`) and the attach auto-upgrades to mosh (UDP roaming).
 - **Hub:** any always-on macOS box reachable over SSH; `duck setup` provisions
   `tmux` + `mutagen` + `mosh` + TPM for you. Same `$HOME`/username on both
   machines (duck mirrors each path at its natural location).

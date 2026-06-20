@@ -35,19 +35,23 @@ func TestAttachTransportRoundTrips(t *testing.T) {
 	}
 }
 
-// TestTransportDefaultsToSSH pins the ssh default: empty/unset, a nil receiver,
-// and an explicit value all resolve through the one accessor so callers need no
-// guard and the default lives in exactly one place.
-func TestTransportDefaultsToSSH(t *testing.T) {
-	if got := (&Config{}).Transport(); got != "ssh" {
-		t.Fatalf("(&Config{}).Transport() = %q, want ssh", got)
+// TestTransportDefaultsToAuto pins the auto default: empty/unset and a nil
+// receiver resolve to "auto" (mosh-if-present, else ssh — decided in the
+// wiring), while explicit values pass through unchanged, all through the one
+// accessor so callers need no guard and the default lives in exactly one place.
+func TestTransportDefaultsToAuto(t *testing.T) {
+	if got := (&Config{}).Transport(); got != "auto" {
+		t.Fatalf("(&Config{}).Transport() = %q, want auto", got)
 	}
 	var nilCfg *Config
-	if got := nilCfg.Transport(); got != "ssh" {
-		t.Fatalf("nil *Config Transport() = %q, want ssh", got)
+	if got := nilCfg.Transport(); got != "auto" {
+		t.Fatalf("nil *Config Transport() = %q, want auto", got)
 	}
 	if got := (&Config{AttachTransport: "mosh"}).Transport(); got != "mosh" {
 		t.Fatalf("explicit mosh Transport() = %q, want mosh", got)
+	}
+	if got := (&Config{AttachTransport: "ssh"}).Transport(); got != "ssh" {
+		t.Fatalf("explicit ssh Transport() = %q, want ssh", got)
 	}
 }
 

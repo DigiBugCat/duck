@@ -55,9 +55,10 @@ func TestConfigCmdShowsAttachTransport(t *testing.T) {
 	}
 }
 
-// TestConfigAttachTransportSetter pins the setter: mosh persists, ssh clears the
-// stored value (empty == ssh default, keeping config.toml clean), and an unknown
-// value errors (ValidArgs alone does not enforce — the RunE switch does).
+// TestConfigAttachTransportSetter pins the setter: mosh and ssh persist their
+// explicit value, auto clears the stored value (empty == auto default, keeping
+// config.toml clean), and an unknown value errors (ValidArgs alone does not
+// enforce — the RunE switch does).
 func TestConfigAttachTransportSetter(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var buf bytes.Buffer
@@ -70,15 +71,24 @@ func TestConfigAttachTransportSetter(t *testing.T) {
 		t.Fatalf("after set mosh, Transport() = %q, want mosh", cfg.Transport())
 	}
 
+	// Explicit ssh persists a non-empty value so it overrides the auto default.
 	if err := configAttachTransportCmd.RunE(configAttachTransportCmd, []string{"ssh"}); err != nil {
 		t.Fatalf("set ssh: %v", err)
 	}
+	if cfg, _ := config.Load(); cfg.AttachTransport != "ssh" || cfg.Transport() != "ssh" {
+		t.Fatalf("after set ssh, stored=%q Transport()=%q, want both ssh", cfg.AttachTransport, cfg.Transport())
+	}
+
+	// auto clears the stored value back to empty (the clean default).
+	if err := configAttachTransportCmd.RunE(configAttachTransportCmd, []string{"auto"}); err != nil {
+		t.Fatalf("set auto: %v", err)
+	}
 	cfg, _ := config.Load()
 	if cfg.AttachTransport != "" {
-		t.Fatalf("after set ssh, AttachTransport = %q, want empty (clean default)", cfg.AttachTransport)
+		t.Fatalf("after set auto, AttachTransport = %q, want empty (clean default)", cfg.AttachTransport)
 	}
-	if cfg.Transport() != "ssh" {
-		t.Fatalf("after set ssh, Transport() = %q, want ssh", cfg.Transport())
+	if cfg.Transport() != "auto" {
+		t.Fatalf("after set auto, Transport() = %q, want auto", cfg.Transport())
 	}
 
 	if err := configAttachTransportCmd.RunE(configAttachTransportCmd, []string{"telnet"}); err == nil {

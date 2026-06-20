@@ -20,12 +20,16 @@ type Config struct {
 	// (DESIGN §5). Empty falls back to the built-in default in command/wiring.go.
 	CodexModel string `toml:"codex_model,omitempty"`
 
-	// AttachTransport selects the INTERACTIVE-ATTACH transport: "ssh" (default,
-	// empty) or "mosh". mosh is opt-in and only replaces the interactive
-	// `tmux attach` — the SSH control plane (Run, the opener's port forwards,
-	// ReadFile, naming, provisioning, terminfo) and mosh's own bootstrap always
-	// stay on ssh, and ssh is the fallback when the local `mosh` client is absent.
-	// Read via Transport() so the ssh default lives in exactly one place.
+	// AttachTransport selects the INTERACTIVE-ATTACH transport. The default
+	// (empty) is "auto": use mosh when the local `mosh` client is present, else
+	// ssh — so a client opts in just by installing mosh, no config needed (the
+	// hub always supports it, `duck hub setup` installs mosh-server). The two
+	// explicit overrides are "ssh" (force ssh even if mosh is installed) and
+	// "mosh" (force mosh, warning + ssh fallback when the client is absent).
+	// Either way mosh only replaces the interactive `tmux attach` — the SSH
+	// control plane (Run, the opener's port forwards, ReadFile, naming,
+	// provisioning, terminfo) and mosh's own bootstrap always stay on ssh.
+	// Read via Transport() so the auto default lives in exactly one place.
 	AttachTransport string `toml:"attach_transport,omitempty"`
 
 	// AutoName is the per-dir auto-naming toggle (DESIGN §5 / §M3): the key is a
@@ -61,12 +65,14 @@ func (c *Config) AutoNameEnabled(dir string) bool {
 }
 
 // Transport returns the configured interactive-attach transport, defaulting to
-// "ssh" for an empty/unset value (and a nil receiver) so callers need no guard.
-// "ssh" and "mosh" are the meaningful values; the setter (`duck config
-// attach-transport`) validates input, so any stored value is one of those.
+// "auto" for an empty/unset value (and a nil receiver) so callers need no guard.
+// "auto" (mosh-if-present, else ssh), "ssh", and "mosh" are the meaningful
+// values; the setter (`duck config attach-transport`) validates input, so any
+// stored value is one of those — and "auto" is stored as empty to keep the
+// config.toml clean.
 func (c *Config) Transport() string {
 	if c == nil || c.AttachTransport == "" {
-		return "ssh"
+		return "auto"
 	}
 	return c.AttachTransport
 }

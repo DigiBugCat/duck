@@ -42,21 +42,36 @@ type wiring struct {
 	moshAttach bool
 }
 
-// effectiveMoshAttach resolves the EFFECTIVE interactive-attach transport: mosh
-// only when the config selects it AND a local `mosh` client is on PATH;
-// otherwise ssh. When mosh is selected but the client is absent it returns
-// (false, <warning>) so the caller warns once and falls back to ssh — the user
-// is never locked out by a missing client. The hub side (mosh-server) and UDP
-// reachability surface later via mosh's own connect-time stderr. lookPath is
-// exec.LookPath in production (injected so the three branches are unit-testable).
+// effectiveMoshAttach resolves the EFFECTIVE interactive-attach transport from
+// the configured value:
+//
+//   - "auto" (the default): use mosh when a local `mosh` client is on PATH,
+//     else ssh — silently, because auto-detect is the whole point: a client
+//     opts in just by installing mosh, and the hub always supports it
+//     (`duck hub setup` installs mosh-server). No warning on absence.
+//   - "mosh" (explicit force): use mosh, but when the client is absent return
+//     (false, <warning>) so the caller warns once and falls back to ssh — an
+//     explicit request that can't be honored is worth a word.
+//   - "ssh" (explicit force): always ssh, even if mosh is installed.
+//
+// The hub side (mosh-server) and UDP reachability surface later via mosh's own
+// connect-time stderr. lookPath is exec.LookPath in production (injected so the
+// branches are unit-testable).
 func effectiveMoshAttach(transport string, lookPath func(string) (string, error)) (useMosh bool, warn string) {
-	if transport != "mosh" {
+	switch transport {
+	case "ssh":
 		return false, ""
+	case "mosh":
+		if _, err := lookPath("mosh"); err != nil {
+			return false, "duck: attach-transport is mosh but the `mosh` client isn't on your PATH; using ssh. install it with: brew install mosh"
+		}
+		return true, ""
+	default: // "auto": prefer mosh when present, silently fall back to ssh.
+		if _, err := lookPath("mosh"); err != nil {
+			return false, ""
+		}
+		return true, ""
 	}
-	if _, err := lookPath("mosh"); err != nil {
-		return false, "duck: attach-transport is mosh but the `mosh` client isn't on your PATH; using ssh. install it with: brew install mosh"
-	}
-	return true, ""
 }
 
 // build assembles the wiring from the configured hub, warming the SSH

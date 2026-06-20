@@ -50,7 +50,7 @@ var configCmd = &cobra.Command{
 			claudeSync = "on"
 		}
 		fmt.Fprintf(tw, "claude history sync\t%s  (duck config claude-sync on|off)\n", claudeSync)
-		fmt.Fprintf(tw, "attach transport\t%s  (duck config attach-transport ssh|mosh)\n", cfg.Transport())
+		fmt.Fprintf(tw, "attach transport\t%s  (duck config attach-transport auto|ssh|mosh)\n", cfg.Transport())
 		tw.Flush()
 
 		// Per-folder sync memory: what duck remembers about where it auto-mirrors.
@@ -153,26 +153,31 @@ var configClaudeSyncCmd = &cobra.Command{
 	},
 }
 
-// configAttachTransportCmd selects the interactive-attach transport. ssh
-// (default) is also the always-on control plane and the fallback; mosh is
-// opt-in (UDP, resilient roaming over Tailscale) and only replaces the
-// interactive `tmux attach`. The SSH control plane (sync forwards, the opener,
-// naming, provisioning) always stays on ssh — mosh cannot port-forward.
+// configAttachTransportCmd selects the interactive-attach transport. The
+// default, auto, uses mosh whenever the local `mosh` client is installed and
+// falls back to ssh otherwise — so a client opts in just by installing mosh
+// (the hub always supports it; `duck hub setup` installs mosh-server). ssh
+// forces ssh even with mosh installed; mosh forces mosh (warn + ssh fallback
+// when the client is missing). mosh (UDP, resilient roaming over Tailscale)
+// only replaces the interactive `tmux attach` — the SSH control plane (sync
+// forwards, the opener, naming, provisioning) always stays on ssh.
 var configAttachTransportCmd = &cobra.Command{
-	Use:       "attach-transport <ssh|mosh>",
-	Short:     "Select the interactive attach transport (ssh default; mosh is opt-in)",
+	Use:       "attach-transport <auto|ssh|mosh>",
+	Short:     "Select the interactive attach transport (auto default: mosh if installed, else ssh)",
 	Args:      cobra.ExactArgs(1),
-	ValidArgs: []string{"ssh", "mosh"},
+	ValidArgs: []string{"auto", "ssh", "mosh"},
 	RunE: func(c *cobra.Command, args []string) error {
 		// ValidArgs only drives shell completion; enforce the allowed set here.
 		var stored, shown string
 		switch args[0] {
+		case "auto":
+			stored, shown = "", "auto" // empty == auto default; keeps config.toml clean
 		case "ssh":
-			stored, shown = "", "ssh" // empty == ssh default; keeps config.toml clean
+			stored, shown = "ssh", "ssh"
 		case "mosh":
 			stored, shown = "mosh", "mosh"
 		default:
-			return fmt.Errorf("expected ssh or mosh, got %q", args[0])
+			return fmt.Errorf("expected auto, ssh, or mosh, got %q", args[0])
 		}
 		cfg, err := config.Load()
 		if err != nil {
@@ -184,7 +189,11 @@ var configAttachTransportCmd = &cobra.Command{
 		}
 		out := c.OutOrStdout()
 		fmt.Fprintf(out, "attach transport: %s\n", shown)
-		if shown == "mosh" {
+		switch shown {
+		case "auto":
+			fmt.Fprintln(out, "  uses mosh when the `mosh` client is installed locally, else ssh (the hub always supports mosh).")
+			fmt.Fprintln(out, "  SSH stays the control plane + fallback; only the interactive attach uses mosh.")
+		case "mosh":
 			fmt.Fprintln(out, "  needs `mosh` on your laptop and mosh-server on the hub (duck hub setup installs it).")
 			fmt.Fprintln(out, "  SSH stays the control plane + fallback; only the interactive attach uses mosh.")
 		}
