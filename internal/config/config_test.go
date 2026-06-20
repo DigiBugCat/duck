@@ -20,6 +20,26 @@ func TestCodexModelRoundTrips(t *testing.T) {
 	}
 }
 
+// TestAutoUpdateEnabledDefaultsOn pins that the background self-updater is opt-
+// out: a nil pointer (absent key), a nil receiver, and an explicit true all read
+// as ON; only an explicit false turns it off.
+func TestAutoUpdateEnabledDefaultsOn(t *testing.T) {
+	if !(&Config{}).AutoUpdateEnabled() {
+		t.Errorf("absent auto_update must default ON")
+	}
+	var nilCfg *Config
+	if !nilCfg.AutoUpdateEnabled() {
+		t.Errorf("nil *Config AutoUpdateEnabled() must be ON")
+	}
+	tru, fls := true, false
+	if !(&Config{AutoUpdate: &tru}).AutoUpdateEnabled() {
+		t.Errorf("explicit true must be ON")
+	}
+	if (&Config{AutoUpdate: &fls}).AutoUpdateEnabled() {
+		t.Errorf("explicit false must be OFF")
+	}
+}
+
 // TestAttachTransportRoundTrips pins that the interactive-attach transport field
 // decodes from the config TOML and is reflected by Transport().
 func TestAttachTransportRoundTrips(t *testing.T) {

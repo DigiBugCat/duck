@@ -24,8 +24,12 @@ binary just drives the hub over SSH.
 curl -sSL https://raw.githubusercontent.com/DigiBugCat/duck/main/install.sh | sh
 ```
 
-That drops a raw binary at `~/.local/bin/duck` (no Homebrew); from then on
-`duck update` self-updates straight from the latest GitHub release. Also install
+That drops a raw binary at `~/.local/bin/duck` (no Homebrew). From then on duck
+keeps itself current: **every run does a throttled background check and
+self-updates in place** when a newer GitHub release exists (the next run uses
+it). It's on by default — turn it off with `duck config auto-update off` or
+`DUCK_NO_AUTO_UPDATE=1`, and from-source `dev` builds never auto-update. `duck
+update` still forces an update on demand. Also install
 [Mutagen](https://mutagen.io) — the only runtime dependency on your laptop
 (`rsync`, `ssh` and `tmux` come from macOS / the hub):
 

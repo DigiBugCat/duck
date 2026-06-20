@@ -54,6 +54,14 @@ type Config struct {
 	// like auto-naming. See flow.Flow.coSyncClaude.
 	SyncClaudeHistory bool `toml:"sync_claude_history,omitempty"`
 
+	// AutoUpdate gates the background self-updater (on by default). When unset
+	// (nil) or true, every `duck` run spawns a throttled detached check that
+	// replaces the binary in place when a newer GitHub release exists; the next
+	// run picks it up. A pointer so the zero value (absent key) reads as ON via
+	// AutoUpdateEnabled — `false` is the explicit opt-out. Dev (from-source) builds
+	// ignore this entirely and never auto-update.
+	AutoUpdate *bool `toml:"auto_update,omitempty"`
+
 	// Folders is the per-folder sync policy store: the key is a tilde-form dir,
 	// the value is "sync" or "never". It lets bare `duck` remember whether a
 	// folder should auto-mirror so it never re-prompts (and so a known-safe folder
@@ -83,6 +91,16 @@ func (c *Config) Transport() string {
 		return "auto"
 	}
 	return c.AttachTransport
+}
+
+// AutoUpdateEnabled reports whether the background self-updater is on. The
+// default (nil pointer, or a nil receiver) is ON — auto-update is opt-out; only
+// an explicit `auto_update = false` turns it off.
+func (c *Config) AutoUpdateEnabled() bool {
+	if c == nil || c.AutoUpdate == nil {
+		return true
+	}
+	return *c.AutoUpdate
 }
 
 func path() (string, error) {

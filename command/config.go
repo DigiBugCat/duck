@@ -51,6 +51,11 @@ var configCmd = &cobra.Command{
 		}
 		fmt.Fprintf(tw, "claude history sync\t%s  (duck config claude-sync on|off)\n", claudeSync)
 		fmt.Fprintf(tw, "attach transport\t%s  (duck config attach-transport auto|ssh|tssh)\n", cfg.Transport())
+		autoUpdate := "on"
+		if !cfg.AutoUpdateEnabled() {
+			autoUpdate = "off"
+		}
+		fmt.Fprintf(tw, "auto update\t%s  (duck config auto-update on|off)\n", autoUpdate)
 		tw.Flush()
 
 		// Per-folder sync memory: what duck remembers about where it auto-mirrors.
@@ -153,6 +158,45 @@ var configClaudeSyncCmd = &cobra.Command{
 	},
 }
 
+// configAutoUpdateCmd toggles the background self-updater (default on). When on,
+// every `duck` run spawns a throttled detached check that replaces the binary in
+// place when a newer release exists; the next run uses it. Dev (from-source)
+// builds ignore this and never auto-update.
+var configAutoUpdateCmd = &cobra.Command{
+	Use:       "auto-update <on|off>",
+	Short:     "Toggle the background self-updater (default on)",
+	Args:      cobra.ExactArgs(1),
+	ValidArgs: []string{"on", "off"},
+	RunE: func(c *cobra.Command, args []string) error {
+		var on bool
+		switch args[0] {
+		case "on", "true", "yes":
+			on = true
+		case "off", "false", "no":
+			on = false
+		default:
+			return fmt.Errorf("expected on or off, got %q", args[0])
+		}
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		cfg.AutoUpdate = &on
+		if err := config.Save(cfg); err != nil {
+			return err
+		}
+		state := "off"
+		if on {
+			state = "on"
+		}
+		fmt.Fprintf(c.OutOrStdout(), "auto update: %s\n", state)
+		if on {
+			fmt.Fprintln(c.OutOrStdout(), "  each `duck` run checks for a newer release in the background (throttled) and self-updates; the next run uses it.")
+		}
+		return nil
+	},
+}
+
 // configAttachTransportCmd selects the interactive-attach transport. The
 // default, auto, uses tssh whenever the local `tssh` client is installed and
 // falls back to ssh otherwise — so a client opts in just by installing tssh
@@ -202,7 +246,7 @@ var configAttachTransportCmd = &cobra.Command{
 }
 
 func init() {
-	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd, configAttachTransportCmd)
+	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd, configAttachTransportCmd, configAutoUpdateCmd)
 }
 
 func sortedKeys(m map[string]string) []string {
