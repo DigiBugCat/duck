@@ -168,12 +168,14 @@ func TestAttachArgvBuildsInteractiveAttach(t *testing.T) {
 }
 
 // TestTsshAttachArgvBuildsInteractiveAttach pins the tssh interactive-attach
-// argv: the tssh client (absolute), -t, isolated from ~/.ssh/config via
-// -F /dev/null, StrictHostKeyChecking=accept-new, --udp, then --tsshd-path (when
-// a hub path is known), the addr, and the remote command as SEPARATE words
-// `zsh -lc <script>` (tssh runs trailing argv as the command). Contrast with the
-// ssh path (TestAttachArgvBuildsInteractiveAttach), which hands sshd ONE quoted
-// command — that test staying green is the proof tssh is opt-in.
+// argv: the tssh client (absolute), -t, StrictHostKeyChecking=accept-new, --udp,
+// then --tsshd-path (when a hub path is known), the addr, and the remote command
+// as SEPARATE words `zsh -lc <script>` (tssh runs trailing argv as the command).
+// Notably it does NOT pass -F /dev/null or -i: tssh resolves the user's default
+// ~/.ssh identities + agent + config, exactly like duck's other ssh calls (a
+// -F /dev/null here would drop the attach to a password prompt). Contrast with
+// the ssh path (TestAttachArgvBuildsInteractiveAttach), which hands sshd ONE
+// quoted command — that test staying green is the proof tssh is opt-in.
 func TestTsshAttachArgvBuildsInteractiveAttach(t *testing.T) {
 	c := NewWithTransport("me@hub.local", true, "/opt/homebrew/bin/tsshd")
 	argv, err := c.AttachArgv("cc-1234")
@@ -187,21 +189,27 @@ func TestTsshAttachArgvBuildsInteractiveAttach(t *testing.T) {
 	if filepath.Base(argv[0]) != "tssh" {
 		t.Errorf("AttachArgv[0] base = %q, want tssh", filepath.Base(argv[0]))
 	}
-	// Exact head: -t, -F /dev/null (config isolation), accept-new host keys, --udp.
-	wantHead := []string{argv[0], "-t", "-F", "/dev/null", "-o", "StrictHostKeyChecking=accept-new", "--udp"}
+	// Exact head: -t, accept-new host keys, --udp. No -F/-i (default-key auth).
+	wantHead := []string{argv[0], "-t", "-o", "StrictHostKeyChecking=accept-new", "--udp"}
 	for i, w := range wantHead {
 		if argv[i] != w {
 			t.Errorf("argv[%d] = %q, want %q (full: %v)", i, argv[i], w, argv)
 		}
 	}
+	// No -F /dev/null: it would also disable default-identity loading → password prompt.
+	for _, a := range argv {
+		if a == "-F" {
+			t.Fatalf("argv must NOT pass -F (breaks default-key auth): %v", argv)
+		}
+	}
 	// --tsshd-path is present (we passed a hub path) so the hub finds tsshd off its
 	// non-login PATH. It must be two argv words: the flag and the absolute path.
-	if argv[7] != "--tsshd-path" || argv[8] != "/opt/homebrew/bin/tsshd" {
-		t.Errorf("argv[7:9] = %v, want [--tsshd-path /opt/homebrew/bin/tsshd]: %v", argv[7:9], argv)
+	if argv[5] != "--tsshd-path" || argv[6] != "/opt/homebrew/bin/tsshd" {
+		t.Errorf("argv[5:7] = %v, want [--tsshd-path /opt/homebrew/bin/tsshd]: %v", argv[5:7], argv)
 	}
 	// Tail: addr, then the remote command as SEPARATE words zsh -lc <script>.
-	if len(argv) != 13 {
-		t.Errorf("argv len = %d, want 13 (tssh -t -F /dev/null -o … --udp --tsshd-path P addr zsh -lc script): %v", len(argv), argv)
+	if len(argv) != 11 {
+		t.Errorf("argv len = %d, want 11 (tssh -t -o … --udp --tsshd-path P addr zsh -lc script): %v", len(argv), argv)
 	}
 	n := len(argv)
 	if argv[n-4] != "me@hub.local" {
@@ -230,9 +238,9 @@ func TestTsshAttachArgvOmitsTsshdPathWhenEmpty(t *testing.T) {
 			t.Fatalf("--tsshd-path must be omitted when the hub path is empty: %v", argv)
 		}
 	}
-	// Without the two --tsshd-path words the argv is 11 elements.
-	if len(argv) != 11 {
-		t.Errorf("argv len = %d, want 11 without --tsshd-path: %v", len(argv), argv)
+	// Without the two --tsshd-path words the argv is 9 elements.
+	if len(argv) != 9 {
+		t.Errorf("argv len = %d, want 9 without --tsshd-path: %v", len(argv), argv)
 	}
 }
 

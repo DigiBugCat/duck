@@ -376,9 +376,11 @@ func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
 // effects), so it is unit-testable.
 //
 // Shape notes:
-//   - -F /dev/null isolates tssh from ~/.ssh/config (duck never depends on the
-//     user's ssh config); tssh still loads the default ~/.ssh/id_* identities and
-//     the agent, so key auth to the hub works without an explicit -i.
+//   - tssh resolves auth the way every other duck ssh call does: the user's
+//     default ~/.ssh identities, the agent, and ~/.ssh/config. We deliberately do
+//     NOT pass -F /dev/null — it would also stop tssh loading the default
+//     ~/.ssh/id_* identity, dropping the attach to a password prompt — and we do
+//     NOT pass -i, matching duck's reliance on ssh's own default key resolution.
 //   - StrictHostKeyChecking=accept-new lets a first-time hub key be trusted
 //     without an interactive prompt (the same posture as duck's other ssh calls).
 //   - --tsshd-path points tssh at the hub's absolute tsshd, so the hub's non-login
@@ -396,7 +398,6 @@ func (c *Client) tsshAttachArgv(tmuxSession string) ([]string, error) {
 	argv := []string{
 		tsshClientPath(),
 		"-t",
-		"-F", "/dev/null",
 		"-o", "StrictHostKeyChecking=accept-new",
 		"--udp",
 	}
