@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/DigiBugCat/duck/internal/openfwd"
 	"github.com/DigiBugCat/duck/internal/sshx"
@@ -36,15 +37,56 @@ func newOpenForwarding(client *sshx.Client) func() (stop func()) {
 			return noop
 		}
 		if err := client.RemoteForward(openfwd.HubPort, ln.LocalPort()); err != nil {
-			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (reverse forward: %v); hub opens will run on the hub\n", err)
-			_ = ln.Close()
-			return noop
+			// A "remote port forwarding failed for listen port" collision means a
+			// PRIOR attach left an orphaned forward bound to HubPort on the hub (its
+			// control master died without tearing it down, so our cancel — which
+			// runs through a different master — can't reach it). Reclaim the port by
+			// killing whatever still listens on it, then retry the forward once.
+			if isForwardPortCollision(err) && reclaimHubForwardPort(client, openfwd.HubPort) {
+				err = client.RemoteForward(openfwd.HubPort, ln.LocalPort())
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (reverse forward: %v); hub opens will run on the hub\n", err)
+				_ = ln.Close()
+				return noop
+			}
 		}
 		return func() {
 			_ = client.CancelRemoteForward(openfwd.HubPort, ln.LocalPort())
 			_ = ln.Close()
 		}
 	}
+}
+
+// isForwardPortCollision reports whether an ssh -R failure was the hub refusing
+// the listen port because something already holds it — the orphaned-forward case
+// worth reclaiming. Other failures (auth, no route) are not retried this way.
+func isForwardPortCollision(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "remote port forwarding failed for listen port") ||
+		strings.Contains(msg, "forwarding request failed")
+}
+
+// reclaimHubForwardPort best-effort kills whatever still listens on the hub's
+// forward port (an orphaned sshd-session from a prior attach holding the stale
+// -R forward). It reports whether the port looks free afterward so the caller
+// knows a retry is worth attempting. Login-wrapped so lsof resolves on the hub's
+// PATH; all failures are swallowed (the worst case is the original error stands).
+func reclaimHubForwardPort(client *sshx.Client, port int) bool {
+	script := fmt.Sprintf(
+		`pids=$(lsof -nP -iTCP:%d -sTCP:LISTEN -t 2>/dev/null); `+
+			`[ -n "$pids" ] && kill $pids 2>/dev/null; sleep 1; `+
+			`lsof -nP -iTCP:%d -sTCP:LISTEN -t 2>/dev/null | head -1`,
+		port, port)
+	out, err := client.Run(script)
+	if err != nil {
+		return false
+	}
+	// Empty output means nothing listens on the port now — safe to retry.
+	return strings.TrimSpace(out) == ""
 }
 
 // productionOpenDeps wires the real seams: open through the laptop's OS opener,
