@@ -177,6 +177,17 @@ func (m *Manager) New(id, dir string) error {
 	return m.SetOption(id, dirOption, dir)
 }
 
+// Send types a command line into session id's active pane and presses Enter
+// (`tmux send-keys -t <id> <line> Enter`), exactly as the eviction-revival path
+// types `claude --resume <id>`. line is the literal shell command to run in the
+// pane; callers shell-quote any arguments inside it. Used by `duck claude` to
+// launch claude inside a freshly-minted duck session.
+func (m *Manager) Send(id, line string) error {
+	_, err := m.run.Run(fmt.Sprintf("tmux send-keys -t %s %s Enter",
+		paths.Quote(id), paths.Quote(line)))
+	return err
+}
+
 // Attach hands the current process off to an interactive `tmux attach -t <id>`
 // over the warmed control-master socket. Callers MUST fully tear down any local
 // TUI first so ssh/tmux own a clean TTY. Returns only on a failure to exec.
