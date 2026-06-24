@@ -101,6 +101,14 @@ type Client struct {
 	// so the hub finds tsshd even off the default PATH. Empty omits the flag (tssh
 	// self-resolves / auto-installs). Only consulted when Tssh is true.
 	TsshdPath string
+	// Local, when true, makes every call run on THIS machine instead of over ssh:
+	// the command/attach argv become a bare `zsh -lc <cmd>` (no ssh, no addr), and
+	// the ssh-only plumbing (control-master warm-up, terminfo push, port forwards)
+	// turns into no-ops. Set when duck runs ON the hub itself (the local hostname
+	// matches the registered hub name), so duck on the host behaves like duck
+	// everywhere else without round-tripping ssh to itself. The login-shell wrap is
+	// kept so PATH (Homebrew's /opt/homebrew/bin etc.) matches the ssh path exactly.
+	Local bool
 }
 
 // New returns a Client for the given hub address (ssh interactive-attach
@@ -180,6 +188,11 @@ func Options() ([]string, error) {
 //
 //	ssh <DUCKSSH opts> <addr> <remoteCmd>
 func (c *Client) commandArgv(remoteCmd string) ([]string, error) {
+	if c.Local {
+		// On the hub itself: run the command directly under a login shell, the same
+		// shell ssh would have launched on the far side, just without the ssh hop.
+		return []string{"zsh", "-lc", remoteCmd}, nil
+	}
 	opts, err := Options()
 	if err != nil {
 		return nil, err
@@ -257,6 +270,9 @@ func (c *Client) RemoteForward(hubPort, localPort int) error {
 // prior attach) so the add never fails on "already forwarded"; the cancel's
 // error is ignored because none-to-cancel is the common case.
 func (c *Client) ensureForward(flag, spec string) error {
+	if c.Local {
+		return nil // same machine: nothing to forward, the ports are already local
+	}
 	if err := EnsureControlDir(); err != nil {
 		return err
 	}
@@ -275,6 +291,9 @@ func (c *Client) ensureForward(flag, spec string) error {
 // Best-effort by nature (the master may already be gone); the error is returned
 // for the caller to log/ignore.
 func (c *Client) CancelRemoteForward(hubPort, localPort int) error {
+	if c.Local {
+		return nil // no forward was ever added (see ensureForward)
+	}
 	argv, err := c.controlArgv("cancel", "-R", fmt.Sprintf("%d:127.0.0.1:%d", hubPort, localPort))
 	if err != nil {
 		return err
@@ -310,6 +329,9 @@ func (c *Client) ReadFile(remotePath string) ([]byte, error) {
 // so they reuse the master instead of racing to create it (design fix c1).
 // Safe to call repeatedly; ControlMaster=auto reuses an existing master.
 func (c *Client) WarmUp() error {
+	if c.Local {
+		return nil // no ssh master to warm when we run locally
+	}
 	if err := EnsureControlDir(); err != nil {
 		return err
 	}
@@ -326,6 +348,9 @@ func (c *Client) WarmUp() error {
 // error returns the error for the caller to ignore; the attach still works via
 // the fallback. Skips the universally-present defaults (and empty TERM) entirely.
 func (c *Client) EnsureTerminfo(term string) error {
+	if c.Local {
+		return nil // same machine: the local terminfo db is already the hub's
+	}
 	switch term {
 	case "", "xterm", "xterm-256color", "screen", "screen-256color", "tmux-256color", "vt100", "ansi", "dumb":
 		return nil
@@ -347,6 +372,12 @@ func (c *Client) EnsureTerminfo(term string) error {
 // SAME multiplexed control path. Pure (no side effects) so it is unit-testable;
 // ExecAttach wraps it with the actual syscall.Exec.
 func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
+	if c.Local {
+		// On the hub itself: attach to the local tmux directly under a login shell
+		// (so tmux resolves on the Homebrew PATH), no ssh -t / tssh hop. The same
+		// termGuard keeps tmux from aborting on an unknown TERM.
+		return []string{"zsh", "-lc", termGuard + "tmux attach-session -t " + tmuxSession}, nil
+	}
 	if c.Tssh {
 		return c.tsshAttachArgv(tmuxSession)
 	}

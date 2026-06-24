@@ -91,6 +91,15 @@ func build() (*wiring, error) {
 		fmt.Fprintln(os.Stderr, warn)
 	}
 	client := sshx.NewWithTransport(cfg.Hub, useTssh, cfg.HubTsshdPath)
+	// If we're running ON the hub itself (this machine's hostname matches the one
+	// captured at `duck hub setup`), skip ssh entirely and run every command/attach
+	// locally. Lets `duck` on the host behave like duck everywhere else instead of
+	// round-tripping ssh to itself (and so the host installs its own claude-hook.sh
+	// rather than only the remote one). Best-effort: any hostname error leaves it
+	// off and duck ssh's as before.
+	if onHub(cfg.HubName) {
+		client.Local = true
+	}
 	// Best-effort warm-up; failures surface on the first real call with a
 	// clearer message.
 	_ = client.WarmUp()
@@ -141,6 +150,33 @@ func build() (*wiring, error) {
 		app:        ap,
 		tsshAttach: useTssh,
 	}, nil
+}
+
+// onHub reports whether duck is running on the hub machine itself, by comparing
+// this host's name to the hub name captured at registration (config.HubName,
+// the remote `hostname`). The comparison is case-insensitive and tolerant of
+// FQDN/short-name and ".local" differences (so "macmini" matches "macmini.local"
+// and "Macmini.lan"), since `hostname` output and os.Hostname() can disagree on
+// the suffix. An empty hubName (older config, never captured) or any os.Hostname
+// error returns false — duck then ssh's to the hub as before.
+func onHub(hubName string) bool {
+	if strings.TrimSpace(hubName) == "" {
+		return false
+	}
+	local, err := os.Hostname()
+	if err != nil {
+		return false
+	}
+	short := func(s string) string {
+		s = strings.ToLower(strings.TrimSpace(s))
+		s = strings.TrimSuffix(s, ".local")
+		if i := strings.IndexByte(s, '.'); i >= 0 {
+			s = s[:i]
+		}
+		return s
+	}
+	a, b := short(local), short(hubName)
+	return a != "" && a == b
 }
 
 // codexLocal is the production namer.LocalExec: it runs the laptop-side codex

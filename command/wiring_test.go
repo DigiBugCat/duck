@@ -1,10 +1,42 @@
 package command
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
 )
+
+// TestOnHub pins the host-detection that flips the client into local (no-ssh)
+// mode: the registered hub name matches this machine (case- and suffix-tolerant)
+// → true; an empty or foreign name → false.
+func TestOnHub(t *testing.T) {
+	host, err := os.Hostname()
+	if err != nil {
+		t.Skipf("no hostname: %v", err)
+	}
+	short := host
+	if i := strings.IndexByte(short, '.'); i >= 0 {
+		short = short[:i]
+	}
+	cases := []struct {
+		name    string
+		hubName string
+		want    bool
+	}{
+		{"exact", host, true},
+		{"short-vs-fqdn", short, true},
+		{"uppercased-with-local", strings.ToUpper(short) + ".local", true},
+		{"empty", "", false},
+		{"whitespace", "   ", false},
+		{"foreign", "some-other-host", false},
+	}
+	for _, tc := range cases {
+		if got := onHub(tc.hubName); got != tc.want {
+			t.Errorf("%s: onHub(%q) = %v, want %v", tc.name, tc.hubName, got, tc.want)
+		}
+	}
+}
 
 // TestEffectiveTsshAttach pins the effective-transport resolution that gates the
 // tssh interactive attach across all three configured values: auto (tssh-if-
