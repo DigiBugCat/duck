@@ -121,6 +121,10 @@ func build() (*wiring, error) {
 	store := names.NewStore(client)
 	nm := namer.NewCodexExec(client, codexLocal{}, model)
 	fl := flow.New(cfg.Hub, sess, store, ttyPrompter{}, newTTYProgress())
+	// Running ON the hub: skip the sync-awareness gate entirely (mirroring a folder
+	// to the machine it already lives on is a no-op), so bare `duck` opens a local
+	// session in cwd without prompting to sync. Same hostname match as client.Local.
+	fl.SetLocal(client.Local)
 	// Route flow's interactive attach through the command-layer reconnect loop so
 	// a transport drop reconnects (capped backoff) and a ^c give-up returns
 	// cleanLeave=false (the session is KEPT for `duck -c`). cleanLeave is true only

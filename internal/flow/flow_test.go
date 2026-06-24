@@ -410,6 +410,40 @@ func TestDecideSync(t *testing.T) {
 	}
 }
 
+// TestLocalSkipsSync pins that a flow marked local (running ON the hub) NEVER
+// syncs and NEVER prompts, regardless of riskiness or an explicit sync override:
+// mirroring a folder to the machine it already lives on is a no-op. It still
+// opens (attaches) a session in cwd.
+func TestLocalSkipsSync(t *testing.T) {
+	home, _ := osUserHomeDir()
+	local := home + "/dev/foo"
+	const d = "~/dev/foo"
+	for _, override := range []Override{OverrideNone, OverrideSync} {
+		r := &fakeRunner{out: map[string]string{
+			listCmd():       "",
+			dirExistsCmd(d): "yes\n",
+		}}
+		a := &fakeAttacher{}
+		s := &fakeSyncer{}
+		p := newFakePolicy(nil)
+		pr := &fakePrompter{choice: ChoiceYes}
+		f := newFlowDeps(r, a, s, p, fakeClassifier{risky: true}, pr)
+		f.SetLocal(true)
+		if err := f.RunWithOverride(local, override); err != nil {
+			t.Fatalf("override %v: RunWithOverride: %v", override, err)
+		}
+		if s.addCalls > 0 {
+			t.Fatalf("override %v: local flow must not sync (AddAndWait ran %d times)", override, s.addCalls)
+		}
+		if pr.calls > 0 {
+			t.Fatalf("override %v: local flow must not prompt (prompter consulted %d times)", override, pr.calls)
+		}
+		if a.attached == "" {
+			t.Fatalf("override %v: local flow must still attach a session", override)
+		}
+	}
+}
+
 // TestNoSyncCwdFallback pins the no-sync session-dir choice: D when it exists on
 // the hub, "~" when it does not. Asserted via the fake runner's new-session -c.
 func TestNoSyncCwdFallback(t *testing.T) {

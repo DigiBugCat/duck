@@ -175,7 +175,16 @@ type Flow struct {
 	prompter   Prompter
 	attachInt  InteractiveAttach
 	syncClaude bool // global opt-in: co-sync this folder's ~/.claude/projects/<slug>
+	local      bool // duck is running ON the hub: skip sync entirely (source == dest)
 }
+
+// SetLocal marks the flow as running ON the hub itself. When set, the bare-`duck`
+// sync-awareness gate is bypassed entirely (decideSync always returns no-sync):
+// mirroring a folder to the machine it already lives on is a no-op, so `duck` on
+// the hub just opens a session in cwd without ever prompting to sync. Wired from
+// the command layer off the same hostname match that puts the ssh client into
+// local mode.
+func (f *Flow) SetLocal(on bool) { f.local = on }
 
 // SetClaudeHistory toggles the per-folder Claude history co-sync (OFF by
 // default). When on, a bare `duck` that mirrors a folder ALSO co-syncs that
@@ -557,6 +566,12 @@ func (f *Flow) RunWithOverride(cwd string, override Override) error {
 // local path the classifier walks. Side effects (remembering a policy) are
 // best-effort: a store write failure does not block the session.
 func (f *Flow) decideSync(cwd, d string, override Override) (bool, error) {
+	if f.local {
+		// On the hub itself there is no remote to mirror to (source == destination),
+		// so syncing — and the prompt that gates it — is meaningless. Always no-sync;
+		// the session opens directly in the local cwd.
+		return false, nil
+	}
 	switch override {
 	case OverrideSync, OverridePush, OverridePull:
 		// Force doSync and remember "sync". The reconcile DIRECTION these carry
