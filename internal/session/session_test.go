@@ -120,6 +120,22 @@ func TestListNoServerIsEmptyNotError(t *testing.T) {
 	}
 }
 
+func TestListNeverStartedSocketIsEmptyNotError(t *testing.T) {
+	// On a box where tmux has NEVER started the socket file is absent, so tmux
+	// emits "error connecting to <socket> (No such file or directory)" instead of
+	// "no server running". List must absorb THAT signature too — otherwise a bare
+	// `duck` on a fresh machine fails instead of starting the first session.
+	f := &fakeRunner{err: errors.New("tmux list-sessions: exit status 1: error connecting to /private/tmp/tmux-501/default (No such file or directory)")}
+	m := NewManager(f, &fakeAttacher{})
+	got, err := m.List()
+	if err != nil {
+		t.Fatalf("List on never-started socket should be nil error, got %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("want empty slice, got %+v", got)
+	}
+}
+
 // TestListPropagatesTransportError pins invariant: a real transport/ssh failure
 // (hub down, auth rejected) is NOT the empty-server case and must PROPAGATE, so
 // `duck clean` cannot silently report "no detached sessions" on a dead hub.

@@ -119,11 +119,18 @@ func (m *Manager) List() ([]Sess, error) {
 	return parseList(out), nil
 }
 
-// isNoServer reports whether s carries tmux's empty-server signature, emitted as
-// "no server running on <socket>" (or just "no server running") when no tmux
-// server is up. Matched as a substring so the trailing socket path is ignored.
+// isNoServer reports whether s carries tmux's empty-server signature. tmux emits
+// one of two forms when no server is up, depending on build/platform: the usual
+// "no server running on <socket>" (or just "no server running"), and — on a box
+// where the server has NEVER started, so the socket file is absent — "error
+// connecting to <socket> (No such file or directory)". Both mean the same thing:
+// nothing is running yet, so duck should treat the hub as empty and start the
+// first session. Matched as substrings so the socket path is ignored. The second
+// form is anchored on "error connecting to" so it can't be confused with an
+// unrelated ENOENT from a real transport failure.
 func isNoServer(s string) bool {
-	return strings.Contains(s, "no server running")
+	return strings.Contains(s, "no server running") ||
+		(strings.Contains(s, "error connecting to") && strings.Contains(s, "No such file or directory"))
 }
 
 // parseList turns the tab/newline list-sessions output into Sess values.
