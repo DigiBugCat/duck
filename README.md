@@ -213,9 +213,19 @@ ssh if the client is missing.
   `codex` optional (naming only); `tssh` optional but recommended — install it
   (`brew install trzsz-ssh`) and the attach auto-upgrades to tssh (UDP/QUIC
   roaming).
-- **Hub:** any always-on macOS box reachable over SSH; `duck setup` provisions
-  `tmux` + `mutagen` + `tsshd` + TPM for you. Same `$HOME`/username on both
-  machines (duck mirrors each path at its natural location).
+- **Hub:** any always-on box reachable over SSH — **macOS (first-class)** or
+  **Linux (core loop works)**; `duck hub setup` provisions `tmux` + `mutagen` +
+  `tsshd` + TPM for you (on Linux it fetches the mutagen binary from GitHub,
+  since there's no apt package). Same `$HOME`/username on both machines (duck
+  mirrors each path at its natural location). A few hub-side extras are
+  macOS-only on Linux hubs — see [Migrating the hub → Linux hubs](docs/migrating-the-hub.md#linux-hubs).
+
+## Moving to a new hub
+
+Switching duck to a different hub machine is mostly re-pointing your laptop and
+letting Mutagen re-mirror — there's no hub database to dump. Walk-through, plus
+what carries over by hand (session names) and what doesn't (live tmux sessions):
+**[docs/migrating-the-hub.md](docs/migrating-the-hub.md)**.
 
 ## License
 

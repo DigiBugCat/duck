@@ -1,14 +1,16 @@
 // `duck evict`: kill stale (detached, non-looped, idle past --age) tmux
 // sessions on the hub to reclaim RAM, leaving a breadcrumb so the picker can
 // revive each one later — same tmux name, same dir, and `claude --resume` of
-// the conversation that was running there. `duck evict --install` writes the
-// same sweep as a launchd agent ON the hub so the mac mini evicts on its own
-// timer with no duck daemon; `--uninstall` removes it.
+// the conversation that was running there. `duck evict --install` schedules the
+// same sweep ON the hub using its native scheduler — a launchd agent on macOS,
+// a systemd --user timer on Linux — so the hub evicts on its own timer with no
+// duck daemon; `--uninstall` removes it.
 package command
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -17,8 +19,29 @@ import (
 	"github.com/DigiBugCat/duck/internal/session"
 )
 
-// evictLabel is the hub launchd agent's label and plist basename.
+// evictRunner is the hub-command surface the eviction installer needs: a remote
+// command runner with optional stdin. Both *sshx.Client (the `duck evict` path)
+// and *hub.Hub (the `duck hub setup` path) satisfy it, so the scheduler can be
+// installed from either entrypoint.
+type evictRunner interface {
+	Run(remoteCmd string) (string, error)
+	RunInput(remoteCmd string, stdin io.Reader) (string, error)
+}
+
+// evictLabel is the hub launchd agent's label and plist basename (macOS hub).
 const evictLabel = "com.duckcli.evict"
+
+// evictSystemdUnit is the basename of the hub's systemd --user service+timer
+// units (Linux hub): ~/.config/systemd/user/duck-evict.{service,timer}.
+const evictSystemdUnit = "duck-evict"
+
+// Default eviction knobs, shared by the `duck evict` flags and the
+// install-by-default step in `duck hub setup`.
+const (
+	defaultEvictAge        = 12 * time.Hour
+	defaultEvictEvery      = 30 * time.Minute
+	defaultEvictRenameIdle = 15 * time.Minute
+)
 
 // claudeHookPath is where the SessionStart hook script lives on the hub; the
 // settings.json hook entry just invokes it, so upgrading duck upgrades the hook
@@ -88,8 +111,9 @@ Each sweep also refreshes titles: detached Claude sessions idle past
 --rename-idle get '/rename' typed into them (once per burst of activity), so
 their names track the conversation instead of freezing on the first task.
 
---install puts the same sweep on the hub as a launchd agent (runs every
---every), so the hub evicts on its own; --uninstall removes the agent.`,
+--install puts the same sweep on the hub as a launchd agent (macOS) or a
+systemd --user timer (Linux), running every --every, so the hub evicts on its
+own; --uninstall removes it.`,
 	Args: cobra.NoArgs,
 	RunE: func(c *cobra.Command, args []string) error {
 		w, err := build()
@@ -98,14 +122,14 @@ their names track the conversation instead of freezing on the first task.
 		}
 		switch {
 		case evictInstall:
-			return installEvictAgent(w, evictAge, evictEvery, evictRenameIdle)
+			return installEvictAgent(w.client, evictAge, evictEvery, evictRenameIdle)
 		case evictUninstall:
-			return uninstallEvictAgent(w)
+			return uninstallEvictAgent(w.client)
 		}
 		// Best-effort hook install on manual sweeps too — otherwise a user who
 		// never runs --install gets no @claude_session_id stamps and every
 		// eviction falls back to the newest-jsonl heuristic. Idempotent.
-		if err := installClaudeIDHook(w); err != nil {
+		if err := installClaudeIDHook(w.client); err != nil {
 			fmt.Printf("warning: could not install Claude session-id hook: %v\n", err)
 		}
 		evicted, renamed, err := w.sessions.Evict(evictAge, evictRenameIdle)
@@ -128,26 +152,62 @@ their names track the conversation instead of freezing on the first task.
 }
 
 func init() {
-	evictCmd.Flags().DurationVar(&evictAge, "age", 12*time.Hour, "idle threshold; detached sessions older than this are evicted")
-	evictCmd.Flags().DurationVar(&evictEvery, "every", 30*time.Minute, "sweep interval for the installed launchd agent (with --install)")
-	evictCmd.Flags().DurationVar(&evictRenameIdle, "rename-idle", 15*time.Minute, "idle threshold after which a detached Claude session gets a /rename title refresh (0 disables)")
-	evictCmd.Flags().BoolVar(&evictInstall, "install", false, "install the sweep as a launchd agent on the hub")
-	evictCmd.Flags().BoolVar(&evictUninstall, "uninstall", false, "remove the hub launchd agent")
+	evictCmd.Flags().DurationVar(&evictAge, "age", defaultEvictAge, "idle threshold; detached sessions older than this are evicted")
+	evictCmd.Flags().DurationVar(&evictEvery, "every", defaultEvictEvery, "sweep interval for the installed hub scheduler (launchd/systemd, with --install)")
+	evictCmd.Flags().DurationVar(&evictRenameIdle, "rename-idle", defaultEvictRenameIdle, "idle threshold after which a detached Claude session gets a /rename title refresh (0 disables)")
+	evictCmd.Flags().BoolVar(&evictInstall, "install", false, "install the sweep on the hub (launchd agent on macOS, systemd --user timer on Linux)")
+	evictCmd.Flags().BoolVar(&evictUninstall, "uninstall", false, "remove the hub eviction scheduler")
 }
 
-// installEvictAgent writes the eviction script and a launchd plist onto the hub
-// and (re)loads the agent, so the hub sweeps itself every `every` with the
-// given idle threshold. Re-running with new flags overwrites and reloads.
-func installEvictAgent(w *wiring, age, every, renameIdle time.Duration) error {
-	if err := installClaudeIDHook(w); err != nil {
+// installEvictAgent writes the eviction script onto the hub and schedules it to
+// run every `every` with the given idle threshold, picking the hub's native
+// scheduler: a launchd agent on macOS, a systemd --user timer on Linux.
+// Re-running with new flags overwrites and reloads.
+func installEvictAgent(r evictRunner, age, every, renameIdle time.Duration) error {
+	if err := installClaudeIDHook(r); err != nil {
 		// The hook is an accuracy upgrade, not a requirement: without it eviction
 		// falls back to the newest-conversation-in-dir heuristic. Warn and continue.
 		fmt.Printf("warning: could not install Claude session-id hook: %v\n", err)
 	}
-	if _, err := w.client.RunInput(
+	if _, err := r.RunInput(
 		"mkdir -p ~/.duck && cat > ~/.duck/evict.sh", strings.NewReader(session.EvictScript)); err != nil {
 		return fmt.Errorf("write evict.sh: %w", err)
 	}
+	goos, err := hubGOOS(r)
+	if err != nil {
+		return fmt.Errorf("detect hub OS: %w", err)
+	}
+	switch goos {
+	case "darwin":
+		return installEvictLaunchd(r, age, every, renameIdle)
+	case "linux":
+		return installEvictSystemd(r, age, every, renameIdle)
+	default:
+		return fmt.Errorf("duck evict --install: unsupported hub OS %q (want macOS or Linux)", goos)
+	}
+}
+
+// hubGOOS reports the hub's operating system ("darwin"/"linux") via `uname -s`,
+// so scheduler installs/uninstalls target the right mechanism. Unknown output is
+// returned verbatim so callers can surface it in an error.
+func hubGOOS(r evictRunner) (string, error) {
+	out, err := r.Run("uname -s")
+	if err != nil {
+		return "", err
+	}
+	switch strings.TrimSpace(out) {
+	case "Darwin":
+		return "darwin", nil
+	case "Linux":
+		return "linux", nil
+	default:
+		return strings.TrimSpace(out), nil
+	}
+}
+
+// installEvictLaunchd schedules the sweep as a macOS launchd agent (the verified
+// macOS-hub path). Re-running overwrites and reloads.
+func installEvictLaunchd(r evictRunner, age, every, renameIdle time.Duration) error {
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -166,7 +226,7 @@ func installEvictAgent(w *wiring, age, every, renameIdle time.Duration) error {
 </plist>
 `, evictLabel, int64(age/time.Second), int64(renameIdle/time.Second), int64(every/time.Second))
 	plistPath := "~/Library/LaunchAgents/" + evictLabel + ".plist"
-	if _, err := w.client.RunInput(
+	if _, err := r.RunInput(
 		"mkdir -p ~/Library/LaunchAgents && cat > "+plistPath, strings.NewReader(plist)); err != nil {
 		return fmt.Errorf("write plist: %w", err)
 	}
@@ -176,14 +236,71 @@ func installEvictAgent(w *wiring, age, every, renameIdle time.Duration) error {
 		"launchctl bootout gui/$(id -u)/%s 2>/dev/null; "+
 			"launchctl bootstrap gui/$(id -u) %s 2>/dev/null || launchctl load %s",
 		evictLabel, plistPath, plistPath)
-	if _, err := w.client.Run(reload); err != nil {
+	if _, err := r.Run(reload); err != nil {
 		return fmt.Errorf("load launchd agent: %w", err)
 	}
-	fmt.Printf("installed: hub evicts sessions idle >%s every %s (%s)\n", age, every, evictLabel)
+	reportEvictInstalled(age, every, renameIdle, "launchd agent "+evictLabel)
+	return nil
+}
+
+// installEvictSystemd schedules the sweep as a systemd --user timer (the Linux
+// hub path). It writes a oneshot service + a recurring timer under
+// ~/.config/systemd/user, enables linger so the timer fires even when no one is
+// logged into the hub, and enables+starts the timer. Re-running overwrites the
+// units and reloads. systemd `%h` expands to the hub user's home; XDG_RUNTIME_DIR
+// is set explicitly so `systemctl --user` finds the user bus over SSH.
+func installEvictSystemd(r evictRunner, age, every, renameIdle time.Duration) error {
+	service := fmt.Sprintf(`[Unit]
+Description=duck: evict stale tmux sessions on the hub (see: duck evict)
+
+[Service]
+Type=oneshot
+Environment=AGE_SECS=%d
+Environment=RENAME_SECS=%d
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%%h/.local/bin
+ExecStart=/bin/sh %%h/.duck/evict.sh
+`, int64(age/time.Second), int64(renameIdle/time.Second))
+	timer := fmt.Sprintf(`[Unit]
+Description=duck: periodic eviction sweep (see: duck evict)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=%d
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`, int64(every/time.Second))
+	if _, err := r.RunInput(
+		"mkdir -p ~/.config/systemd/user && cat > ~/.config/systemd/user/"+evictSystemdUnit+".service",
+		strings.NewReader(service)); err != nil {
+		return fmt.Errorf("write systemd service: %w", err)
+	}
+	if _, err := r.RunInput(
+		"cat > ~/.config/systemd/user/"+evictSystemdUnit+".timer", strings.NewReader(timer)); err != nil {
+		return fmt.Errorf("write systemd timer: %w", err)
+	}
+	// enable-linger is best-effort: self-linger is permitted on most distros, and
+	// we fall back to passwordless sudo; without it the timer still fires whenever
+	// a session is present, so a failure here is not fatal.
+	activate := "export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; " +
+		`loginctl enable-linger "$(id -un)" 2>/dev/null || sudo -n loginctl enable-linger "$(id -un)" 2>/dev/null || true; ` +
+		"systemctl --user daemon-reload && " +
+		"systemctl --user enable --now " + evictSystemdUnit + ".timer"
+	if _, err := r.Run(activate); err != nil {
+		return fmt.Errorf("enable systemd timer: %w", err)
+	}
+	reportEvictInstalled(age, every, renameIdle, "systemd --user timer "+evictSystemdUnit)
+	return nil
+}
+
+// reportEvictInstalled prints the shared post-install summary for either
+// scheduler (sched names the mechanism, e.g. "launchd agent com.duckcli.evict").
+func reportEvictInstalled(age, every, renameIdle time.Duration, sched string) {
+	fmt.Printf("installed: hub evicts sessions idle >%s every %s (%s)\n", age, every, sched)
 	if renameIdle > 0 {
 		fmt.Printf("each sweep also /rename-refreshes Claude titles on sessions idle >%s\n", renameIdle)
 	}
-	return nil
 }
 
 // installClaudeIDHook writes the hook script to the hub and merges a
@@ -195,13 +312,13 @@ func installEvictAgent(w *wiring, age, every, renameIdle time.Duration) error {
 // settings merge happens laptop-side in Go (read → modify → atomic temp+mv
 // write) so the hub needs no jq; unrelated settings are preserved verbatim by
 // the map round-trip.
-func installClaudeIDHook(w *wiring) error {
-	if _, err := w.client.RunInput(
+func installClaudeIDHook(r evictRunner) error {
+	if _, err := r.RunInput(
 		"mkdir -p ~/.duck && cat > ~/.duck/claude-hook.sh && chmod +x ~/.duck/claude-hook.sh",
 		strings.NewReader(claudeHookScript)); err != nil {
 		return fmt.Errorf("write claude-hook.sh: %w", err)
 	}
-	out, err := w.client.Run(`cat ~/.claude/settings.json 2>/dev/null || echo '{}'`)
+	out, err := r.Run(`cat ~/.claude/settings.json 2>/dev/null || echo '{}'`)
 	if err != nil {
 		return err
 	}
@@ -247,26 +364,42 @@ func installClaudeIDHook(w *wiring) error {
 		return err
 	}
 	cmd := "mkdir -p ~/.claude && cat > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json"
-	if _, err := w.client.RunInput(cmd, strings.NewReader(string(data))); err != nil {
+	if _, err := r.RunInput(cmd, strings.NewReader(string(data))); err != nil {
 		return err
 	}
 	fmt.Println("installed Claude SessionStart hook (stamps session id + launch flags for exact resume)")
 	return nil
 }
 
-// uninstallEvictAgent unloads and removes the hub's eviction launchd agent,
-// the sweep script, the Claude SessionStart hook (file + settings entry).
-// Breadcrumbs (and the ability to revive already-evicted sessions) are left
-// intact.
-func uninstallEvictAgent(w *wiring) error {
-	plistPath := "~/Library/LaunchAgents/" + evictLabel + ".plist"
-	cmd := fmt.Sprintf(
-		"launchctl bootout gui/$(id -u)/%s 2>/dev/null; launchctl unload %s 2>/dev/null; rm -f %s ~/.duck/evict.sh ~/.duck/claude-hook.sh",
-		evictLabel, plistPath, plistPath)
-	if _, err := w.client.Run(cmd); err != nil {
+// uninstallEvictAgent removes the hub's eviction scheduler (launchd agent on
+// macOS, systemd --user timer on Linux), the sweep script, and the Claude
+// SessionStart hook (file + settings entry). Breadcrumbs (and the ability to
+// revive already-evicted sessions) are left intact.
+func uninstallEvictAgent(r evictRunner) error {
+	goos, err := hubGOOS(r)
+	if err != nil {
+		return fmt.Errorf("detect hub OS: %w", err)
+	}
+	var cmd string
+	switch goos {
+	case "darwin":
+		plistPath := "~/Library/LaunchAgents/" + evictLabel + ".plist"
+		cmd = fmt.Sprintf(
+			"launchctl bootout gui/$(id -u)/%s 2>/dev/null; launchctl unload %s 2>/dev/null; rm -f %s ~/.duck/evict.sh ~/.duck/claude-hook.sh",
+			evictLabel, plistPath, plistPath)
+	case "linux":
+		unitDir := "~/.config/systemd/user/"
+		cmd = "export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; " +
+			"systemctl --user disable --now " + evictSystemdUnit + ".timer 2>/dev/null; " +
+			"rm -f " + unitDir + evictSystemdUnit + ".service " + unitDir + evictSystemdUnit + ".timer ~/.duck/evict.sh ~/.duck/claude-hook.sh; " +
+			"systemctl --user daemon-reload 2>/dev/null || true"
+	default:
+		return fmt.Errorf("duck evict --uninstall: unsupported hub OS %q (want macOS or Linux)", goos)
+	}
+	if _, err := r.Run(cmd); err != nil {
 		return err
 	}
-	if err := removeClaudeIDHook(w); err != nil {
+	if err := removeClaudeIDHook(r); err != nil {
 		fmt.Printf("warning: could not remove Claude SessionStart hook from settings: %v\n", err)
 	}
 	fmt.Println("uninstalled hub eviction agent")
@@ -277,8 +410,8 @@ func uninstallEvictAgent(w *wiring) error {
 // hub's ~/.claude/settings.json (matched on the hook command/option marker),
 // leaving all other settings and hooks untouched. Missing file or no matching
 // entry is a no-op.
-func removeClaudeIDHook(w *wiring) error {
-	out, err := w.client.Run(`cat ~/.claude/settings.json 2>/dev/null || echo '{}'`)
+func removeClaudeIDHook(r evictRunner) error {
+	out, err := r.Run(`cat ~/.claude/settings.json 2>/dev/null || echo '{}'`)
 	if err != nil {
 		return err
 	}
@@ -314,6 +447,6 @@ func removeClaudeIDHook(w *wiring) error {
 		return err
 	}
 	cmd := "cat > ~/.claude/settings.json.tmp && mv ~/.claude/settings.json.tmp ~/.claude/settings.json"
-	_, err = w.client.RunInput(cmd, strings.NewReader(string(data)))
+	_, err = r.RunInput(cmd, strings.NewReader(string(data)))
 	return err
 }

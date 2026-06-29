@@ -90,6 +90,14 @@ now=$(date +%s)
 # sweep then evicts almost nothing). US (unit separator, \037) never appears in
 # a session name, dir, cid, flag list, or title, and preserves empty fields.
 SEP=$(printf '\037')
+# tmux >=3.x on Linux ESCAPES non-printable bytes in -F output: the US separator
+# we embed in the format comes back as the literal 4-char string '\037', so a
+# real-byte IFS never matches and the whole line lands in $name (every session
+# then looks like it has an empty @activity and is skipped — the sweep evicts
+# nothing). macOS tmux emits the raw byte. unesc normalizes both: it rewrites the
+# escaped literal back to the real byte (a no-op on macOS, where there is no
+# literal to match), so the IFS split works identically on either hub OS.
+unesc() { sed "s/[\]037/${SEP}/g"; }
 mkdir -p "$HOME/.duck"
 # claude_pane <session> <stamped-cid>: is the session's pane running Claude?
 # A hook-stamped session id ($2) means this pane IS a Claude session regardless
@@ -115,7 +123,7 @@ nudge_rename() {
   tmux set-option -t "$1" @duck_renamed_at "$now" 2>/dev/null
 }
 if [ "$RENAME_SECS" -gt 0 ] 2>/dev/null; then
-tmux list-sessions -F "#{session_name}${SEP}#{session_attached}${SEP}#{session_activity}${SEP}#{@duck_loop}${SEP}#{@duck_renamed_at}${SEP}#{@claude_session_id}" 2>/dev/null |
+tmux list-sessions -F "#{session_name}${SEP}#{session_attached}${SEP}#{session_activity}${SEP}#{@duck_loop}${SEP}#{@duck_renamed_at}${SEP}#{@claude_session_id}" 2>/dev/null | unesc |
 while IFS="$SEP" read -r name attached activity loop renamed cid; do
   [ -z "$name" ] && continue
   [ -n "$attached" ] && [ "$attached" != "0" ] && continue
@@ -128,7 +136,7 @@ while IFS="$SEP" read -r name attached activity loop renamed cid; do
   echo "renamed $name"
 done
 fi
-tmux list-sessions -F "#{session_name}${SEP}#{@duck_dir}${SEP}#{session_attached}${SEP}#{session_activity}${SEP}#{@duck_loop}${SEP}#{@claude_session_id}${SEP}#{@claude_resume_args}${SEP}#{@duck_renamed_at}" 2>/dev/null |
+tmux list-sessions -F "#{session_name}${SEP}#{@duck_dir}${SEP}#{session_attached}${SEP}#{session_activity}${SEP}#{@duck_loop}${SEP}#{@claude_session_id}${SEP}#{@claude_resume_args}${SEP}#{@duck_renamed_at}" 2>/dev/null | unesc |
 while IFS="$SEP" read -r name dir attached activity loop cid rargs renamed; do
   [ -z "$name" ] && continue
   [ -n "$attached" ] && [ "$attached" != "0" ] && continue

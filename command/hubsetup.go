@@ -293,6 +293,16 @@ func runHubSetup(addr string, h *hub.Hub) error {
 	}
 	fmt.Printf("hub provisioned: %s\n", hub.DisplayName(cfg.Hub, cfg.HubName))
 
+	// 6. install the self-eviction sweep by default, so a fresh hub reclaims RAM
+	// from stale (detached, idle) sessions on its own — launchd agent on macOS, a
+	// systemd --user timer on Linux. Best-effort: a scheduling hiccup must not fail
+	// provisioning (the hub is already usable; the user can re-run `duck evict
+	// --install` or `duck evict --uninstall` to opt out).
+	fmt.Println("installing the default eviction sweep ...")
+	if err := installEvictAgent(h, defaultEvictAge, defaultEvictEvery, defaultEvictRenameIdle); err != nil {
+		fmt.Printf("note: could not install the eviction sweep (set it up later with `duck evict --install`): %v\n", err)
+	}
+
 	// Naming runs LAPTOP-side (DESIGN §5): the pane is captured on the hub over
 	// ssh and piped into a local `codex exec`, which keeps names.json
 	// single-writer. codex is therefore NOT needed on the hub — we verify it
@@ -356,10 +366,13 @@ func parseUname(out string) (goos, goarch string, err error) {
 // falls back to apt-get on Debian/Ubuntu. Idempotent: re-running is a no-op if
 // the tools are already present.
 //
-// tsshd (the UDP/QUIC attach server) is installed via Homebrew on macOS; on
-// Linux it is NOT installed here because tssh deploys tsshd itself over ssh on
-// first connect (`--install-tsshd` supports Linux targets), so apt only needs
-// tmux + rsync.
+// Neither mutagen nor tsshd has an apt package, so on Linux we fetch each one's
+// latest release binary from GitHub into ~/.local/bin and (best-effort) symlink
+// it onto the default PATH via /usr/local/bin. Both are installed outright
+// rather than merely hinted: sync (mutagen) is duck's core feature, and tsshd
+// backs the default tssh attach transport — despite tssh's `--install-tsshd`,
+// the auto-deploy is not reliably triggered, so a Linux hub without tsshd fails
+// the attach with "tsshd: command not found".
 func installToolchainScript() string {
 	return strings.Join([]string{
 		`set -e`,
@@ -370,10 +383,80 @@ func installToolchainScript() string {
 		`  brew list tsshd >/dev/null 2>&1 || brew install tsshd`,
 		`elif command -v apt-get >/dev/null 2>&1; then`,
 		`  sudo apt-get update && sudo apt-get install -y tmux rsync`,
-		`  command -v mutagen >/dev/null 2>&1 || echo "install mutagen manually: https://mutagen.io/documentation/introduction/installation"`,
+		installMutagenLinuxScript(),
+		installTsshdLinuxScript(),
 		`else`,
 		`  echo "no supported package manager (brew/apt-get) found on hub" >&2; exit 1`,
 		`fi`,
+	}, "\n")
+}
+
+// installMutagenLinuxScript installs the mutagen binary on a Linux hub from the
+// latest GitHub release (there is no apt package). Idempotent: skipped if
+// mutagen is already on PATH. Installs to ~/.local/bin and best-effort symlinks
+// it into /usr/local/bin so duck (which invokes the hub over a non-login SSH
+// PATH) can find it. The hub CLI version need not match the laptop's: mutagen's
+// daemon runs on the laptop and deploys its own version-stamped agent to the hub
+// over SSH, so "latest" here is safe. A download failure is non-fatal — it falls
+// back to the manual-install hint rather than aborting the whole provision.
+func installMutagenLinuxScript() string {
+	return strings.Join([]string{
+		`  if ! command -v mutagen >/dev/null 2>&1; then`,
+		`    march=$(uname -m)`,
+		`    case "$march" in`,
+		`      x86_64|amd64) march=amd64 ;;`,
+		`      aarch64|arm64) march=arm64 ;;`,
+		`      *) march="" ;;`,
+		`    esac`,
+		`    tag=$(curl -fsSL https://api.github.com/repos/mutagen-io/mutagen/releases/latest 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)`,
+		`    if [ -n "$march" ] && [ -n "$tag" ]; then`,
+		`      echo "installing mutagen $tag (linux/$march) from GitHub release ..."`,
+		`      td=$(mktemp -d)`,
+		`      if curl -fsSL -o "$td/m.tgz" "https://github.com/mutagen-io/mutagen/releases/download/${tag}/mutagen_linux_${march}_${tag}.tar.gz" && tar xzf "$td/m.tgz" -C "$td"; then`,
+		`        mkdir -p "$HOME/.local/bin"`,
+		`        install -m 0755 "$td/mutagen" "$HOME/.local/bin/mutagen"`,
+		`        sudo ln -sf "$HOME/.local/bin/mutagen" /usr/local/bin/mutagen 2>/dev/null || true`,
+		`      fi`,
+		`      rm -rf "$td"`,
+		`    fi`,
+		`    command -v mutagen >/dev/null 2>&1 || "$HOME/.local/bin/mutagen" version >/dev/null 2>&1 || echo "could not auto-install mutagen; install manually: https://mutagen.io/documentation/introduction/installation"`,
+		`  fi`,
+	}, "\n")
+}
+
+// installTsshdLinuxScript installs the tsshd binary on a Linux hub from the
+// latest GitHub release (trzsz/tsshd — no apt package). Idempotent: skipped if
+// tsshd is already on PATH. Installs to ~/.local/bin and best-effort symlinks it
+// into /usr/local/bin so tssh can launch it over its non-login ssh shell. tsshd
+// release assets use `x86_64`/`aarch64` arch names and a version WITHOUT the
+// leading `v` (e.g. tsshd_0.1.8_linux_x86_64.tar.gz for tag v0.1.8). A download
+// failure is non-fatal: the attach simply falls back to plain ssh.
+func installTsshdLinuxScript() string {
+	return strings.Join([]string{
+		`  if ! command -v tsshd >/dev/null 2>&1; then`,
+		`    tarch=$(uname -m)`,
+		`    case "$tarch" in`,
+		`      x86_64|amd64) tarch=x86_64 ;;`,
+		`      aarch64|arm64) tarch=aarch64 ;;`,
+		`      *) tarch="" ;;`,
+		`    esac`,
+		`    ttag=$(curl -fsSL https://api.github.com/repos/trzsz/tsshd/releases/latest 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)`,
+		`    tver=${ttag#v}`,
+		`    if [ -n "$tarch" ] && [ -n "$ttag" ]; then`,
+		`      echo "installing tsshd $ttag (linux/$tarch) from GitHub release ..."`,
+		`      td=$(mktemp -d)`,
+		`      if curl -fsSL -o "$td/t.tgz" "https://github.com/trzsz/tsshd/releases/download/${ttag}/tsshd_${tver}_linux_${tarch}.tar.gz" && tar xzf "$td/t.tgz" -C "$td"; then`,
+		`        tf=$(find "$td" -name tsshd -type f | head -1)`,
+		`        if [ -n "$tf" ]; then`,
+		`          mkdir -p "$HOME/.local/bin"`,
+		`          install -m 0755 "$tf" "$HOME/.local/bin/tsshd"`,
+		`          sudo ln -sf "$HOME/.local/bin/tsshd" /usr/local/bin/tsshd 2>/dev/null || true`,
+		`        fi`,
+		`      fi`,
+		`      rm -rf "$td"`,
+		`    fi`,
+		`    command -v tsshd >/dev/null 2>&1 || echo "could not auto-install tsshd; the attach will fall back to ssh (or set: duck config attach-transport ssh)"`,
+		`  fi`,
 	}, "\n")
 }
 
