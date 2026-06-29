@@ -105,14 +105,22 @@ func TestInstallScriptsAndTmuxConf(t *testing.T) {
 	if !strings.Contains(tool, "tmux") || !strings.Contains(tool, "mutagen") || !strings.Contains(tool, "rsync") {
 		t.Errorf("toolchain script must install tmux, mutagen, and rsync:\n%s", tool)
 	}
-	// tsshd is installed via Homebrew on macOS hubs. On Linux tssh deploys tsshd
-	// itself over ssh (--install-tsshd), so the apt branch deliberately does NOT
-	// install it and must stay tmux+rsync only.
+	// macOS hubs install everything via Homebrew.
 	if !strings.Contains(tool, "brew install tsshd") {
 		t.Errorf("tsshd must be installed under the brew branch:\n%s", tool)
 	}
-	if !strings.Contains(tool, "apt-get install -y tmux rsync") || strings.Contains(tool, "apt-get install -y tmux rsync tsshd") {
-		t.Errorf("apt branch must install tmux+rsync only (tssh auto-deploys tsshd on Linux):\n%s", tool)
+	// Linux hubs: apt installs tmux+rsync, but mutagen and tsshd have no apt
+	// package, so the apt branch fetches each one's binary from its GitHub release
+	// (tssh's --install-tsshd auto-deploy is NOT reliable, so we install tsshd
+	// outright — otherwise the attach fails with "tsshd: command not found").
+	if !strings.Contains(tool, "apt-get install -y tmux rsync") {
+		t.Errorf("apt branch must install tmux+rsync via apt:\n%s", tool)
+	}
+	if !strings.Contains(tool, "mutagen-io/mutagen/releases") {
+		t.Errorf("apt branch must fetch mutagen from its GitHub release (no apt package):\n%s", tool)
+	}
+	if !strings.Contains(tool, "trzsz/tsshd/releases") {
+		t.Errorf("apt branch must fetch tsshd from its GitHub release (no apt package; tssh auto-deploy unreliable):\n%s", tool)
 	}
 	tpm := installTPMScript()
 	if !strings.Contains(tpm, "tmux-plugins/tpm") || !strings.Contains(tpm, "~/.tmux/plugins/tpm") {
@@ -154,9 +162,9 @@ func TestOpenInterceptorInstall(t *testing.T) {
 		"ln -sf ~/.duck/bin/duck-open ~/.duck/bin/open",
 		"ln -sf ~/.duck/bin/duck-open ~/.duck/bin/xdg-open",
 		`export BROWSER="$HOME/.duck/bin/duck-open"`,
-		`export PATH="$HOME/.duck/bin:$PATH"`,
-		openInterceptorMarker, // idempotency guard present
-		"grep -q",             // skip-if-present check makes it idempotent
+		`export PATH="$HOME/.duck/bin:$HOME/.local/bin:$PATH"`, // ~/.local/bin so claude/cass/mutagen resolve on a Linux hub
+		openInterceptorMarker,                                  // idempotency guard present
+		"grep -q",                                              // skip-if-present check makes it idempotent
 	} {
 		if !strings.Contains(inst, want) {
 			t.Errorf("install script missing %q:\n%s", want, inst)

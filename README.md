@@ -217,8 +217,9 @@ ssh if the client is missing.
   **Linux (core loop works)**; `duck hub setup` provisions `tmux` + `mutagen` +
   `tsshd` + TPM for you (on Linux it fetches the mutagen binary from GitHub,
   since there's no apt package). Same `$HOME`/username on both machines (duck
-  mirrors each path at its natural location). A few hub-side extras are
-  macOS-only on Linux hubs — see [Migrating the hub → Linux hubs](docs/migrating-the-hub.md#linux-hubs).
+  mirrors each path at its natural location). Linux hubs are supported — see
+  **[docs/linux-hub.md](docs/linux-hub.md)** for what's auto-installed and the
+  gotchas.
 
 ## Moving to a new hub
 

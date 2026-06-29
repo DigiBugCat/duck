@@ -108,21 +108,21 @@ folder, then `claude --resume` inside the session — your conversations are the
 
 ## Linux hubs
 
-duck was written macOS-first. A Linux hub works for the **core loop** — sync +
-remote tmux sessions + attach — but a few hub-side conveniences are macOS-only.
-Know these before you rely on a Linux box:
+duck was written macOS-first, but a Linux box works as a hub — the whole core
+loop plus self-eviction. The summary:
 
 | Feature | On a Linux hub |
 |---|---|
-| **Sync (Mutagen)** | ✅ Works. `duck hub setup` now fetches the mutagen binary from GitHub (there's no apt package) and puts it on `/usr/local/bin`. |
-| **Remote tmux + tssh/tsshd attach** | ✅ Works. `tssh` deploys `tsshd` on first connect, so no `tsshd` path is recorded (correct — that's a macOS Homebrew detail). |
-| **`duck-open` interceptor** | ✅ Works. The shim resolves `xdg-open`; the laptop routes `open`/`xdg-open` per-OS. |
-| **`duck evict --install` / `--uninstall`** | ❌ **macOS-only.** It installs a **launchd** agent (`~/Library/LaunchAgents`, `launchctl`) — neither exists on Linux, and there's no systemd/cron fallback yet. Manual `duck evict` still works; just don't expect the self-scheduling sweep. |
-| **`duck snap`** | ➖ Unaffected by the hub — but it's a **macOS-laptop** feature (`screencapture`/`pbcopy`/`osascript`). The hub side is just a file upload and is platform-agnostic. |
+| **Sync (Mutagen)** | ✅ `duck hub setup` fetches the mutagen binary from GitHub (no apt package) into `~/.local/bin` + `/usr/local/bin`. |
+| **Remote tmux + tssh/tsshd attach** | ✅ `tsshd` is installed from its GitHub release and its path recorded in config (tssh's auto-deploy isn't reliable). |
+| **`duck-open` interceptor** | ✅ The shim resolves `xdg-open`; the laptop routes `open`/`xdg-open` per-OS. |
+| **`duck evict --install` / `--uninstall`** | ✅ Scheduled as a **systemd `--user` timer** (launchd on macOS), with linger enabled, and installed by default during setup. |
+| **`duck snap`** | ➖ A macOS-**laptop** feature; the hub side (file upload) is platform-agnostic, so nothing to do on a Linux hub. |
+| **Tools you install yourself** | `claude` / `cass` are not provisioned by duck — install them on the hub (see [docs/linux-hub.md](linux-hub.md)). |
 
-If you need automatic eviction on a Linux hub, schedule `duck evict` yourself —
-e.g. a user `cron` entry or systemd timer that runs the same command
-`duck evict --install` would have scheduled.
+For the full Linux-hub story — what `duck hub setup` auto-installs (mutagen,
+tsshd), the `~/.local/bin` PATH gotcha, eviction via systemd, and the
+claude/cass tools you install yourself — see **[docs/linux-hub.md](linux-hub.md)**.
 
 ## Decommissioning the old hub
 

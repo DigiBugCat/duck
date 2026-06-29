@@ -507,9 +507,13 @@ const openInterceptorMarker = "duck open-interceptor"
 // opener names (open, xdg-open) to it so a bare `open foo` / `xdg-open url` from
 // a hub shell hits duck even without $BROWSER, and appends the env block to the
 // hub's zsh rc files (idempotently, guarded by openInterceptorMarker). The
-// block prepends ~/.duck/bin to PATH (so the symlinks win over the system
-// opener), points $BROWSER at the shim (so Claude Code's own opener and
-// $BROWSER-respecting tools route through it), and sets DUCK_OPEN_PORT. The
+// block prepends ~/.duck/bin AND ~/.local/bin to PATH — ~/.duck/bin so the
+// opener symlinks win over the system opener, and ~/.local/bin because that is
+// where user-installed hub tools land (Claude Code, cass, and duck's own Linux
+// mutagen/tsshd installs); without it, a Linux hub whose login PATH omits
+// ~/.local/bin can't resolve `claude`/`cass` inside a duck session. It also
+// points $BROWSER at the shim (so Claude Code's own opener and
+// $BROWSER-respecting tools route through it) and sets DUCK_OPEN_PORT. The
 // heredoc body is single-quoted ('EOF') so $HOME/$PATH stay LITERAL in the rc
 // file and expand at the hub shell's startup, not now.
 func installOpenInterceptorCmd() string {
@@ -523,7 +527,7 @@ func installOpenInterceptorCmd() string {
 		`    cat >> "$rc" <<'EOF'`,
 		``,
 		`# >>> ` + openInterceptorMarker + ` >>>`,
-		`export PATH="$HOME/.duck/bin:$PATH"`,
+		`export PATH="$HOME/.duck/bin:$HOME/.local/bin:$PATH"`,
 		`export BROWSER="$HOME/.duck/bin/duck-open"`,
 		fmt.Sprintf(`export DUCK_OPEN_PORT=%d`, openfwd.HubPort),
 		`# <<< ` + openInterceptorMarker + ` <<<`,
