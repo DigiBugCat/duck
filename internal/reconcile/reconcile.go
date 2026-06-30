@@ -7,15 +7,17 @@
 //     PULL), NO --delete: each side ends holding the newest copy of every file,
 //     nothing is deleted. Safe across machines (no newer edit is lost). This is
 //     the default and the only multi-pass direction.
-//   - Push — local CLOBBERS the hub. ONE `rsync -a --delete` pass local→hub:
-//     the hub becomes an exact mirror of local (hub-only files are DELETED).
-//   - Pull — hub CLOBBERS local. ONE `rsync -a --delete` pass hub→local: local
-//     becomes an exact mirror of the hub (local-only files are DELETED).
+//   - Push — local WINS for shared files. ONE `rsync -a` pass local→hub: the
+//     hub takes local's copy of every shared file, but hub-only files are KEPT.
+//   - Pull — hub WINS for shared files. ONE `rsync -a` pass hub→local: local
+//     takes the hub's copy of every shared file, but local-only files are KEPT.
 //
-// Push/Pull are a single pass — half the scan of Merge — and are the fast,
-// authoritative choice when one side is the source of truth. They intentionally
-// carry --delete (the losing side is overwritten WHOLESALE); Merge intentionally
-// does NOT (a union must never delete).
+// Push/Pull are a single pass — half the scan of Merge — and are the fast choice
+// when one side is the authority for shared files. NONE of the three directions
+// carry --delete: a seed must never delete a file off the other side just because
+// the chosen side lacks it (the user can always remove a file deliberately and
+// let the live mutagen session propagate it). Push/Pull differ from Merge only in
+// being single-pass and direction-authoritative (no -u) for files on both sides.
 //
 // duck REQUIRES GNU rsync 3.x (resolved via rsyncBin): the macOS built-in
 // openrsync (protocol 29) has no incremental file-list streaming and no
@@ -45,8 +47,8 @@ type Direction int
 
 const (
 	Merge Direction = iota // newest-of-each-file wins, union, no deletions (2 passes)
-	Push                   // local clobbers hub: mirror local→hub with --delete (1 pass)
-	Pull                   // hub clobbers local: mirror hub→local with --delete (1 pass)
+	Push                   // local wins for shared files: local→hub, no delete (1 pass)
+	Pull                   // hub wins for shared files: hub→local, no delete (1 pass)
 )
 
 // run is the seam tests swap to record the constructed rsync argv (and call
@@ -330,17 +332,19 @@ func Reconcile(addr, tildeDir string, dir Direction, report func(string)) error 
 
 	switch dir {
 	case Push:
-		// local CLOBBERS hub: one mirror pass with --delete.
+		// local WINS for shared files: one pass local→hub, NO --delete (hub-only
+		// files are kept). No -u so local's copy wins every shared file.
 		if err := mkHub(); err != nil {
 			return err
 		}
-		if err := pass("pushing local → hub (local wins)", []string{"--delete"}, localContents, hubContents); err != nil {
+		if err := pass("pushing local → hub (local wins)", nil, localContents, hubContents); err != nil {
 			return fmt.Errorf("push %s → hub: %w", tildeDir, err)
 		}
 		return nil
 	case Pull:
-		// hub CLOBBERS local: one mirror pass with --delete.
-		if err := pass("pulling hub → local (hub wins)", []string{"--delete"}, hubContents, localContents); err != nil {
+		// hub WINS for shared files: one pass hub→local, NO --delete (local-only
+		// files are kept). No -u so the hub's copy wins every shared file.
+		if err := pass("pulling hub → local (hub wins)", nil, hubContents, localContents); err != nil {
 			return fmt.Errorf("pull hub → %s: %w", tildeDir, err)
 		}
 		return nil

@@ -151,3 +151,25 @@ func TestIsSteadyMatchesDecoratedStatuses(t *testing.T) {
 		}
 	}
 }
+
+// TestPathCoveredBy pins the parent-already-synced rule: a dir is covered by a
+// session rooted at itself or any ANCESTOR (segment-wise, so a sibling sharing a
+// name prefix is NOT covered).
+func TestPathCoveredBy(t *testing.T) {
+	cases := []struct {
+		dir, ancestor string
+		want          bool
+	}{
+		{"/home/a/dev/foo", "/home/a/dev/foo", true}, // exact
+		{"/home/a/dev/foo", "/home/a/dev", true},     // parent
+		{"/home/a/dev/foo", "/home/a", true},         // grandparent
+		{"/home/a/dev/foobar", "/home/a/dev/foo", false}, // prefix-but-not-ancestor
+		{"/home/a/dev", "/home/a/dev/foo", false},        // child can't cover parent
+		{"/home/a/other", "/home/a/dev", false},          // sibling
+	}
+	for _, c := range cases {
+		if got := pathCoveredBy(c.dir, c.ancestor); got != c.want {
+			t.Errorf("pathCoveredBy(%q, %q) = %v, want %v", c.dir, c.ancestor, got, c.want)
+		}
+	}
+}

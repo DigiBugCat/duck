@@ -240,8 +240,8 @@ func TestReconcileSeedExcludesJunk(t *testing.T) {
 	}
 }
 
-// TestReconcilePushMirrors pins push = local CLOBBERS hub: EXACTLY ONE pass,
-// local→hub, carrying --delete (mirror) — and never -u.
+// TestReconcilePushMirrors pins push = local WINS for shared files: EXACTLY ONE
+// pass, local→hub, NO --delete (hub-only files kept) and never -u (local wins).
 func TestReconcilePushMirrors(t *testing.T) {
 	const addr, tildeDir = "me@hub", "~/dev/foo"
 	local, _ := paths.Expand(tildeDir)
@@ -254,8 +254,8 @@ func TestReconcilePushMirrors(t *testing.T) {
 		t.Fatalf("push must be ONE pass, got %d: %v", len(*got), *got)
 	}
 	c := (*got)[0].args
-	if !contains(c, "--delete") {
-		t.Fatalf("push must carry --delete (mirror); got %v", c)
+	if contains(c, "--delete") {
+		t.Fatalf("push must NOT carry --delete (never delete hub-only files); got %v", c)
 	}
 	if contains(c, "-u") {
 		t.Fatalf("push must NOT carry -u (local always wins); got %v", c)
@@ -265,8 +265,8 @@ func TestReconcilePushMirrors(t *testing.T) {
 	}
 }
 
-// TestReconcilePullMirrors pins pull = hub CLOBBERS local: EXACTLY ONE pass,
-// hub→local, carrying --delete.
+// TestReconcilePullMirrors pins pull = hub WINS for shared files: EXACTLY ONE
+// pass, hub→local, NO --delete (local-only files kept).
 func TestReconcilePullMirrors(t *testing.T) {
 	const addr, tildeDir = "me@hub", "~/dev/foo"
 	local, _ := paths.Expand(tildeDir)
@@ -279,8 +279,8 @@ func TestReconcilePullMirrors(t *testing.T) {
 		t.Fatalf("pull must be ONE pass, got %d: %v", len(*got), *got)
 	}
 	c := (*got)[0].args
-	if !contains(c, "--delete") {
-		t.Fatalf("pull must carry --delete (mirror); got %v", c)
+	if contains(c, "--delete") {
+		t.Fatalf("pull must NOT carry --delete (never delete local-only files); got %v", c)
 	}
 	if c[len(c)-2] != addr+":"+hub.RemoteSyncPath(tildeDir)+"/" || c[len(c)-1] != local+"/" {
 		t.Fatalf("pull must be hub→local; got src=%q dst=%q", c[len(c)-2], c[len(c)-1])

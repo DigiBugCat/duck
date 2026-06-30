@@ -56,9 +56,13 @@ func newRealSyncer(addr string, progress Progress) realSyncer {
 	}
 }
 
-// IsSynced reports whether tildeDir already has a running mutagen session whose
-// alpha endpoint is the local expansion of tildeDir. It matches on the synced
-// path so an existing `duck sync` session (any bundle) counts as synced.
+// IsSynced reports whether tildeDir is already covered by a running mutagen
+// session — either because a session's alpha endpoint IS the local expansion of
+// tildeDir, or because it is an ANCESTOR of it. A session syncing ~/dev already
+// keeps ~/dev/foo current, so adding a second session for the child would be
+// redundant (and would have mutagen syncing the same files twice): when a parent
+// is synced, no action is needed. It matches across bundles so an existing `duck
+// sync` session counts.
 func (s realSyncer) IsSynced(tildeDir string) (bool, error) {
 	local, err := paths.Expand(tildeDir)
 	if err != nil {
@@ -69,11 +73,22 @@ func (s realSyncer) IsSynced(tildeDir string) (bool, error) {
 		return false, err
 	}
 	for _, ms := range sessions {
-		if ms.Alpha.Path == local {
+		if pathCoveredBy(local, ms.Alpha.Path) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// pathCoveredBy reports whether dir is the same as, or nested under, ancestor —
+// i.e. a mutagen session rooted at ancestor already keeps dir in sync. It is a
+// path-segment comparison (not a raw string prefix) so "/a/foobar" is NOT treated
+// as covered by "/a/foo".
+func pathCoveredBy(dir, ancestor string) bool {
+	if ancestor == dir {
+		return true
+	}
+	return strings.HasPrefix(dir, ancestor+"/")
 }
 
 // reconcileDir maps the flow-level Direction to the reconcile package's. They
