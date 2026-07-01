@@ -197,6 +197,11 @@ type Flow struct {
 	attachInt  InteractiveAttach
 	syncClaude bool // global opt-in: co-sync this folder's ~/.claude/projects/<slug>
 	local      bool // duck is running ON the hub: skip sync entirely (source == dest)
+	// reconcileClaude runs the best-effort cross-machine Claude-history reconcile
+	// at the end of coSyncClaude. Injected as a closure (not an interface) because
+	// the real one needs config/hub/anchor/claude — which flow must not import; a
+	// no-op by default so unit tests need no wiring. See SetClaudeReconciler.
+	reconcileClaude func()
 }
 
 // SetLocal marks the flow as running ON the hub itself. When set, the bare-`duck`
@@ -213,6 +218,19 @@ func (f *Flow) SetLocal(on bool) { f.local = on }
 // Wired from the command layer off config.SyncClaudeHistory so flow keeps no
 // config import.
 func (f *Flow) SetClaudeHistory(on bool) { f.syncClaude = on }
+
+// SetClaudeReconciler wires the best-effort cross-machine Claude-history
+// reconcile step that runs at the end of coSyncClaude on every gated duck
+// invocation with history co-sync on. It is a closure because the real
+// implementation needs config/hub/anchor/claude — which flow must not import.
+// The closure is expected to throttle and detach itself; coSyncClaude calls it
+// unconditionally. A nil fn resets to a no-op so flow's tests need no wiring.
+func (f *Flow) SetClaudeReconciler(fn func()) {
+	if fn == nil {
+		fn = func() {}
+	}
+	f.reconcileClaude = fn
+}
 
 // SetInteractiveAttach overrides the interactive-attach seam (the command layer
 // wires in its reconnect loop). A nil arg restores the default. Called by the
@@ -270,6 +288,7 @@ func New(addr string, sessions *session.Manager, store *names.Store, prompter Pr
 		prompter:   prompter,
 	}
 	f.attachInt = f.defaultAttach
+	f.reconcileClaude = func() {}
 	return f
 }
 
@@ -286,6 +305,7 @@ func NewWithDeps(addr string, sessions *session.Manager, store *names.Store, syn
 		prompter:   prompter,
 	}
 	f.attachInt = f.defaultAttach
+	f.reconcileClaude = func() {}
 	return f
 }
 
@@ -386,16 +406,24 @@ func (f *Flow) coSyncClaude() {
 		return
 	}
 	if info, err := os.Stat(local); err != nil || !info.IsDir() {
-		return // ~/.claude/projects doesn't exist yet — nothing to seed.
+		return // ~/.claude/projects doesn't exist yet — nothing to seed or reconcile.
 	}
-	if synced, err := f.sync.IsSynced(claudeTilde); err == nil && synced {
-		return // already maintained by a running mutagen session (or an ancestor).
+	if synced, err := f.sync.IsSynced(claudeTilde); err != nil || !synced {
+		// Not yet syncing (or the check failed): seed it now. force=true → newest-
+		// wins reconcile then merge (safe for a corpus that may already live on the
+		// hub). Best-effort: on failure don't reconcile against a corpus we just
+		// failed to seed.
+		if _, err := f.EnsureSynced(local, DirMerge); err != nil {
+			fmt.Fprintf(os.Stderr, "duck: claude history co-sync skipped: %v\n", err)
+			return
+		}
 	}
-	// force=true → newest-wins reconcile then merge (safe for a corpus that may
-	// already live on the hub). Best-effort: swallow errors so the session opens.
-	if _, err := f.EnsureSynced(local, DirMerge); err != nil {
-		fmt.Fprintf(os.Stderr, "duck: claude history co-sync skipped: %v\n", err)
-	}
+	// Map any foreign-machine transcripts the corpus mirror has brought down onto
+	// this machine's slug/path form and register them, so `claude --resume`/`-c`
+	// finds hub and other-laptop sessions automatically — the auto-wired
+	// equivalent of `duck claude-history reconcile`. The injected closure throttles
+	// and detaches itself (default no-op in tests / when unset).
+	f.reconcileClaude()
 }
 
 // EnsureSyncedGated is EnsureSynced behind the same sync-awareness gate as bare

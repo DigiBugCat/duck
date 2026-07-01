@@ -887,6 +887,43 @@ func TestClaudeCoSyncFiresWhenEnabled(t *testing.T) {
 	}
 }
 
+// The auto-wired cross-machine reconcile must fire at the end of coSyncClaude
+// whenever history co-sync is on and the corpus exists — INCLUDING when the
+// corpus is already syncing (the seed is skipped but the reconcile still runs,
+// so hub/other-laptop sessions that landed via the mirror get mapped in).
+func TestClaudeCoSyncRunsReconcilerEvenWhenAlreadySynced(t *testing.T) {
+	_, cwd := claudeCoSyncEnv(t, true)
+	r := &fakeRunner{out: map[string]string{listCmd(): ""}}
+	s := &fakeSyncer{synced: true} // corpus already syncing → seed skipped
+	f := newFlow(r, &fakeAttacher{}, s)
+	f.SetClaudeHistory(true)
+	reconciled := 0
+	f.SetClaudeReconciler(func() { reconciled++ })
+
+	if err := f.Run(cwd); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reconciled != 1 {
+		t.Fatalf("reconciler must run once from coSyncClaude even when already synced, ran %d", reconciled)
+	}
+}
+
+// With co-sync OFF, neither the corpus seed nor the reconcile fires.
+func TestClaudeCoSyncReconcilerSkippedWhenDisabled(t *testing.T) {
+	_, cwd := claudeCoSyncEnv(t, true)
+	r := &fakeRunner{out: map[string]string{listCmd(): ""}}
+	f := newFlow(r, &fakeAttacher{}, &fakeSyncer{synced: true})
+	// SetClaudeHistory NOT called → OFF.
+	reconciled := 0
+	f.SetClaudeReconciler(func() { reconciled++ })
+	if err := f.Run(cwd); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reconciled != 0 {
+		t.Fatalf("reconciler must NOT run when co-sync is off, ran %d", reconciled)
+	}
+}
+
 func TestClaudeCoSyncSkippedWhenCorpusAbsent(t *testing.T) {
 	_, cwd := claudeCoSyncEnv(t, false) // NO corpus dir: Claude never ran here
 	r := &fakeRunner{out: map[string]string{listCmd(): ""}}

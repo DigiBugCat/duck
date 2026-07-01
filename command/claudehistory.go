@@ -4,7 +4,8 @@
 // — which differs between a macOS laptop (/Users/me) and a Linux hub (/home/me)
 // — a conversation started on one machine isn't resumable on the other until its
 // transcripts are mapped onto the local path form and the local path is
-// registered. `duck claude-history reconcile` does exactly that, non-destructively.
+// registered. `duck claude-history reconcile` does exactly that, non-destructively,
+// on this machine AND (best-effort, over SSH) on the hub so it works both ways.
 package command
 
 import (
@@ -26,7 +27,11 @@ var claudeHistoryCmd = &cobra.Command{
 	Short: "Cross-machine Claude conversation history (make hub/laptop sessions resumable everywhere)",
 }
 
-var claudeHistoryDryRun bool
+var (
+	claudeHistoryDryRun bool
+	claudeHistoryLocal  bool
+	claudeHistoryHomes  []string
+)
 
 var claudeHistoryReconcileCmd = &cobra.Command{
 	Use:   "reconcile",
@@ -41,71 +46,140 @@ looks under '-Users-you-...'. This copies each foreign transcript into the local
 slug directory (only if absent — it never overwrites or deletes) and adds a
 ~/.claude.json entry for the local path (never touching existing entries).
 
-Idempotent: run it as often as you like.`,
+By default it reconciles this machine and then, best-effort over SSH, the hub too
+(so laptop-started sessions become resumable on the hub). Idempotent.
+
+Flags --local and --homes are for the hub-side pass duck runs over SSH; you
+rarely type them by hand.`,
 	Args: cobra.NoArgs,
 	RunE: func(c *cobra.Command, _ []string) error {
-		cfg, err := config.RequireHub()
-		if err != nil {
-			return err
-		}
-		out := c.OutOrStdout()
-
-		localHome, err := os.UserHomeDir()
-		if err != nil {
-			return err
-		}
-		homes := []string{localHome}
-
-		// The hub's home is the other end of the near-universal case. Detect it
-		// over SSH (cheap, one round-trip) so the user never has to configure it.
-		if hubHome := detectHubHome(cfg.Hub); hubHome != "" {
-			homes = append(homes, hubHome)
-		} else {
-			fmt.Fprintln(c.ErrOrStderr(), "warning: could not detect the hub's home dir; reconciling with local homes only")
-		}
-
-		// Fold in the anchor: it carries the whole fleet's home set so every laptop
-		// reconciles consistently. Union what we know, push it back so other
-		// machines learn this laptop's home too. Best-effort — a down anchor never
-		// blocks the reconcile.
-		if cfg.AnchorHost != "" {
-			homes = mergeAnchorHomes(cfg.AnchorHost, homes, c.ErrOrStderr())
-		}
-
-		root, err := paths.Expand(claude.ProjectsRoot())
-		if err != nil {
-			return err
-		}
-		reg := claude.NewRegistry(localHome)
-		res, err := claude.Reconcile(claude.ReconcileOptions{
-			Root:      root,
-			LocalHome: localHome,
-			Homes:     homes,
-			DryRun:    claudeHistoryDryRun,
-			Register:  reg.Register,
+		return runClaudeReconcile(c.OutOrStdout(), c.ErrOrStderr(), reconcileParams{
+			dryRun:     claudeHistoryDryRun,
+			local:      claudeHistoryLocal,
+			extraHomes: claudeHistoryHomes,
 		})
-		if err != nil {
-			return err
-		}
-
-		verb := "reconciled"
-		if claudeHistoryDryRun {
-			verb = "would reconcile"
-		}
-		fmt.Fprintf(out, "%s across homes: %s\n", verb, strings.Join(homes, ", "))
-		fmt.Fprintf(out, "  %d project(s) mapped from another machine, %d transcript(s) %s in\n",
-			res.Mapped, res.CopiedFiles, map[bool]string{true: "to copy", false: "copied"}[claudeHistoryDryRun])
-		if len(res.Registered) > 0 {
-			fmt.Fprintf(out, "  registered %d local path(s):\n", len(res.Registered))
-			for _, p := range res.Registered {
-				fmt.Fprintf(out, "    %s\n", p)
-			}
-		}
-		if res.Mapped == 0 {
-			fmt.Fprintln(out, "  nothing to do — everything already lines up on this machine")
-		}
-		return nil
 	},
+}
+
+// reconcileParams are the inputs to a reconcile run, threaded explicitly so the
+// explicit command, the hidden background re-exec, and the --local hub-side pass
+// all share one implementation without leaning on package-global flag state.
+type reconcileParams struct {
+	dryRun     bool
+	local      bool     // hub-side / self-contained: no hub config, no SSH out
+	extraHomes []string // additional fleet home dirs (--homes), joined into the set
+}
+
+// runClaudeReconcile is the single implementation behind `duck claude-history
+// reconcile`, the detached background re-exec, and the --local hub-side pass.
+func runClaudeReconcile(out, errw io.Writer, p reconcileParams) error {
+	localHome, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	if p.local {
+		// Self-contained mode (the hub runs this over SSH). No hub config, no SSH
+		// out — using RequireHub/detectHubHome here would be wrong (the hub has no
+		// `duck hub set`) or circular (the hub SSHing back to a laptop).
+		homes := dedupHomes(append([]string{localHome}, p.extraHomes...))
+		return reconcileHere(out, localHome, homes, p.dryRun)
+	}
+
+	cfg, err := config.RequireHub()
+	if err != nil {
+		return err
+	}
+	homes := []string{localHome}
+	if hubHome := detectedHubHome(cfg); hubHome != "" {
+		homes = append(homes, hubHome)
+	} else {
+		fmt.Fprintln(errw, "warning: could not detect the hub's home dir; reconciling with local homes only")
+	}
+	if cfg.AnchorHost != "" {
+		homes = mergeAnchorHomes(cfg.AnchorHost, homes, errw)
+	}
+	homes = dedupHomes(homes)
+
+	// This machine first.
+	if err := reconcileHere(out, localHome, homes, p.dryRun); err != nil {
+		return err
+	}
+	// Then the hub, best-effort (point 2): forward the SAME home set so the hub
+	// maps laptop-origin sessions into its own path form. A down/absent hub-side
+	// duck is a warning, never a failure.
+	reconcileOnHub(cfg, homes, p.dryRun, out, errw)
+	return nil
+}
+
+// reconcileHere runs a reconcile pass against THIS machine's ~/.claude/projects
+// and prints a summary.
+func reconcileHere(out io.Writer, localHome string, homes []string, dryRun bool) error {
+	root, err := paths.Expand(claude.ProjectsRoot())
+	if err != nil {
+		return err
+	}
+	reg := claude.NewRegistry(localHome)
+	res, err := claude.Reconcile(claude.ReconcileOptions{
+		Root:      root,
+		LocalHome: localHome,
+		Homes:     homes,
+		DryRun:    dryRun,
+		Register:  reg.Register,
+	})
+	if err != nil {
+		return err
+	}
+	verb, tense := "reconciled", "copied"
+	if dryRun {
+		verb, tense = "would reconcile", "to copy"
+	}
+	fmt.Fprintf(out, "%s here (%s) across homes: %s\n", verb, localHome, strings.Join(homes, ", "))
+	fmt.Fprintf(out, "  %d project(s) mapped from another machine, %d transcript(s) %s in\n", res.Mapped, res.CopiedFiles, tense)
+	if len(res.Registered) > 0 {
+		fmt.Fprintf(out, "  registered %d local path(s)\n", len(res.Registered))
+	}
+	if res.Mapped == 0 {
+		fmt.Fprintln(out, "  nothing to do — everything already lines up here")
+	}
+	return nil
+}
+
+// reconcileOnHub runs the reconcile natively on the hub over SSH, forwarding the
+// fleet home set so the hub maps laptop-origin sessions into its own form. It
+// needs a `duck` on the hub's PATH (installed by `duck hub setup`); a missing
+// binary or SSH error is a warning, never fatal.
+func reconcileOnHub(cfg *config.Config, homes []string, dryRun bool, out, errw io.Writer) {
+	remote := "duck claude-history reconcile --local --homes " + paths.Quote(strings.Join(homes, ","))
+	if dryRun {
+		remote += " --dry-run"
+	}
+	res, err := hub.New(cfg.Hub).Run(remote)
+	if err != nil {
+		fmt.Fprintf(errw, "warning: could not reconcile on the hub (%v); is duck installed there? (re-run `duck hub setup`)\n", err)
+		return
+	}
+	if s := strings.TrimSpace(res); s != "" {
+		fmt.Fprintln(out, "on the hub:")
+		for _, line := range strings.Split(s, "\n") {
+			fmt.Fprintf(out, "  %s\n", line)
+		}
+	}
+}
+
+// detectedHubHome returns the hub's absolute home, preferring the cfg.HubHome
+// cache and falling back to a one-time SSH detect that it writes back so every
+// later run is SSH-free.
+func detectedHubHome(cfg *config.Config) string {
+	if cfg.HubHome != "" {
+		return cfg.HubHome
+	}
+	home := detectHubHome(cfg.Hub)
+	if home != "" {
+		cfg.HubHome = home
+		_ = config.Save(cfg) // best-effort write-through cache
+	}
+	return home
 }
 
 // detectHubHome returns the hub's absolute $HOME over SSH, or "" on any failure.
@@ -133,14 +207,31 @@ func mergeAnchorHomes(anchorHost string, homes []string, errw io.Writer) []strin
 			fmt.Fprintf(errw, "warning: could not update the anchor's home set: %v\n", err)
 		}
 	}
-	// Union both directions: reconcile against what the anchor knows plus what we
-	// just contributed.
 	union, _ := anchor.State{Homes: homes}.AddHomes(next.Homes...)
 	return union.Homes
 }
 
+// dedupHomes returns homes with blanks dropped and duplicates removed, order
+// preserved.
+func dedupHomes(homes []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range homes {
+		h = strings.TrimSpace(h)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	return out
+}
+
 func init() {
-	claudeHistoryReconcileCmd.Flags().BoolVar(&claudeHistoryDryRun, "dry-run", false, "report what would change without copying or registering")
+	f := claudeHistoryReconcileCmd.Flags()
+	f.BoolVar(&claudeHistoryDryRun, "dry-run", false, "report what would change without copying or registering")
+	f.BoolVar(&claudeHistoryLocal, "local", false, "reconcile only this machine (no hub config/SSH); used by the hub-side pass")
+	f.StringSliceVar(&claudeHistoryHomes, "homes", nil, "extra fleet home dirs to map from (comma-separated); used by the hub-side pass")
 	claudeHistoryCmd.AddCommand(claudeHistoryReconcileCmd)
 	rootCmd.AddCommand(claudeHistoryCmd)
 }

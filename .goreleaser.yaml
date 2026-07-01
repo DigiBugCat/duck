@@ -1,5 +1,5 @@
 # GoReleaser config for duck — https://goreleaser.com
-# Build: darwin arm64 + amd64, pure-Go (CGO_ENABLED=0). On a `vX.Y.Z` tag the
+# Build: darwin + linux, arm64 + amd64, pure-Go (CGO_ENABLED=0). On a `vX.Y.Z` tag the
 # release Action (.github/workflows/release.yml) runs `goreleaser release`, which
 # publishes a GitHub Release carrying RAW per-arch binaries named
 # duck-<os>-<arch> (e.g. duck-darwin-arm64). duck installs to ~/.local/bin via
@@ -21,6 +21,7 @@ builds:
       - CGO_ENABLED=0
     goos:
       - darwin
+      - linux
     goarch:
       - amd64
       - arm64

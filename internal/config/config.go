@@ -20,6 +20,13 @@ type Config struct {
 	Hub     string `toml:"hub"`                // user@host used to SSH
 	HubName string `toml:"hub_name,omitempty"` // remote `hostname`, captured at registration time
 
+	// HubHome is the hub's absolute $HOME (e.g. /home/andrew), captured over SSH
+	// at registration time alongside HubName. It is the cache that lets the
+	// cross-machine Claude-history reconciler know the hub's path form without an
+	// SSH round-trip on every duck run. Empty on configs predating this field —
+	// the reconciler detects it lazily and writes it back. See command/claudehistory.go.
+	HubHome string `toml:"hub_home,omitempty"`
+
 	// AnchorHost is the anchor host address (user@host), independently
 	// configurable from Hub: it holds ~/.duck/anchor.json, a small shared-state
 	// file (the hub address + a subset of user-level config) that every laptop

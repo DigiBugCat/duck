@@ -287,6 +287,15 @@ func runHubSetup(addr string, h *hub.Hub) error {
 		return fmt.Errorf("installing open-interceptor: %w", err)
 	}
 
+	// 5. bootstrap `duck` itself onto the hub so cross-machine claude-history
+	// reconcile can run there (making laptop-started sessions resumable on the
+	// hub). Best-effort: the hub still works without it (reconcile just won't run
+	// on the hub side), and duck's own auto-updater keeps it current afterwards.
+	fmt.Println("installing duck on the hub (enables cross-machine claude-history reconcile) ...")
+	if _, err := h.Run(installDuckScript(goos, goarch)); err != nil {
+		fmt.Printf("note: could not install duck on the hub (%v); claude-history reconcile won't run there\n", err)
+	}
+
 	// persist the hub for subsequent commands.
 	cfg, err := config.Load()
 	if err != nil {
@@ -294,6 +303,9 @@ func runHubSetup(addr string, h *hub.Hub) error {
 	}
 	cfg.Hub = addr
 	cfg.HubName, _ = h.Hostname()
+	if hubHome, herr := h.Run(`printf %s "$HOME"`); herr == nil {
+		cfg.HubHome = strings.TrimSpace(hubHome) // cache for the reconciler (best-effort)
+	}
 	cfg.HubTsshdPath = tsshdPath
 	if err := config.Save(cfg); err != nil {
 		return err
@@ -428,6 +440,29 @@ func installMutagenLinuxScript() string {
 		`    fi`,
 		`    command -v mutagen >/dev/null 2>&1 || "$HOME/.local/bin/mutagen" version >/dev/null 2>&1 || echo "could not auto-install mutagen; install manually: https://mutagen.io/documentation/introduction/installation"`,
 		`  fi`,
+	}, "\n")
+}
+
+// installDuckScript bootstraps the duck binary itself onto the hub from the
+// latest GitHub release, so cross-machine claude-history reconcile can run there.
+// Idempotent: skipped if duck is already on PATH. Installs the matching
+// duck-<goos>-<goarch> raw-binary asset to ~/.local/bin and best-effort symlinks
+// it into /usr/local/bin so a non-login SSH shell resolves it. A one-time
+// bootstrap — duck's own auto-updater keeps it current afterwards. A download
+// failure is non-fatal (prints a hint), so hub setup still succeeds offline.
+func installDuckScript(goos, goarch string) string {
+	asset := fmt.Sprintf("duck-%s-%s", goos, goarch)
+	url := "https://github.com/DigiBugCat/duck/releases/latest/download/" + asset
+	return strings.Join([]string{
+		`if ! command -v duck >/dev/null 2>&1; then`,
+		`  echo "installing duck (` + asset + `) from GitHub release ..."`,
+		`  mkdir -p "$HOME/.local/bin"`,
+		`  if curl -fsSL -o "$HOME/.local/bin/duck" "` + url + `"; then`,
+		`    chmod +x "$HOME/.local/bin/duck"`,
+		`    sudo ln -sf "$HOME/.local/bin/duck" /usr/local/bin/duck 2>/dev/null || true`,
+		`  fi`,
+		`  command -v duck >/dev/null 2>&1 || "$HOME/.local/bin/duck" --version >/dev/null 2>&1 || echo "could not auto-install duck on the hub; claude-history reconcile won't run there (install manually to ~/.local/bin/duck)"`,
+		`fi`,
 	}, "\n")
 }
 

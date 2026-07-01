@@ -136,6 +136,10 @@ func build() (*wiring, error) {
 	// Per-folder Claude history co-sync (ON by default): when on, a bare `duck`
 	// that mirrors a folder also co-syncs that folder's ~/.claude/projects/<slug>.
 	fl.SetClaudeHistory(cfg.SyncClaudeHistoryEnabled())
+	// Cross-machine reconcile: after co-sync, best-effort map foreign-machine
+	// transcripts onto this machine's path form (and the hub's) so `claude
+	// --resume` finds hub/other-laptop sessions. Throttled + detached inside.
+	fl.SetClaudeReconciler(newClaudeReconciler(cfg))
 	ap := app.New(sess, store, nm)
 	// Gate lazy auto-naming on the per-dir toggle (OFF by default) for non-picker
 	// paths: Refresh only sends pane content to the model for dirs the user opted
