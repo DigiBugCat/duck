@@ -46,7 +46,7 @@ var configCmd = &cobra.Command{
 		}
 		fmt.Fprintf(tw, "codex model\t%s\n", model)
 		claudeSync := "off"
-		if cfg.SyncClaudeHistory {
+		if cfg.SyncClaudeHistoryEnabled() {
 			claudeSync = "on"
 		}
 		fmt.Fprintf(tw, "claude history sync\t%s  (duck config claude-sync on|off)\n", claudeSync)
@@ -142,7 +142,7 @@ var configClaudeSyncCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		cfg.SyncClaudeHistory = on
+		cfg.SyncClaudeHistory = &on
 		if err := config.Save(cfg); err != nil {
 			return err
 		}

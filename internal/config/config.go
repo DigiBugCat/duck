@@ -46,13 +46,15 @@ type Config struct {
 	// key is OFF — auto-naming is opt-in because it is a real data flow.
 	AutoName map[string]bool `toml:"auto_name,omitempty"`
 
-	// SyncClaudeHistory is the global opt-in for per-folder Claude history sync:
-	// when true, bare `duck <folder>` ALSO co-syncs that folder's
-	// ~/.claude/projects/<slug> directory (its transcripts + auto-memory) to the
-	// hub, bidirectionally, scoped to the folders you actually duck into. OFF by
-	// default because it ships terminal transcripts to the hub — a real data flow,
-	// like auto-naming. See flow.Flow.coSyncClaude.
-	SyncClaudeHistory bool `toml:"sync_claude_history,omitempty"`
+	// SyncClaudeHistory gates per-folder Claude history sync: when on, bare `duck
+	// <folder>` ALSO co-syncs that folder's ~/.claude/projects/<slug> directory
+	// (its transcripts + auto-memory) to the hub, bidirectionally, scoped to the
+	// folders you actually duck into. ON by default — the co-sync is scoped to the
+	// folder's own slug (never auth/config/locks), so it mirrors your working
+	// history to the hub out of the box. A pointer so the zero value (absent key)
+	// reads as ON via SyncClaudeHistoryEnabled; `false` is the explicit opt-out.
+	// See flow.Flow.coSyncClaude.
+	SyncClaudeHistory *bool `toml:"sync_claude_history,omitempty"`
 
 	// AutoUpdate gates the background self-updater (on by default). When unset
 	// (nil) or true, every `duck` run spawns a throttled detached check that
@@ -91,6 +93,17 @@ func (c *Config) Transport() string {
 		return "auto"
 	}
 	return c.AttachTransport
+}
+
+// SyncClaudeHistoryEnabled reports whether per-folder Claude history co-sync is
+// on. The default (nil pointer, or a nil receiver) is ON — the co-sync is scoped
+// to each ducked folder's own ~/.claude/projects/<slug>; only an explicit
+// `sync_claude_history = false` turns it off.
+func (c *Config) SyncClaudeHistoryEnabled() bool {
+	if c == nil || c.SyncClaudeHistory == nil {
+		return true
+	}
+	return *c.SyncClaudeHistory
 }
 
 // AutoUpdateEnabled reports whether the background self-updater is on. The
