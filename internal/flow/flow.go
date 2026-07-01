@@ -310,37 +310,38 @@ func (f *Flow) EnsureSynced(cwd string, dir Direction) (tildeDir string, err err
 	return tildeDir, nil
 }
 
-// coSyncClaude co-syncs the Claude history corpus for the folder at absCwd —
-// ~/.claude/projects/<slug> — when the global opt-in is on. It is best-effort
-// and returns no error: a failure to mirror history must never block or fail the
-// session the user came for (it is reported, not propagated).
+// coSyncClaude co-syncs the WHOLE Claude history corpus — ~/.claude/projects —
+// when the global opt-in is on. It mirrors one directory (not per-slug), so all
+// conversation history reaches the hub in a single session regardless of which
+// folders you duck into. It is best-effort and returns no error: a failure to
+// mirror history must never block or fail the session the user came for (it is
+// reported, not propagated).
 //
 // Gates, in order:
-//   - opt-in off → nothing (the default).
-//   - the corpus dir does not exist locally → nothing: Claude has never run in
-//     this folder yet, so there is nothing to seed (Mutagen will pick it up the
-//     next time duck runs here, once Claude has written it).
-//   - already syncing → nothing (idempotent; the long-lived mutagen session keeps
-//     it current).
+//   - opt-in off → nothing.
+//   - ~/.claude/projects does not exist locally → nothing (Claude has never run
+//     on this machine; Mutagen will pick it up next time, once it exists).
+//   - already syncing → nothing (idempotent; the long-lived mutagen session — or
+//     an ancestor of it — keeps it current).
 //
 // Otherwise it runs EnsureSynced with force=true: the corpus is a multi-machine
-// artifact (the same project's history may already exist on the hub from another
-// laptop), so the NEWEST-WINS reconcile-then-merge is the correct seed — newest
-// copy of each transcript wins, union of both sides, nothing deleted.
-func (f *Flow) coSyncClaude(absCwd string) {
+// artifact (history may already exist on the hub from another laptop), so the
+// NEWEST-WINS reconcile-then-merge is the correct seed — newest copy of each
+// transcript wins, union of both sides, nothing deleted.
+func (f *Flow) coSyncClaude() {
 	if !f.syncClaude {
 		return
 	}
-	claudeTilde := paths.ClaudeProjectDir(absCwd)
+	claudeTilde := paths.ClaudeProjectsRoot()
 	local, err := paths.Expand(claudeTilde)
 	if err != nil {
 		return
 	}
 	if info, err := os.Stat(local); err != nil || !info.IsDir() {
-		return // Claude hasn't created this folder's corpus yet — nothing to seed.
+		return // ~/.claude/projects doesn't exist yet — nothing to seed.
 	}
 	if synced, err := f.sync.IsSynced(claudeTilde); err == nil && synced {
-		return // already maintained by a running mutagen session.
+		return // already maintained by a running mutagen session (or an ancestor).
 	}
 	// force=true → newest-wins reconcile then merge (safe for a corpus that may
 	// already live on the hub). Best-effort: swallow errors so the session opens.
@@ -375,10 +376,10 @@ func (f *Flow) EnsureSyncedGated(cwd string) (tildeDir string, err error) {
 	if err != nil {
 		return "", err
 	}
-	// Co-sync the folder's Claude corpus here too (best-effort) so `duck -c` /
+	// Co-sync the whole Claude corpus here too (best-effort) so `duck -c` /
 	// `--resume` seed it as well, not just bare `duck` — the user's history follows
-	// them regardless of how they re-enter a folder. Idempotent once seeded.
-	f.coSyncClaude(cwd)
+	// them regardless of how they re-enter. Idempotent once seeded.
+	f.coSyncClaude()
 	return td, nil
 }
 
@@ -510,10 +511,10 @@ func (f *Flow) RunWithOverride(cwd string, override Override) error {
 		if err != nil {
 			return err
 		}
-		// We are mirroring this folder anyway: if the user opted in, ALSO co-sync
-		// this folder's Claude history corpus (transcripts + memory). Best-effort —
-		// it must never block or fail the session the user actually came for.
-		f.coSyncClaude(cwd)
+		// We are mirroring a folder anyway: if enabled, ALSO co-sync the whole
+		// Claude history corpus (transcripts + memory). Best-effort — it must never
+		// block or fail the session the user actually came for.
+		f.coSyncClaude()
 	} else {
 		// A no-sync session must still open in a valid hub dir: use D if it exists
 		// on the hub, otherwise fall back to home.

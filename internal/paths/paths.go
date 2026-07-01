@@ -70,6 +70,12 @@ func SessionName(bundle, tildePath string) string {
 // the on-disk slug -Users-jane-doe-dev (note the "." in the username).
 var claudeSlugReplacer = strings.NewReplacer("/", "-", ".", "-")
 
+// ClaudeProjectsRoot is the tilde-form path of the whole Claude sessions corpus
+// — ~/.claude/projects — the parent of every per-folder <slug>. duck syncs this
+// ONE directory (not per-slug) so all conversation history is mirrored to the
+// hub in a single session, regardless of which folders you duck into.
+func ClaudeProjectsRoot() string { return "~/.claude/projects" }
+
 // ClaudeProjectDir returns the tilde-form path of the ~/.claude/projects/<slug>
 // directory Claude Code uses for sessions started in absCwd, deriving <slug>
 // with the same "/"→"-", "."→"-" rule Claude itself applies. Because duck

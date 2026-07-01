@@ -725,10 +725,10 @@ func TestRunCleansFreshSessionOnCleanLeave(t *testing.T) {
 // --- per-folder Claude history co-sync (SetClaudeHistory) ---------------------
 
 // claudeCoSyncEnv sets up a hermetic HOME with a real cwd under it and (when
-// makeCorpus) the matching ~/.claude/projects/<slug> corpus dir, so coSyncClaude
-// can exercise its os.Stat gate against a real filesystem the framework cleans.
-// It returns the absolute cwd. HOME is redirected for the whole test (paths
-// Contract/Expand and ClaudeProjectDir all key off os.UserHomeDir == $HOME).
+// makeCorpus) the ~/.claude/projects corpus ROOT, so coSyncClaude can exercise
+// its os.Stat gate against a real filesystem the framework cleans. It returns the
+// absolute cwd. HOME is redirected for the whole test (paths Contract/Expand and
+// ClaudeProjectsRoot all key off os.UserHomeDir == $HOME).
 func claudeCoSyncEnv(t *testing.T, makeCorpus bool) (home, cwd string) {
 	t.Helper()
 	home = t.TempDir()
@@ -738,14 +738,14 @@ func claudeCoSyncEnv(t *testing.T, makeCorpus bool) (home, cwd string) {
 		t.Fatalf("mkdir cwd: %v", err)
 	}
 	if makeCorpus {
-		corpus, err := paths.Expand(paths.ClaudeProjectDir(cwd))
+		corpus, err := paths.Expand(paths.ClaudeProjectsRoot())
 		if err != nil {
 			t.Fatalf("expand corpus: %v", err)
 		}
-		if err := os.MkdirAll(corpus, 0o755); err != nil {
+		if err := os.MkdirAll(corpus+"/-work-proj", 0o755); err != nil {
 			t.Fatalf("mkdir corpus: %v", err)
 		}
-		if err := os.WriteFile(corpus+"/session.jsonl", []byte("{}\n"), 0o644); err != nil {
+		if err := os.WriteFile(corpus+"/-work-proj/session.jsonl", []byte("{}\n"), 0o644); err != nil {
 			t.Fatalf("seed corpus file: %v", err)
 		}
 	}
@@ -782,9 +782,9 @@ func TestClaudeCoSyncFiresWhenEnabled(t *testing.T) {
 	if s.addCalls != 2 {
 		t.Fatalf("enabled co-sync must AddAndWait twice (folder + corpus): addCalls=%d, paths=%v", s.addCalls, s.addPaths)
 	}
-	wantCorpus := paths.ClaudeProjectDir(cwd)
+	wantCorpus := paths.ClaudeProjectsRoot()
 	if s.addPaths[len(s.addPaths)-1] != wantCorpus {
-		t.Fatalf("co-sync target = %q, want the corpus %q", s.addPaths[len(s.addPaths)-1], wantCorpus)
+		t.Fatalf("co-sync target = %q, want the corpus root %q", s.addPaths[len(s.addPaths)-1], wantCorpus)
 	}
 	// The corpus is a multi-machine artifact → it must merge NEWEST-WINS
 	// (force=true ⇒ Reconcile runs before its AddAndWait).
@@ -824,7 +824,7 @@ func TestClaudeCoSyncFiresFromGatedPath(t *testing.T) {
 	if s.addCalls != 2 {
 		t.Fatalf("gated path must co-sync the corpus too: addCalls=%d, paths=%v", s.addCalls, s.addPaths)
 	}
-	if s.addPaths[len(s.addPaths)-1] != paths.ClaudeProjectDir(cwd) {
-		t.Fatalf("gated co-sync target = %q, want corpus %q", s.addPaths[len(s.addPaths)-1], paths.ClaudeProjectDir(cwd))
+	if s.addPaths[len(s.addPaths)-1] != paths.ClaudeProjectsRoot() {
+		t.Fatalf("gated co-sync target = %q, want corpus root %q", s.addPaths[len(s.addPaths)-1], paths.ClaudeProjectsRoot())
 	}
 }
