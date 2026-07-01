@@ -1,11 +1,15 @@
 package config
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/DigiBugCat/duck/internal/hub"
 )
 
 // TestCodexModelRoundTrips pins that the M3 codex model field decodes from the
@@ -156,5 +160,121 @@ func TestFoldersRoundTrip(t *testing.T) {
 	}
 	if out.Folders["~"] != "never" {
 		t.Fatalf("Folders[~] = %q, want never", out.Folders["~"])
+	}
+}
+
+// TestResolveAnchorNoOpWhenUnset pins that ResolveAnchor does nothing (no SSH
+// call, no mutation) when AnchorHost is empty — the opt-in default.
+func TestResolveAnchorNoOpWhenUnset(t *testing.T) {
+	called := false
+	restore := hub.SetRunner(func(argv []string, _ io.Reader) (string, error) {
+		called = true
+		return "{}", nil
+	})
+	defer restore()
+
+	c := &Config{Hub: "me@old"}
+	got := ResolveAnchor(c)
+	if called {
+		t.Fatalf("ResolveAnchor must not touch SSH when AnchorHost is empty")
+	}
+	if got.Hub != "me@old" {
+		t.Fatalf("Hub = %q, want unchanged", got.Hub)
+	}
+}
+
+// TestResolveAnchorPullsNewerHubAndCachesLocally pins the core anchor-read
+// path: a hub that differs from the anchor's is overwritten AND persisted to
+// the local config file (writing into a temp HOME so no real config is
+// touched), so an offline laptop still has the last-known-good value.
+func TestResolveAnchorPullsNewerHubAndCachesLocally(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	restore := hub.SetRunner(func(argv []string, _ io.Reader) (string, error) {
+		remote := argv[len(argv)-1]
+		if strings.Contains(remote, "cat ~/.duck/anchor.json") {
+			return `{"hub":"me@new","hubName":"new-box","config":{"codex_model":"gpt-5"}}`, nil
+		}
+		return "", nil
+	})
+	defer restore()
+
+	c := &Config{Hub: "me@old", AnchorHost: "me@anchorbox"}
+	got := ResolveAnchor(c)
+	if got.Hub != "me@new" || got.HubName != "new-box" {
+		t.Fatalf("Hub/HubName = %q/%q, want me@new/new-box", got.Hub, got.HubName)
+	}
+	if got.CodexModel != "gpt-5" {
+		t.Fatalf("CodexModel = %q, want gpt-5", got.CodexModel)
+	}
+
+	// The pulled value must have been cached to the local config file.
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if reloaded.Hub != "me@new" {
+		t.Fatalf("reloaded Hub = %q, want the pulled value to have been cached locally", reloaded.Hub)
+	}
+}
+
+// TestResolveAnchorSwallowsSSHFailure pins that an unreachable anchor host
+// leaves c unchanged rather than propagating an error — the anchor is
+// advisory, never a hard dependency.
+func TestResolveAnchorSwallowsSSHFailure(t *testing.T) {
+	restore := hub.SetRunner(func(argv []string, _ io.Reader) (string, error) {
+		return "", io.ErrUnexpectedEOF
+	})
+	defer restore()
+
+	c := &Config{Hub: "me@old", AnchorHost: "me@anchorbox"}
+	got := ResolveAnchor(c)
+	if got.Hub != "me@old" {
+		t.Fatalf("Hub = %q, want unchanged on SSH failure", got.Hub)
+	}
+}
+
+// TestPushAnchorNoOpWhenUnset mirrors TestResolveAnchorNoOpWhenUnset for the
+// write side.
+func TestPushAnchorNoOpWhenUnset(t *testing.T) {
+	called := false
+	restore := hub.SetRunner(func(argv []string, _ io.Reader) (string, error) {
+		called = true
+		return "", nil
+	})
+	defer restore()
+
+	if err := PushAnchor(&Config{Hub: "me@host"}); err != nil {
+		t.Fatalf("PushAnchor: %v", err)
+	}
+	if called {
+		t.Fatalf("PushAnchor must not touch SSH when AnchorHost is empty")
+	}
+}
+
+// TestPushAnchorWritesSharedSubset pins that PushAnchor streams the hub
+// address and the shared config subset to the anchor's atomic-write command.
+func TestPushAnchorWritesSharedSubset(t *testing.T) {
+	var lastInput string
+	restore := hub.SetRunner(func(argv []string, stdin io.Reader) (string, error) {
+		remote := argv[len(argv)-1]
+		if strings.Contains(remote, "mv") && stdin != nil {
+			b, _ := io.ReadAll(stdin)
+			lastInput = string(b)
+		}
+		return "", nil
+	})
+	defer restore()
+
+	c := &Config{Hub: "me@new", HubName: "new-box", AnchorHost: "me@anchorbox", CodexModel: "gpt-5"}
+	if err := PushAnchor(c); err != nil {
+		t.Fatalf("PushAnchor: %v", err)
+	}
+	if !strings.Contains(lastInput, `"hub": "me@new"`) {
+		t.Fatalf("streamed JSON = %q, want it to contain the hub field", lastInput)
+	}
+	if !strings.Contains(lastInput, `"codex_model": "gpt-5"`) {
+		t.Fatalf("streamed JSON = %q, want the shared config subset", lastInput)
 	}
 }

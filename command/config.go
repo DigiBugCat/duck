@@ -146,6 +146,9 @@ var configClaudeSyncCmd = &cobra.Command{
 		if err := config.Save(cfg); err != nil {
 			return err
 		}
+		if err := config.PushAnchor(cfg); err != nil {
+			fmt.Fprintf(c.ErrOrStderr(), "warning: could not push to the anchor: %v\n", err)
+		}
 		state := "off"
 		if on {
 			state = "on"
@@ -230,6 +233,9 @@ var configAttachTransportCmd = &cobra.Command{
 		cfg.AttachTransport = stored
 		if err := config.Save(cfg); err != nil {
 			return err
+		}
+		if err := config.PushAnchor(cfg); err != nil {
+			fmt.Fprintf(c.ErrOrStderr(), "warning: could not push to the anchor: %v\n", err)
 		}
 		out := c.OutOrStdout()
 		fmt.Fprintf(out, "attach transport: %s\n", shown)

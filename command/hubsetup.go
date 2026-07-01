@@ -77,6 +77,13 @@ With no argument, duck prompts for the hub address when run interactively.`,
 			return err
 		}
 		fmt.Printf("hub registered: %s\n", hub.DisplayName(cfg.Hub, cfg.HubName))
+		// Best-effort write-through: if an anchor is configured, every other
+		// laptop pointed at it picks up this hub on its next command (see
+		// config.RequireHub -> config.ResolveAnchor). A push failure must never
+		// fail `hub set` — the local config is always the value of record.
+		if err := config.PushAnchor(cfg); err != nil {
+			fmt.Printf("warning: could not push the new hub to the anchor: %v\n", err)
+		}
 		return nil
 	},
 }

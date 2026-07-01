@@ -8,13 +8,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/DigiBugCat/duck/internal/anchor"
+	"github.com/DigiBugCat/duck/internal/hub"
 )
 
 type Config struct {
 	Hub     string `toml:"hub"`                // user@host used to SSH
 	HubName string `toml:"hub_name,omitempty"` // remote `hostname`, captured at registration time
+
+	// AnchorHost is the anchor host address (user@host), independently
+	// configurable from Hub: it holds ~/.duck/anchor.json, a small shared-state
+	// file (the hub address + a subset of user-level config) that every laptop
+	// pointed at it reads on each hub-touching command (see ResolveAnchor,
+	// wired into RequireHub) and writes to on change (see PushAnchor). It can be
+	// the same box as Hub (in which case a hub move needs the same manual
+	// carry-over names.json already requires) or a separate always-on box (in
+	// which case a hub move is zero-touch on every other laptop). Empty means
+	// the feature is off — opt-in, like SyncClaudeHistory and AutoName. No
+	// token/secret: auth is whatever SSH access already reaches that host.
+	AnchorHost string `toml:"anchor_host,omitempty"`
 
 	// CodexModel selects the laptop-side codex model used for auto-naming
 	// (DESIGN §5). Empty falls back to the built-in default in command/wiring.go.
@@ -164,14 +180,96 @@ func Save(c *Config) error {
 	return toml.NewEncoder(f).Encode(c)
 }
 
-// RequireHub loads the config and fails with a clear message if no hub is set.
+// RequireHub loads the config, resolves it against the anchor (best-effort —
+// see ResolveAnchor), and fails with a clear message if no hub is set. This is
+// the single insertion point that makes anchor resolution automatic: every
+// command that needs a hub gets a chance to pick up a hub move made from
+// another laptop before checking whether one is configured at all.
 func RequireHub() (*Config, error) {
 	c, err := Load()
 	if err != nil {
 		return nil, err
 	}
+	c = ResolveAnchor(c)
 	if c.Hub == "" {
 		return nil, fmt.Errorf("no hub configured. run: duck hub setup <user@host>")
 	}
 	return c, nil
 }
+
+// anchorConfigKeys is the shared config subset synced through the anchor:
+// fields that are genuinely user-level preferences, not per-machine state
+// (Folders, AutoName, AutoUpdate, HubTsshdPath stay local-only).
+const (
+	anchorKeyCodexModel        = "codex_model"
+	anchorKeyAttachTransport   = "attach_transport"
+	anchorKeySyncClaudeHistory = "sync_claude_history"
+)
+
+// ResolveAnchor is a best-effort pull: when c.AnchorHost is set, it loads the
+// anchor state and, for each field the anchor knows about, overwrites the
+// in-memory value AND persists it locally via Save (so an offline laptop
+// still has the last-known-good value on its next run). Any failure (host
+// unreachable, bad JSON, a local Save error) is swallowed — the anchor is
+// advisory, never a hard dependency — and c is returned unchanged in that
+// case. c must be non-nil.
+func ResolveAnchor(c *Config) *Config {
+	if c.AnchorHost == "" {
+		return c
+	}
+	st, err := anchor.NewStore(hub.New(c.AnchorHost)).Load()
+	if err != nil {
+		return c
+	}
+	changed := false
+	if st.Hub != "" && st.Hub != c.Hub {
+		c.Hub = st.Hub
+		c.HubName = st.HubName
+		changed = true
+	}
+	if v, ok := st.Config[anchorKeyCodexModel]; ok && v != c.CodexModel {
+		c.CodexModel = v
+		changed = true
+	}
+	if v, ok := st.Config[anchorKeyAttachTransport]; ok && v != c.AttachTransport {
+		c.AttachTransport = v
+		changed = true
+	}
+	if v, ok := st.Config[anchorKeySyncClaudeHistory]; ok {
+		if b, perr := strconv.ParseBool(v); perr == nil && (c.SyncClaudeHistory == nil || *c.SyncClaudeHistory != b) {
+			c.SyncClaudeHistory = &b
+			changed = true
+		}
+	}
+	if changed {
+		_ = Save(c) // best-effort local cache; a write failure must not block resolution.
+	}
+	return c
+}
+
+// PushAnchor is the write-through counterpart to ResolveAnchor: when
+// c.AnchorHost is set, it pushes c's current Hub/HubName and the shared
+// config subset to the anchor host. Best-effort — callers (the `duck hub set`
+// and shared `duck config` setters) call this after a successful local Save
+// and log a warning on failure, but never fail the command over it.
+func PushAnchor(c *Config) error {
+	if c.AnchorHost == "" {
+		return nil
+	}
+	st := State{
+		Hub:     c.Hub,
+		HubName: c.HubName,
+		Config: map[string]string{
+			anchorKeyAttachTransport:   c.AttachTransport,
+			anchorKeySyncClaudeHistory: strconv.FormatBool(c.SyncClaudeHistoryEnabled()),
+		},
+	}
+	if c.CodexModel != "" {
+		st.Config[anchorKeyCodexModel] = c.CodexModel
+	}
+	return anchor.NewStore(hub.New(c.AnchorHost)).Save(st)
+}
+
+// State is a local alias for anchor.State so command/ never needs to import
+// internal/anchor directly — config is already the layer command/ talks to.
+type State = anchor.State

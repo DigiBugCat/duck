@@ -23,6 +23,27 @@ The rule of thumb: **files and Claude history are safe** (they're mirrored on
 your laptop too). **Names, running sessions, and hub-side automation** need a
 hand.
 
+## If you have multiple laptops: set up an anchor first
+
+Everything above still requires running `duck hub set <new>` on **every**
+laptop you use duck from — there's no way around that with only a hub, since
+the hub address is how a laptop finds the hub in the first place.
+
+If you use duck from more than one laptop, point them all at an **anchor**
+first (`duck anchor set <user@host>`) — a small JSON file
+(`~/.duck/anchor.json`) on any SSH-reachable box that mirrors the hub address
+(and a few shared settings) across every laptop pointed at it. Pick a box
+*other than* the hub itself, and `duck hub set` on any one laptop is enough:
+every other laptop picks up the new hub automatically on its next command (via
+`config.ResolveAnchor`, wired into the same `RequireHub` check every
+hub-touching command already runs — no separate "pull" step). Point the anchor
+at the hub itself instead and it degrades to exactly the manual carry-over
+described below (still fine, just no better than today).
+
+No token or extra auth for the anchor — it's plain SSH, so whatever keys
+already reach that host are sufficient. See `duck anchor show` to check what's
+configured.
+
 ## Steps
 
 ### 1. Provision the new hub
@@ -146,6 +167,8 @@ Once those are quiet, the old hub is free to repurpose.
 duck hub setup <user@host>   # provision + point duck at a new hub
 duck hub show                # which hub am I on?
 duck hub set <user@host>     # re-point without re-provisioning
+duck anchor set <user@host>  # (once) share hub moves across all your laptops
+duck anchor show             # which anchor am I on?
 # carry names:  scp old:~/.duck/names.json  →  new:~/.duck/names.json
 # re-mirror:    cd <project> && duck   (per folder)
 # bundles:      duck sync get <bundle>
