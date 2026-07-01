@@ -32,6 +32,33 @@ type State struct {
 	Hub     string            `json:"hub,omitempty"`
 	HubName string            `json:"hubName,omitempty"`
 	Config  map[string]string `json:"config,omitempty"` // shared config subset, string-valued
+
+	// Homes is the set of absolute home directories across the fleet — every
+	// laptop's $HOME plus the hub's. The cross-machine Claude-history reconciler
+	// reads it to know which foreign path forms to map onto the local one (a
+	// macOS laptop is /Users/me, the Linux hub is /home/me). Each machine unions
+	// its own home in on use, so the set fills in as machines are ducked.
+	Homes []string `json:"homes,omitempty"`
+}
+
+// AddHomes returns s with each of homes added to s.Homes if not already present
+// (order-preserving, deduped). Empty strings are ignored. It reports whether any
+// were new, so a caller can skip a redundant write-back.
+func (s State) AddHomes(homes ...string) (State, bool) {
+	have := map[string]bool{}
+	for _, h := range s.Homes {
+		have[h] = true
+	}
+	changed := false
+	for _, h := range homes {
+		if h == "" || have[h] {
+			continue
+		}
+		s.Homes = append(s.Homes, h)
+		have[h] = true
+		changed = true
+	}
+	return s, changed
 }
 
 // Runner is the injectable SSH seam (subset of *hub.Hub) anchor uses to read

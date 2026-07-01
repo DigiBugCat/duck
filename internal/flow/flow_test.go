@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DigiBugCat/duck/internal/claude"
 	"github.com/DigiBugCat/duck/internal/folder"
 	"github.com/DigiBugCat/duck/internal/mutagen"
 	"github.com/DigiBugCat/duck/internal/names"
@@ -821,7 +822,7 @@ func TestRunCleansFreshSessionOnCleanLeave(t *testing.T) {
 // makeCorpus) the ~/.claude/projects corpus ROOT, so coSyncClaude can exercise
 // its os.Stat gate against a real filesystem the framework cleans. It returns the
 // absolute cwd. HOME is redirected for the whole test (paths Contract/Expand and
-// ClaudeProjectsRoot all key off os.UserHomeDir == $HOME).
+// claude.ProjectsRoot all key off os.UserHomeDir == $HOME).
 func claudeCoSyncEnv(t *testing.T, makeCorpus bool) (home, cwd string) {
 	t.Helper()
 	home = t.TempDir()
@@ -831,7 +832,7 @@ func claudeCoSyncEnv(t *testing.T, makeCorpus bool) (home, cwd string) {
 		t.Fatalf("mkdir cwd: %v", err)
 	}
 	if makeCorpus {
-		corpus, err := paths.Expand(paths.ClaudeProjectsRoot())
+		corpus, err := paths.Expand(claude.ProjectsRoot())
 		if err != nil {
 			t.Fatalf("expand corpus: %v", err)
 		}
@@ -875,7 +876,7 @@ func TestClaudeCoSyncFiresWhenEnabled(t *testing.T) {
 	if s.addCalls != 2 {
 		t.Fatalf("enabled co-sync must AddAndWait twice (folder + corpus): addCalls=%d, paths=%v", s.addCalls, s.addPaths)
 	}
-	wantCorpus := paths.ClaudeProjectsRoot()
+	wantCorpus := claude.ProjectsRoot()
 	if s.addPaths[len(s.addPaths)-1] != wantCorpus {
 		t.Fatalf("co-sync target = %q, want the corpus root %q", s.addPaths[len(s.addPaths)-1], wantCorpus)
 	}
@@ -917,7 +918,7 @@ func TestClaudeCoSyncFiresFromGatedPath(t *testing.T) {
 	if s.addCalls != 2 {
 		t.Fatalf("gated path must co-sync the corpus too: addCalls=%d, paths=%v", s.addCalls, s.addPaths)
 	}
-	if s.addPaths[len(s.addPaths)-1] != paths.ClaudeProjectsRoot() {
-		t.Fatalf("gated co-sync target = %q, want corpus root %q", s.addPaths[len(s.addPaths)-1], paths.ClaudeProjectsRoot())
+	if s.addPaths[len(s.addPaths)-1] != claude.ProjectsRoot() {
+		t.Fatalf("gated co-sync target = %q, want corpus root %q", s.addPaths[len(s.addPaths)-1], claude.ProjectsRoot())
 	}
 }

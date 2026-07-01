@@ -15,6 +15,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/DigiBugCat/duck/internal/claude"
 	"github.com/DigiBugCat/duck/internal/folder"
 	"github.com/DigiBugCat/duck/internal/names"
 	"github.com/DigiBugCat/duck/internal/paths"
@@ -379,7 +380,7 @@ func (f *Flow) coSyncClaude() {
 	if !f.syncClaude {
 		return
 	}
-	claudeTilde := paths.ClaudeProjectsRoot()
+	claudeTilde := claude.ProjectsRoot()
 	local, err := paths.Expand(claudeTilde)
 	if err != nil {
 		return
