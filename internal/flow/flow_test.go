@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DigiBugCat/duck/internal/folder"
+	"github.com/DigiBugCat/duck/internal/mutagen"
 	"github.com/DigiBugCat/duck/internal/names"
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/session"
@@ -23,13 +25,15 @@ func osUserHomeDir() (string, error) { return os.UserHomeDir() }
 // observable one level up (the recording-fake pattern the spec's flow test
 // asks for).
 type fakeSyncer struct {
-	synced     bool
-	addCalls   int
-	reconCalls int
-	lastForce  bool
-	lastDir    Direction
-	calls      []string // "reconcile"/"addwait" in call order
-	addPaths   []string // tildeDir of every AddAndWait, in order (co-sync target asserts)
+	synced      bool
+	addCalls    int
+	reconCalls  int
+	lastForce   bool
+	lastDir     Direction
+	calls       []string // "reconcile"/"addwait" in call order
+	addPaths    []string // tildeDir of every AddAndWait, in order (co-sync target asserts)
+	containment folder.Containment
+	terminated  []string // session names passed to Terminate, in order
 }
 
 func (f *fakeSyncer) IsSynced(string) (bool, error) { return f.synced, nil }
@@ -44,6 +48,13 @@ func (f *fakeSyncer) AddAndWait(tildeDir string, force bool) error {
 	f.lastForce = force
 	f.calls = append(f.calls, "addwait")
 	f.addPaths = append(f.addPaths, tildeDir)
+	return nil
+}
+func (f *fakeSyncer) CheckContainment(string) (folder.Containment, error) {
+	return f.containment, nil
+}
+func (f *fakeSyncer) Terminate(sessionName string) error {
+	f.terminated = append(f.terminated, sessionName)
 	return nil
 }
 
@@ -87,13 +98,20 @@ func (f fakeClassifier) IsRisky(string) (bool, string) { return f.risky, f.reaso
 // fakePrompter returns a canned choice and counts how often it was asked, so a
 // test can assert the prompt was (or was NOT) shown.
 type fakePrompter struct {
-	choice Choice
-	calls  int
+	choice           Choice
+	calls            int
+	consolidate      bool
+	consolidateCalls int
 }
 
 func (f *fakePrompter) AskSync(string, string) (Choice, error) {
 	f.calls++
 	return f.choice, nil
+}
+
+func (f *fakePrompter) AskConsolidate(string, string) (bool, error) {
+	f.consolidateCalls++
+	return f.consolidate, nil
 }
 
 // fakeRunner backs the session.Manager + names.Store with canned tmux/cat
@@ -184,6 +202,81 @@ func TestEnsureSyncedAddsWhenUnsynced(t *testing.T) {
 	}
 	if s.addCalls != 1 {
 		t.Fatalf("unsynced dir must AddAndWait exactly once, got %d", s.addCalls)
+	}
+}
+
+// TestEnsureSyncedConsolidatesEnclosedOnConsent pins the new containment
+// wiring: when CheckContainment reports ContainmentEncloses and the prompter
+// consents, EnsureSynced terminates every enclosed session before proceeding
+// to AddAndWait.
+func TestEnsureSyncedConsolidatesEnclosedOnConsent(t *testing.T) {
+	s := &fakeSyncer{
+		synced: false,
+		containment: folder.Containment{
+			Kind: folder.ContainmentEncloses,
+			Enclosed: []mutagen.Session{
+				{Name: "duck-default-aaa", Alpha: mutagen.Endpoint{Path: "/home/me/dev/foo/a"}},
+				{Name: "duck-default-bbb", Alpha: mutagen.Endpoint{Path: "/home/me/dev/foo/b"}},
+			},
+		},
+	}
+	pr := &fakePrompter{choice: ChoiceNo, consolidate: true}
+	f := newFlowDeps(&fakeRunner{}, &fakeAttacher{}, s, newFakePolicy(nil), fakeClassifier{}, pr)
+
+	if _, err := f.EnsureSynced("/home/me/dev/foo", DirNone); err != nil {
+		t.Fatalf("EnsureSynced: %v", err)
+	}
+	if pr.consolidateCalls != 1 {
+		t.Fatalf("AskConsolidate calls = %d, want 1", pr.consolidateCalls)
+	}
+	if len(s.terminated) != 2 || s.terminated[0] != "duck-default-aaa" || s.terminated[1] != "duck-default-bbb" {
+		t.Fatalf("terminated = %v, want both enclosed sessions", s.terminated)
+	}
+	if s.addCalls != 1 {
+		t.Fatalf("the new parent sync must still proceed, addCalls = %d", s.addCalls)
+	}
+}
+
+// TestEnsureSyncedKeepsEnclosedWhenDeclined pins the opposite consent branch:
+// declining the consolidation prompt leaves every enclosed session running
+// and still proceeds with the new parent sync.
+func TestEnsureSyncedKeepsEnclosedWhenDeclined(t *testing.T) {
+	s := &fakeSyncer{
+		synced: false,
+		containment: folder.Containment{
+			Kind:     folder.ContainmentEncloses,
+			Enclosed: []mutagen.Session{{Name: "duck-default-aaa", Alpha: mutagen.Endpoint{Path: "/home/me/dev/foo/a"}}},
+		},
+	}
+	pr := &fakePrompter{choice: ChoiceNo, consolidate: false}
+	f := newFlowDeps(&fakeRunner{}, &fakeAttacher{}, s, newFakePolicy(nil), fakeClassifier{}, pr)
+
+	if _, err := f.EnsureSynced("/home/me/dev/foo", DirNone); err != nil {
+		t.Fatalf("EnsureSynced: %v", err)
+	}
+	if pr.consolidateCalls != 1 {
+		t.Fatalf("AskConsolidate calls = %d, want 1", pr.consolidateCalls)
+	}
+	if len(s.terminated) != 0 {
+		t.Fatalf("declining must NOT terminate anything, got %v", s.terminated)
+	}
+	if s.addCalls != 1 {
+		t.Fatalf("the new parent sync must still proceed, addCalls = %d", s.addCalls)
+	}
+}
+
+// TestEnsureSyncedSkipsPromptWhenNoContainment pins the common case: when
+// CheckContainment reports ContainmentNone, AskConsolidate is never called.
+func TestEnsureSyncedSkipsPromptWhenNoContainment(t *testing.T) {
+	s := &fakeSyncer{synced: false, containment: folder.Containment{Kind: folder.ContainmentNone}}
+	pr := &fakePrompter{choice: ChoiceNo}
+	f := newFlowDeps(&fakeRunner{}, &fakeAttacher{}, s, newFakePolicy(nil), fakeClassifier{}, pr)
+
+	if _, err := f.EnsureSynced("/home/me/dev/foo", DirNone); err != nil {
+		t.Fatalf("EnsureSynced: %v", err)
+	}
+	if pr.consolidateCalls != 0 {
+		t.Fatalf("AskConsolidate calls = %d, want 0 when there is no containment", pr.consolidateCalls)
 	}
 }
 

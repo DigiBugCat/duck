@@ -35,6 +35,26 @@ func (ttyPrompter) AskSync(dir, reason string) (flow.Choice, error) {
 	return parseChoice(line), nil
 }
 
+// AskConsolidate prints the consolidation prompt and reads a line. Non-TTY
+// stdin returns false without reading, mirroring AskSync's safe default: a
+// non-interactive run never auto-terminates an existing sync session.
+func (ttyPrompter) AskConsolidate(parentDir, enclosedDisplay string) (bool, error) {
+	if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+		return false, nil
+	}
+	fmt.Fprintf(os.Stderr, "%s is already syncing separately under %s. Stop %s and let %s's new sync cover it? [y/N] ", enclosedDisplay, parentDir, enclosedDisplay, parentDir)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 // parseChoice maps a raw answer line to a flow.Choice. y/yes→Yes, e/never→Never,
 // everything else (empty, n, gibberish) →No. Case- and whitespace-insensitive.
 func parseChoice(line string) flow.Choice {

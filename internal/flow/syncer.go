@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DigiBugCat/duck/internal/actions"
+	"github.com/DigiBugCat/duck/internal/folder"
 	"github.com/DigiBugCat/duck/internal/hub"
 	"github.com/DigiBugCat/duck/internal/mutagen"
 	"github.com/DigiBugCat/duck/internal/paths"
@@ -89,6 +90,22 @@ func pathCoveredBy(dir, ancestor string) bool {
 		return true
 	}
 	return strings.HasPrefix(dir, ancestor+"/")
+}
+
+// CheckContainment lists the active duck Mutagen sessions and classifies
+// localAbs against their local (Alpha) paths via folder.CheckContainment.
+func (s realSyncer) CheckContainment(localAbs string) (folder.Containment, error) {
+	sessions, err := mutagen.List()
+	if err != nil {
+		return folder.Containment{}, err
+	}
+	return folder.CheckContainment(localAbs, sessions), nil
+}
+
+// Terminate stops and removes a Mutagen session by name; a missing session is
+// not an error (mutagen.Terminate already treats it as a no-op).
+func (s realSyncer) Terminate(sessionName string) error {
+	return mutagen.Terminate(sessionName)
 }
 
 // reconcileDir maps the flow-level Direction to the reconcile package's. They

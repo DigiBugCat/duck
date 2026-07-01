@@ -33,6 +33,19 @@ type Syncer interface {
 	IsSynced(tildeDir string) (bool, error)
 	Reconcile(tildeDir string, dir Direction) error
 	AddAndWait(tildeDir string, force bool) error
+
+	// CheckContainment classifies localAbs (an absolute local path) against the
+	// local paths of currently active duck Mutagen sessions — see
+	// folder.CheckContainment. IsSynced already handles the "localAbs is
+	// covered by an existing session" case (it short-circuits EnsureSynced
+	// before this is ever consulted); this seam exists for the opposite case,
+	// ContainmentEncloses: localAbs is a PARENT of one or more already-synced
+	// folders, which IsSynced cannot see.
+	CheckContainment(localAbs string) (folder.Containment, error)
+
+	// Terminate stops a named Mutagen session — used to retire a child session
+	// made redundant by a newly-consolidated parent sync.
+	Terminate(sessionName string) error
 }
 
 // Direction is how a conflicting folder (one the hub already has with files) is
@@ -77,6 +90,13 @@ const (
 // without prompting. Injected so flow stays unit-testable.
 type Prompter interface {
 	AskSync(dir, reason string) (Choice, error)
+
+	// AskConsolidate asks whether to terminate the already-synced child
+	// session(s) (enclosedDisplay, a human-readable tilde-form list) now that
+	// parentDir is about to sync as their enclosing parent. true means
+	// terminate the children; false (including a non-interactive context)
+	// leaves them running alongside the new parent sync.
+	AskConsolidate(parentDir, enclosedDisplay string) (bool, error)
 }
 
 // Progress is the seam onto a live sync-wait UI. waitSteady (and the reconcile
@@ -273,6 +293,8 @@ type noPrompter struct{}
 
 func (noPrompter) AskSync(string, string) (Choice, error) { return ChoiceNo, nil }
 
+func (noPrompter) AskConsolidate(string, string) (bool, error) { return false, nil }
+
 // EnsureSynced makes sure cwd is syncing to the hub. If it is not yet synced it
 // adds the path (which auto-starts mutagen) and waits for the initial sync to
 // reach a steady state so files exist on the hub before a session opens in
@@ -297,6 +319,7 @@ func (f *Flow) EnsureSynced(cwd string, dir Direction) (tildeDir string, err err
 	if synced {
 		return tildeDir, nil // short-circuit: already syncing
 	}
+	f.consolidateEnclosed(cwd, tildeDir)
 	if dir != DirNone {
 		// Reconcile BEFORE AddAndWait: seed both sides coherent (per direction) so
 		// the force-add's mutagen session has no conflicts left.
@@ -308,6 +331,30 @@ func (f *Flow) EnsureSynced(cwd string, dir Direction) (tildeDir string, err err
 		return "", err
 	}
 	return tildeDir, nil
+}
+
+// consolidateEnclosed checks whether the about-to-sync cwd would ENCLOSE one
+// or more already-synced child sessions (e.g. syncing ~/dev after ~/dev/proj
+// is already syncing on its own) and, on consent, terminates those now-
+// redundant child sessions so the new parent sync is the only one covering
+// them — otherwise the same files would be mirrored by two overlapping
+// sessions. Best-effort throughout: a containment-check or terminate failure
+// is logged, never propagated, since it must not block the sync the user came
+// for.
+func (f *Flow) consolidateEnclosed(localAbs, tildeDir string) {
+	c, err := f.sync.CheckContainment(localAbs)
+	if err != nil || c.Kind != folder.ContainmentEncloses {
+		return
+	}
+	ok, err := f.prompter.AskConsolidate(tildeDir, c.Display())
+	if err != nil || !ok {
+		return
+	}
+	for _, s := range c.Enclosed {
+		if terr := f.sync.Terminate(s.Name); terr != nil {
+			fmt.Fprintf(os.Stderr, "duck: could not terminate redundant session %s: %v\n", s.Name, terr)
+		}
+	}
 }
 
 // coSyncClaude co-syncs the WHOLE Claude history corpus — ~/.claude/projects —
