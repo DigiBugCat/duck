@@ -73,6 +73,7 @@ With no argument, duck prompts for the hub address when run interactively.`,
 		}
 		cfg.Hub = addr
 		cfg.HubName, _ = h.Hostname() // best-effort; not fatal if it fails
+		cfg.HubHome = ""              // invalidate the cached hub home for the reconciler; re-detected lazily
 		if err := config.Save(cfg); err != nil {
 			return err
 		}

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
+	"time"
 )
 
 // registryEntry is the minimal ~/.claude.json projects[<path>] entry duck writes
@@ -44,6 +46,38 @@ type Registry struct {
 // at a temp HOME.
 func NewRegistry(home string) *Registry {
 	return &Registry{path: filepath.Join(home, ".claude.json")}
+}
+
+// modTime returns the target's mtime, or the zero time if it doesn't exist yet.
+// Used as a cheap compare-and-swap token to detect a concurrent writer (Claude
+// Code, which does not honor our advisory lock) between our read and our rename.
+func (r *Registry) modTime() time.Time {
+	fi, err := os.Stat(r.path)
+	if err != nil {
+		return time.Time{}
+	}
+	return fi.ModTime()
+}
+
+// lock takes an exclusive advisory lock on a sidecar so two duck processes never
+// interleave a read-modify-write of ~/.claude.json (a real race now that the
+// reconciler is auto-wired into every session attach). It returns an unlock
+// func; on any failure it returns a no-op unlock and proceeds unlocked
+// (best-effort — the mtime CAS in Register still bounds the damage). It does NOT
+// coordinate with Claude Code itself, which doesn't lock the file.
+func (r *Registry) lock() func() {
+	f, err := os.OpenFile(r.path+".duck-lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return func() {}
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return func() {}
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}
 }
 
 // load reads and splits ~/.claude.json into (top-level raw map, projects map).
@@ -87,38 +121,59 @@ func (r *Registry) Registered(absPath string) (bool, error) {
 // the file back atomically. It returns the paths it actually added (already-known
 // paths are skipped, so a fully-covered call writes nothing and returns nil). The
 // entry is only ever ADDED — an existing entry is left exactly as Claude wrote it.
+//
+// Concurrency (see the type doc): it holds an exclusive advisory lock across the
+// whole read-modify-write so duck processes never clobber each other, and it uses
+// an mtime compare-and-swap to detect a concurrent Claude write between its read
+// and its rename — reloading and retrying rather than overwriting Claude's edit.
+// A few bounded retries; if the file keeps moving it gives up (the next reconcile
+// re-adds) rather than risk clobbering live session/auth state.
 func (r *Registry) Register(absPaths ...string) (added []string, err error) {
-	top, projects, err := r.load()
-	if err != nil {
-		return nil, err
-	}
+	unlock := r.lock()
+	defer unlock()
+
 	entryJSON, err := json.Marshal(registryEntry)
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range absPaths {
-		if _, ok := projects[p]; ok {
-			continue // never overwrite what Claude already tracks
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		before := r.modTime()
+		top, projects, err := r.load()
+		if err != nil {
+			return nil, err
 		}
-		projects[p] = json.RawMessage(entryJSON)
-		added = append(added, p)
+		added = nil
+		for _, p := range absPaths {
+			if _, ok := projects[p]; ok {
+				continue // never overwrite what Claude already tracks
+			}
+			projects[p] = json.RawMessage(entryJSON)
+			added = append(added, p)
+		}
+		if len(added) == 0 {
+			return nil, nil // nothing to do → don't rewrite the file at all
+		}
+		projRaw, err := json.Marshal(projects)
+		if err != nil {
+			return nil, err
+		}
+		top["projects"] = projRaw
+		out, err := json.MarshalIndent(top, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		// CAS: if the file changed since we read it, a concurrent (non-locking)
+		// Claude write landed — reload and reapply rather than clobber it.
+		if !r.modTime().Equal(before) {
+			continue
+		}
+		if err := r.atomicWrite(out); err != nil {
+			return nil, err
+		}
+		return added, nil
 	}
-	if len(added) == 0 {
-		return nil, nil // nothing to do → don't rewrite the file at all
-	}
-	projRaw, err := json.Marshal(projects)
-	if err != nil {
-		return nil, err
-	}
-	top["projects"] = projRaw
-	out, err := json.MarshalIndent(top, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	if err := r.atomicWrite(out); err != nil {
-		return nil, err
-	}
-	return added, nil
+	return nil, fmt.Errorf("~/.claude.json kept changing under us; skipped registering %d path(s) (will retry next reconcile)", len(absPaths))
 }
 
 // atomicWrite streams to a temp sibling then renames over the target, so a

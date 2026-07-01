@@ -20,6 +20,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// tryLockSpawn takes a NON-BLOCKING exclusive lock on a sidecar so that when
+// several `duck` invocations fire near-simultaneously (a burst of session
+// attaches), exactly one enters the due-check-and-spawn path — the rest bail
+// instead of each stamping and forking a redundant background reconcile. Returns
+// an unlock func and whether the lock was acquired; a failure to open/lock is
+// treated as "not acquired" so we simply skip this round rather than herd.
+func tryLockSpawn() (func(), bool) {
+	p, err := claudeReconcileStampPath()
+	if err != nil {
+		return func() {}, false
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return func() {}, false
+	}
+	f, err := os.OpenFile(p+".spawn-lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return func() {}, false
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return func() {}, false // another duck is already deciding — don't herd
+	}
+	return func() { syscall.Flock(int(f.Fd()), syscall.LOCK_UN); f.Close() }, true
+}
+
 // bgClaudeReconcileCmdName is the hidden re-exec target the detached reconcile runs.
 const bgClaudeReconcileCmdName = "__bg-claude-reconcile"
 
@@ -80,6 +105,14 @@ func newClaudeReconciler(cfg *config.Config) func() {
 		if cfg == nil || !cfg.SyncClaudeHistoryEnabled() {
 			return
 		}
+		// Serialize the due-check + stamp + spawn across concurrent `duck`
+		// processes so a burst of attaches yields ONE background reconcile, not one
+		// per process. If another duck holds it, skip this round entirely.
+		unlock, ok := tryLockSpawn()
+		if !ok {
+			return
+		}
+		defer unlock()
 		now := time.Now()
 		if !dueForClaudeReconcile(now) {
 			return

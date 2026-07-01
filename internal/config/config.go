@@ -232,6 +232,7 @@ func ResolveAnchor(c *Config) *Config {
 	if st.Hub != "" && st.Hub != c.Hub {
 		c.Hub = st.Hub
 		c.HubName = st.HubName
+		c.HubHome = "" // the hub changed → invalidate the cached home; reconciler re-detects lazily
 		changed = true
 	}
 	if v, ok := st.Config[anchorKeyCodexModel]; ok && v != c.CodexModel {

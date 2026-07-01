@@ -2,8 +2,10 @@ package claude
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -87,6 +89,51 @@ func TestRegisterIsIdempotentAndSkipsWriteWhenNothingNew(t *testing.T) {
 	}
 	if added != nil {
 		t.Fatalf("re-registering an existing path must add nothing, got %v", added)
+	}
+}
+
+// TestRegisterConcurrentNoLostUpdates hammers Register from many goroutines each
+// adding a distinct path; with the advisory lock + mtime CAS none may clobber
+// another's addition, and the file must stay valid JSON with a preserved
+// pre-existing key.
+func TestRegisterConcurrentNoLostUpdates(t *testing.T) {
+	home := t.TempDir()
+	writeJSON(t, home, map[string]any{
+		"oauthAccount": map[string]any{"token": "KEEP"},
+		"projects":     map[string]any{"/seed": map[string]any{}},
+	})
+	r := NewRegistry(home)
+
+	const n = 24
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := r.Register(fmt.Sprintf("/p/%d", i)); err != nil {
+				t.Errorf("Register: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	projects := readProjects(t, home)
+	for i := 0; i < n; i++ {
+		if _, ok := projects[fmt.Sprintf("/p/%d", i)]; !ok {
+			t.Fatalf("lost update: /p/%d missing after concurrent Register", i)
+		}
+	}
+	if _, ok := projects["/seed"]; !ok {
+		t.Fatal("pre-existing /seed entry clobbered")
+	}
+	// Auth key survived.
+	data, _ := os.ReadFile(filepath.Join(home, ".claude.json"))
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatalf("file is not valid JSON after concurrent writes: %v", err)
+	}
+	if _, ok := top["oauthAccount"]; !ok {
+		t.Fatal("oauthAccount dropped under concurrency")
 	}
 }
 

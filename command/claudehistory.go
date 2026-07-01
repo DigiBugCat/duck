@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/DigiBugCat/duck/internal/anchor"
 	"github.com/DigiBugCat/duck/internal/claude"
@@ -109,6 +110,12 @@ func runClaudeReconcile(out, errw io.Writer, p reconcileParams) error {
 	// maps laptop-origin sessions into its own path form. A down/absent hub-side
 	// duck is a warning, never a failure.
 	reconcileOnHub(cfg, homes, p.dryRun, out, errw)
+	// Update the shared throttle stamp (unless this was a dry run) so a bare `duck`
+	// moments later doesn't fire a redundant background reconcile right on top of
+	// this one — the explicit command and the auto-wired path share one throttle.
+	if !p.dryRun {
+		touchClaudeReconcileStamp(time.Now())
+	}
 	return nil
 }
 
