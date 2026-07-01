@@ -66,8 +66,10 @@ func TestCreateIncludesEndpointsAndIgnores(t *testing.T) {
 	}
 	create := (*calls)[1]
 	joined := strings.Join(create, " ")
-	if !strings.Contains(joined, "--ignore-vcs") {
-		t.Errorf("missing --ignore-vcs: %q", joined)
+	// duck deliberately syncs .git (history follows the folder), so the VCS-ignore
+	// mode must NOT be enabled.
+	if strings.Contains(joined, "--ignore-vcs") {
+		t.Errorf("unexpected --ignore-vcs (duck syncs .git): %q", joined)
 	}
 	if !strings.Contains(joined, "--ignore secrets") {
 		t.Errorf("missing extra ignore: %q", joined)
@@ -75,6 +77,26 @@ func TestCreateIncludesEndpointsAndIgnores(t *testing.T) {
 	// alpha and beta endpoints are the final two args.
 	if create[len(create)-2] != "/local/path" || create[len(create)-1] != "h:dev/x" {
 		t.Errorf("endpoints not the final two args: %v", create)
+	}
+}
+
+func TestEndpointMatchesHub(t *testing.T) {
+	cases := []struct {
+		name string
+		ep   Endpoint
+		addr string
+		want bool
+	}{
+		{"user+host match", Endpoint{User: "andrew", Host: "pelican"}, "andrew@pelican", true},
+		{"bare host matches any user", Endpoint{User: "andrew", Host: "pelican"}, "pelican", true},
+		{"different host", Endpoint{User: "andrew", Host: "pelican"}, "andrew@duck", false},
+		{"stale hub (old user@ip)", Endpoint{User: "andrew.sulistio", Host: "100.87.36.115"}, "andrew@pelican", false},
+		{"user mismatch on same host", Endpoint{User: "andrew.sulistio", Host: "pelican"}, "andrew@pelican", false},
+	}
+	for _, c := range cases {
+		if got := c.ep.MatchesHub(c.addr); got != c.want {
+			t.Errorf("%s: MatchesHub(%q) = %v, want %v", c.name, c.addr, got, c.want)
+		}
 	}
 }
 

@@ -22,9 +22,11 @@ import (
 	"strings"
 )
 
-// DefaultIgnores are appended to every duck-managed sync session.
-// Mutagen's own VCS-ignore mode handles .git, but these cover the noisy
-// build/cache directories that show up in most projects.
+// DefaultIgnores are appended to every duck-managed sync session. They cover
+// the noisy build/cache directories that show up in most projects. Note we do
+// NOT enable Mutagen's VCS-ignore mode: duck deliberately syncs .git so a
+// repo's history follows the folder to the hub (and back), instead of the hub
+// copy silently losing its git state.
 var DefaultIgnores = []string{
 	"node_modules",
 	".venv",
@@ -69,6 +71,24 @@ func (e Endpoint) Display() string {
 		return fmt.Sprintf("%s@%s:%s", e.User, e.Host, e.Path)
 	}
 	return fmt.Sprintf("%s:%s", e.Host, e.Path)
+}
+
+// MatchesHub reports whether this endpoint points at the hub addressed by addr
+// (a duck hub address: "user@host", a bare "host", or an ssh alias). It is how
+// duck tells a live sync — one whose beta IS the current hub — apart from a
+// STALE session left pointing at a previous hub after a migration. The compare
+// is host-primary: the user must match only when addr names one (so a bare
+// "pelican" still matches a beta of andrew@pelican), which is enough to
+// distinguish two different hubs while tolerating how the address was written.
+func (e Endpoint) MatchesHub(addr string) bool {
+	user, host := "", addr
+	if at := strings.LastIndex(addr, "@"); at >= 0 {
+		user, host = addr[:at], addr[at+1:]
+	}
+	if e.Host != host {
+		return false
+	}
+	return user == "" || e.User == user
 }
 
 // runVar / outputVar are the test seam. Tests swap them to record argv and call
@@ -116,7 +136,6 @@ func Create(name, alpha, beta string, extraIgnores []string) error {
 	args := []string{
 		"sync", "create",
 		"--name", name,
-		"--ignore-vcs",
 		"-m", "two-way-resolved",
 	}
 	for _, ig := range append(append([]string{}, DefaultIgnores...), extraIgnores...) {

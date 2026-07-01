@@ -173,3 +173,75 @@ func TestPathCoveredBy(t *testing.T) {
 		}
 	}
 }
+
+// mutagenListLine builds one pipe-delimited `mutagen sync list` row in the same
+// field order as listTemplate: name|status|aProto|aUser|aHost|aPath|bProto|bUser|bHost|bPath.
+// Alpha is always a local endpoint; beta is an SSH endpoint at betaUser@betaHost.
+func mutagenListLine(name, alphaPath, betaUser, betaHost string) string {
+	return name + "|Watching|Local|||" + alphaPath + "|SSH|" + betaUser + "|" + betaHost + "|remote/path\n"
+}
+
+// TestIsSyncedIgnoresForeignHub proves the migration fix: a session whose alpha
+// IS the dir but whose beta points at a PREVIOUS hub does NOT count as synced, so
+// the flow re-mirrors the folder to the current hub instead of masking it.
+func TestIsSyncedIgnoresForeignHub(t *testing.T) {
+	const dir = "/Users/me/Obsidian/Cassandra-Finance"
+	restore := mutagen.SetOutputForTest(func(_ ...string) (string, error) {
+		return mutagenListLine("duck-x", dir, "andrew.sulistio", "100.87.36.115"), nil
+	})
+	t.Cleanup(restore)
+	s := realSyncer{addr: "andrew@pelican"}
+	got, err := s.IsSynced(dir)
+	if err != nil {
+		t.Fatalf("IsSynced: %v", err)
+	}
+	if got {
+		t.Fatal("IsSynced=true for a session pointed at a DIFFERENT hub; want false so duck re-mirrors")
+	}
+}
+
+// TestIsSyncedTrueForCurrentHub is the positive counterpart: a session to the
+// current hub counts as synced.
+func TestIsSyncedTrueForCurrentHub(t *testing.T) {
+	const dir = "/Users/me/dev/foo"
+	restore := mutagen.SetOutputForTest(func(_ ...string) (string, error) {
+		return mutagenListLine("duck-y", dir, "andrew", "pelican"), nil
+	})
+	t.Cleanup(restore)
+	s := realSyncer{addr: "andrew@pelican"}
+	got, err := s.IsSynced(dir)
+	if err != nil {
+		t.Fatalf("IsSynced: %v", err)
+	}
+	if !got {
+		t.Fatal("IsSynced=false for a session to the current hub; want true")
+	}
+}
+
+// TestRetireForeignHubTerminatesStaleOnly proves retireForeignHub terminates the
+// stale (old-hub) session for the exact path and leaves current-hub sessions be.
+func TestRetireForeignHubTerminatesStaleOnly(t *testing.T) {
+	const stale = "/Users/me/Obsidian/Cassandra-Finance"
+	const good = "/Users/me/dev/foo"
+	restoreOut := mutagen.SetOutputForTest(func(_ ...string) (string, error) {
+		return mutagenListLine("duck-stale", stale, "andrew.sulistio", "100.87.36.115") +
+			mutagenListLine("duck-good", good, "andrew", "pelican"), nil
+	})
+	t.Cleanup(restoreOut)
+	var terminated []string
+	restoreRun := mutagen.SetRunner(func(args ...string) error {
+		if len(args) >= 3 && args[0] == "sync" && args[1] == "terminate" {
+			terminated = append(terminated, args[2])
+		}
+		return nil
+	})
+	t.Cleanup(restoreRun)
+
+	s := realSyncer{addr: "andrew@pelican"}
+	if err := s.retireForeignHub(stale); err != nil {
+		t.Fatalf("retireForeignHub: %v", err)
+	}
+	if len(terminated) != 1 || terminated[0] != "duck-stale" {
+		t.Fatalf("terminated = %v, want exactly [duck-stale]", terminated)
+	}
+}

@@ -58,12 +58,18 @@ func newRealSyncer(addr string, progress Progress) realSyncer {
 }
 
 // IsSynced reports whether tildeDir is already covered by a running mutagen
-// session — either because a session's alpha endpoint IS the local expansion of
-// tildeDir, or because it is an ANCESTOR of it. A session syncing ~/dev already
-// keeps ~/dev/foo current, so adding a second session for the child would be
-// redundant (and would have mutagen syncing the same files twice): when a parent
-// is synced, no action is needed. It matches across bundles so an existing `duck
-// sync` session counts.
+// session TO THE CURRENT HUB — either because a session's alpha endpoint IS the
+// local expansion of tildeDir, or because it is an ANCESTOR of it. A session
+// syncing ~/dev already keeps ~/dev/foo current, so adding a second session for
+// the child would be redundant (and would have mutagen syncing the same files
+// twice): when a parent is synced, no action is needed. It matches across
+// bundles so an existing `duck sync` session counts.
+//
+// The beta endpoint MUST match the current hub (s.addr): a session left pointing
+// at a PREVIOUS hub after a migration does not keep this hub current, so it is
+// NOT treated as synced — that is what makes duck re-mirror the folder to the new
+// hub (via AddAndWait's retireForeignHub) instead of silently opening a session
+// in a dir the new hub never received.
 func (s realSyncer) IsSynced(tildeDir string) (bool, error) {
 	local, err := paths.Expand(tildeDir)
 	if err != nil {
@@ -74,11 +80,38 @@ func (s realSyncer) IsSynced(tildeDir string) (bool, error) {
 		return false, err
 	}
 	for _, ms := range sessions {
-		if pathCoveredBy(local, ms.Alpha.Path) {
+		if pathCoveredBy(local, ms.Alpha.Path) && ms.Beta.MatchesHub(s.addr) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// retireForeignHub terminates any running mutagen session whose alpha IS the
+// local expansion of tildeDir but whose beta points at a DIFFERENT hub than the
+// current one (s.addr) — a leftover from a previous hub. It runs just before
+// AddAndWait recreates the session against the current hub: without it the stale
+// session (same deterministic name, wrong hub) would collide with the new one.
+// This is how a half-finished hub migration self-heals — the anchor-provided hub
+// address is the single source of truth, and a folder still pointed at the old
+// hub is re-mirrored to the new one the next time it is ducked into.
+func (s realSyncer) retireForeignHub(tildeDir string) error {
+	local, err := paths.Expand(tildeDir)
+	if err != nil {
+		return err
+	}
+	sessions, err := mutagen.List()
+	if err != nil {
+		return err
+	}
+	for _, ms := range sessions {
+		if ms.Alpha.Path == local && !ms.Beta.MatchesHub(s.addr) {
+			if err := mutagen.Terminate(ms.Name); err != nil {
+				return fmt.Errorf("retiring stale sync for %s (pointed at %s): %w", tildeDir, ms.Beta.Display(), err)
+			}
+		}
+	}
+	return nil
 }
 
 // pathCoveredBy reports whether dir is the same as, or nested under, ancestor —
@@ -169,6 +202,12 @@ func (s realSyncer) AddAndWait(tildeDir string, force bool) (err error) {
 			s.progress.Stop(false)
 		}
 	}()
+	// Self-heal a hub migration: if a stale session for this exact path still
+	// points at a previous hub, retire it first so the recreate below binds to the
+	// current hub instead of colliding with (or being masked by) the old one.
+	if err := s.retireForeignHub(tildeDir); err != nil {
+		return err
+	}
 	h := hub.New(s.addr)
 	exists, err := h.BundleExists(defaultBundle)
 	if err != nil {
