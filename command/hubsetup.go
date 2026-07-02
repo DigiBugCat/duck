@@ -13,7 +13,6 @@ import (
 	"github.com/DigiBugCat/duck/assets"
 	"github.com/DigiBugCat/duck/internal/config"
 	"github.com/DigiBugCat/duck/internal/hub"
-	"github.com/DigiBugCat/duck/internal/openfwd"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -556,12 +555,14 @@ const openInterceptorMarker = "duck open-interceptor"
 // mutagen/tsshd installs); without it, a Linux hub whose login PATH omits
 // ~/.local/bin can't resolve `claude`/`cass` inside a duck session. It also
 // points $BROWSER at the shim (so Claude Code's own opener and
-// $BROWSER-respecting tools route through it) and sets DUCK_OPEN_PORT. The
+// $BROWSER-respecting tools route through it). Per-session opener sockets live
+// in ~/.duck/run (created here). The
 // heredoc body is single-quoted ('EOF') so $HOME/$PATH stay LITERAL in the rc
 // file and expand at the hub shell's startup, not now.
 func installOpenInterceptorCmd() string {
 	return strings.Join([]string{
 		`set -e`,
+		`mkdir -p ~/.duck/run`,
 		`chmod +x ~/.duck/bin/duck-open`,
 		`ln -sf ~/.duck/bin/duck-open ~/.duck/bin/open`,
 		`ln -sf ~/.duck/bin/duck-open ~/.duck/bin/xdg-open`,
@@ -572,7 +573,6 @@ func installOpenInterceptorCmd() string {
 		`# >>> ` + openInterceptorMarker + ` >>>`,
 		`export PATH="$HOME/.duck/bin:$HOME/.local/bin:$PATH"`,
 		`export BROWSER="$HOME/.duck/bin/duck-open"`,
-		fmt.Sprintf(`export DUCK_OPEN_PORT=%d`, openfwd.HubPort),
 		`# <<< ` + openInterceptorMarker + ` <<<`,
 		`EOF`,
 		`  fi`,

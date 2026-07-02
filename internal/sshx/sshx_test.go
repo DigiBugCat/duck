@@ -86,6 +86,37 @@ func TestRunArgvShape(t *testing.T) {
 	}
 }
 
+func TestRemoteForwardSocketArgvShape(t *testing.T) {
+	calls := recordRun(t)
+	c := New("me@hub.local")
+	if err := c.RemoteForwardSocket("/home/me/.duck/run/open-foo.sock", 55123); err != nil {
+		t.Fatalf("RemoteForwardSocket: %v", err)
+	}
+	// Two calls: a best-effort cancel of a stale identical forward, then the add.
+	if len(*calls) != 2 {
+		t.Fatalf("expected 2 calls (cancel, forward), got %d: %v", len(*calls), *calls)
+	}
+	add := (*calls)[1]
+	joined := strings.Join(add, " ")
+	spec := "/home/me/.duck/run/open-foo.sock:127.0.0.1:55123"
+	if !strings.Contains(joined, "-O forward") {
+		t.Errorf("forward call missing -O forward: %v", add)
+	}
+	if !strings.Contains(joined, spec) {
+		t.Errorf("forward call missing socket spec %q: %v", spec, add)
+	}
+	// StreamLocalBindUnlink must sit BEFORE -O (ssh rejects connection options
+	// placed after the -O action). Assert ordering, not just presence.
+	ub := strings.Index(joined, "StreamLocalBindUnlink=yes")
+	oIdx := strings.Index(joined, "-O forward")
+	if ub < 0 {
+		t.Fatalf("missing StreamLocalBindUnlink: %v", add)
+	}
+	if ub > oIdx {
+		t.Errorf("StreamLocalBindUnlink must precede -O forward: %v", add)
+	}
+}
+
 func TestRunWrapsRemoteCmdInLoginShell(t *testing.T) {
 	// Regression guard for the Homebrew-PATH fix: every remote command must run
 	// under `zsh -lc` so /opt/homebrew/bin (tmux, mutagen) is on PATH. Embedded

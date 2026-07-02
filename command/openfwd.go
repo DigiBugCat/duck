@@ -18,75 +18,113 @@ import (
 	"github.com/DigiBugCat/duck/internal/sshx"
 )
 
-// startOpenForwarding is the package hook the attach loop calls to begin
-// routing the hub's open attempts to this laptop. build() sets it from the live
-// client; it stays nil in tests and non-attach paths (a no-op). It returns a
-// stop func the attach loop defers. A setup failure degrades to a no-op stop —
-// the open-interceptor is a convenience, never a reason an attach fails.
-var startOpenForwarding func() (stop func())
+// startOpenForwarding is the package hook the attach loop calls to begin routing
+// a session's hub-side open attempts to this laptop. It takes the tmux session
+// name so each session forwards its OWN hub socket — no shared rendezvous point,
+// so N attached laptops never collide. build() sets it from the live client; it
+// stays nil in tests and non-attach paths (a no-op). It returns a stop func the
+// attach loop defers. A setup failure degrades to a no-op stop — the
+// open-interceptor is a convenience, never a reason an attach fails.
+var startOpenForwarding func(session string) (stop func())
 
-// newOpenForwarding builds the production starter for the given client: on
-// start it launches the listener, reverse-forwards HubPort to it, and returns a
-// teardown that cancels the forward and stops the listener.
-func newOpenForwarding(client *sshx.Client) func() (stop func()) {
-	return func() (stop func()) {
+// hubOpenSock is the hub-side unix socket a given session's opens rendezvous on:
+// an ABSOLUTE path under the hub's home. hubHome must already be resolved to a
+// real path (no "$HOME"/"~") — a literal absolute path is the only form that
+// survives unchanged through all three consumers (the ssh -R socket spec, the
+// tmux set-environment value, and the shim's curl --unix-socket), none of which
+// reliably expand shell variables. Per-session (not a shared port) is the whole
+// point: the shim in that session's panes reads this exact path from the tmux
+// session env (DUCK_OPEN_SOCK), so no two sessions ever contend for one bind.
+// Session names are duck-generated (safe for a path segment).
+func hubOpenSock(hubHome, session string) string {
+	return fmt.Sprintf("%s/.duck/run/open-%s.sock", strings.TrimRight(hubHome, "/"), session)
+}
+
+// newOpenForwarding builds the production starter for the given client. On start
+// it launches the laptop listener, reverse-forwards this session's hub SOCKET to
+// it, and stamps the socket path into the tmux session's environment so the shim
+// can find it. The teardown cancels the forward, removes the hub socket, and
+// unsets the env var. Everything is best-effort: a failure disables the
+// interceptor for this session but never blocks the attach.
+func newOpenForwarding(client *sshx.Client) func(session string) (stop func()) {
+	return func(session string) (stop func()) {
 		noop := func() {}
+		if session == "" {
+			return noop
+		}
+		// Resolve the hub's absolute home ONCE so the socket path is a literal
+		// absolute path everywhere (see hubOpenSock). A failure here means we can't
+		// name the socket unambiguously — disable rather than risk a "$HOME"-named
+		// file in someone's cwd.
+		hubHome, err := hubHomeDir(client)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (hub home: %v); hub opens will run on the hub\n", err)
+			return noop
+		}
 		ln, err := openfwd.Start(productionOpenDeps(client))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (listener: %v); hub opens will run on the hub\n", err)
 			return noop
 		}
-		if err := client.RemoteForward(openfwd.HubPort, ln.LocalPort()); err != nil {
-			// A "remote port forwarding failed for listen port" collision means a
-			// PRIOR attach left an orphaned forward bound to HubPort on the hub (its
-			// control master died without tearing it down, so our cancel — which
-			// runs through a different master — can't reach it). Reclaim the port by
-			// killing whatever still listens on it, then retry the forward once.
-			if isForwardPortCollision(err) && reclaimHubForwardPort(client, openfwd.HubPort) {
-				err = client.RemoteForward(openfwd.HubPort, ln.LocalPort())
-			}
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (reverse forward: %v); hub opens will run on the hub\n", err)
-				_ = ln.Close()
-				return noop
-			}
+		sock := hubOpenSock(hubHome, session)
+		// Ensure the socket's parent dir exists (hub setup makes it, but a hub set
+		// up before this feature would not have it). Best-effort.
+		_, _ = client.Run("mkdir -p -- " + shquote(strings.TrimRight(hubHome, "/")+"/.duck/run"))
+		if err := client.RemoteForwardSocket(sock, ln.LocalPort()); err != nil {
+			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (reverse forward: %v); hub opens will run on the hub\n", err)
+			_ = ln.Close()
+			return noop
 		}
+		// Stamp the socket into the session env so a duck-open shim running in any
+		// of this session's panes resolves DUCK_OPEN_SOCK back to it. Best-effort:
+		// if tmux is unavailable the forward is still up, opens just can't find it.
+		stampOpenSock(client, session, sock)
 		return func() {
-			_ = client.CancelRemoteForward(openfwd.HubPort, ln.LocalPort())
+			unstampOpenSock(client, session)
+			_ = client.CancelRemoteForwardSocket(sock, ln.LocalPort())
+			// Remove the hub socket file so it never lingers as a stale path (belt
+			// and braces alongside StreamLocalBindUnlink on the next bind).
+			_, _ = client.Run("rm -f -- " + shquote(sock))
 			_ = ln.Close()
 		}
 	}
 }
 
-// isForwardPortCollision reports whether an ssh -R failure was the hub refusing
-// the listen port because something already holds it — the orphaned-forward case
-// worth reclaiming. Other failures (auth, no route) are not retried this way.
-func isForwardPortCollision(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "remote port forwarding failed for listen port") ||
-		strings.Contains(msg, "forwarding request failed")
+// stampOpenSock records this session's opener socket in the tmux session
+// environment, so the shim (running in a pane of that session) can read it back
+// with `tmux show-environment`. Best-effort; errors are swallowed.
+func stampOpenSock(client *sshx.Client, session, sock string) {
+	_, _ = client.Run(fmt.Sprintf(
+		"tmux set-environment -t %s DUCK_OPEN_SOCK %s",
+		shquote(session), shquote(sock)))
 }
 
-// reclaimHubForwardPort best-effort kills whatever still listens on the hub's
-// forward port (an orphaned sshd-session from a prior attach holding the stale
-// -R forward). It reports whether the port looks free afterward so the caller
-// knows a retry is worth attempting. Login-wrapped so lsof resolves on the hub's
-// PATH; all failures are swallowed (the worst case is the original error stands).
-func reclaimHubForwardPort(client *sshx.Client, port int) bool {
-	script := fmt.Sprintf(
-		`pids=$(lsof -nP -iTCP:%d -sTCP:LISTEN -t 2>/dev/null); `+
-			`[ -n "$pids" ] && kill $pids 2>/dev/null; sleep 1; `+
-			`lsof -nP -iTCP:%d -sTCP:LISTEN -t 2>/dev/null | head -1`,
-		port, port)
-	out, err := client.Run(script)
+// unstampOpenSock clears the session's opener socket from the tmux session
+// environment on teardown, so a pane opened after detach falls through to the
+// hub opener rather than a dead socket. Best-effort.
+func unstampOpenSock(client *sshx.Client, session string) {
+	_, _ = client.Run(fmt.Sprintf(
+		"tmux set-environment -u -t %s DUCK_OPEN_SOCK", shquote(session)))
+}
+
+// shquote single-quotes a value for safe embedding in the hub shell command.
+func shquote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// hubHomeDir returns the hub's absolute home directory (never "~"/"$HOME"), so
+// the per-session socket can be named with a literal path every consumer accepts
+// verbatim. It asks the hub shell directly — one cheap round-trip at attach.
+func hubHomeDir(client *sshx.Client) (string, error) {
+	out, err := client.Run("printf %s \"$HOME\"")
 	if err != nil {
-		return false
+		return "", err
 	}
-	// Empty output means nothing listens on the port now — safe to retry.
-	return strings.TrimSpace(out) == ""
+	home := strings.TrimSpace(out)
+	if home == "" || !strings.HasPrefix(home, "/") {
+		return "", fmt.Errorf("hub returned non-absolute home %q", home)
+	}
+	return home, nil
 }
 
 // productionOpenDeps wires the real seams: open through the laptop's OS opener,
@@ -140,15 +178,15 @@ func osOpen(target string) error {
 	return cmd.Process.Release()
 }
 
-// withOpenForwarding runs fn with the open-interceptor active when the hook is
-// set, tearing it down afterward. When the hook is nil (tests, or before
-// build() wired it) it just runs fn. Centralizing it here keeps runAttachLoop's
-// call site a one-liner.
-func withOpenForwarding(fn func() Outcome) Outcome {
+// withOpenForwarding runs fn with the open-interceptor active for the given
+// session when the hook is set, tearing it down afterward. When the hook is nil
+// (tests, or before build() wired it) it just runs fn. Centralizing it here
+// keeps runAttachLoop's call site a one-liner.
+func withOpenForwarding(session string, fn func() Outcome) Outcome {
 	if startOpenForwarding == nil {
 		return fn()
 	}
-	stop := startOpenForwarding()
+	stop := startOpenForwarding(session)
 	defer stop()
 	return fn()
 }

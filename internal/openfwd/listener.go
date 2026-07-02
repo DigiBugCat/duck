@@ -7,24 +7,20 @@ import (
 	"time"
 )
 
-// HubPort is the fixed hub-side loopback port the duck-open shim POSTs to and
-// that RemoteForward exposes back to this listener. Fixed (not negotiated) so
-// the hub shim stays stateless — it always curls 127.0.0.1:HubPort. The value
-// is duplicated as the DUCK_OPEN_PORT default in assets/duck-open.sh; keep them
-// in sync.
-const HubPort = 4774
-
 // Listener is the running laptop-side opener server. Start returns one; Close
 // stops it. It serves a single route, POST /open, whose form fields
-// (target/cwd/home) mirror the shim's curl --data-urlencode call.
+// (target/cwd/home) mirror the shim's curl --data-urlencode call. It binds an
+// ephemeral loopback port; the command layer reverse-forwards this session's hub
+// unix socket to that port (RemoteForwardSocket).
 type Listener struct {
 	srv  *http.Server
 	ln   net.Listener
 	deps Deps
 }
 
-// LocalPort is the ephemeral laptop port the server bound. RemoteForward maps
-// the hub's HubPort to this so the shim's POST reaches the server.
+// LocalPort is the ephemeral laptop port the server bound. The command layer
+// reverse-forwards the session's hub socket to this port so the shim's POST
+// reaches the server.
 func (l *Listener) LocalPort() int { return l.ln.Addr().(*net.TCPAddr).Port }
 
 // Start binds an ephemeral loopback port, starts serving POST /open against d,

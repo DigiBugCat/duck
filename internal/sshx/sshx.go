@@ -244,12 +244,21 @@ func (c *Client) RunInput(remoteCmd string, stdin io.Reader) (string, error) {
 // exit 0 on success. The forward/cancel specs reuse the SAME Control* flags so
 // they resolve the same socket as every other duck call.
 func (c *Client) controlArgv(action string, forwardSpec ...string) ([]string, error) {
+	return c.controlArgvOpts(nil, action, forwardSpec...)
+}
+
+// controlArgvOpts is controlArgv with extra ssh options (e.g.
+// -o StreamLocalBindUnlink=yes) inserted BEFORE -O, where ssh requires
+// connection options to sit — smuggling them in after -O/the action makes ssh
+// reject them. extraOpts is nil for the common case.
+func (c *Client) controlArgvOpts(extraOpts []string, action string, forwardSpec ...string) ([]string, error) {
 	opts, err := Options()
 	if err != nil {
 		return nil, err
 	}
 	argv := []string{sshBinary}
 	argv = append(argv, opts...)
+	argv = append(argv, extraOpts...)
 	argv = append(argv, "-O", action)
 	argv = append(argv, forwardSpec...)
 	argv = append(argv, c.Addr)
@@ -295,6 +304,50 @@ func (c *Client) CancelRemoteForward(hubPort, localPort int) error {
 		return nil // no forward was ever added (see ensureForward)
 	}
 	argv, err := c.controlArgv("cancel", "-R", fmt.Sprintf("%d:127.0.0.1:%d", hubPort, localPort))
+	if err != nil {
+		return err
+	}
+	_, err = run(argv, nil)
+	return err
+}
+
+// RemoteForwardSocket adds a reverse forward whose HUB endpoint is a unix-domain
+// socket (not a TCP port): connections to hubSock on the hub reach the laptop's
+// 127.0.0.1:localPort. This is the per-session channel the duck-open shim uses —
+// each duck session forwards its OWN socket (~/.duck/run/open-<session>.sock)
+// over its OWN control master, so N attached laptops never share a rendezvous
+// point and can never collide. StreamLocalBindUnlink=yes makes sshd unlink a
+// stale socket file from a crashed prior attach before binding, so the add never
+// fails on "address already in use". Needs OpenSSH 6.7+ (hub runs 10.x).
+func (c *Client) RemoteForwardSocket(hubSock string, localPort int) error {
+	if c.Local {
+		return nil // same machine: the listener is already reachable locally
+	}
+	if err := EnsureControlDir(); err != nil {
+		return err
+	}
+	spec := fmt.Sprintf("%s:127.0.0.1:%d", hubSock, localPort)
+	// Cancel any identical stale forward on OUR master first (mirrors
+	// ensureForward); a foreign master's stale bind is cleared hub-side by
+	// StreamLocalBindUnlink when the new bind lands.
+	if argv, err := c.controlArgv("cancel", "-R", spec); err == nil {
+		_, _ = run(argv, nil)
+	}
+	argv, err := c.controlArgvOpts([]string{"-o", "StreamLocalBindUnlink=yes"}, "forward", "-R", spec)
+	if err != nil {
+		return err
+	}
+	_, err = run(argv, nil)
+	return err
+}
+
+// CancelRemoteForwardSocket tears down a forward added by RemoteForwardSocket.
+// Best-effort; the socket file itself is removed separately by the caller.
+func (c *Client) CancelRemoteForwardSocket(hubSock string, localPort int) error {
+	if c.Local {
+		return nil
+	}
+	argv, err := c.controlArgv("cancel", "-R", fmt.Sprintf("%s:127.0.0.1:%d", hubSock, localPort))
 	if err != nil {
 		return err
 	}

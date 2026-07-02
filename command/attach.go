@@ -259,7 +259,7 @@ func runAttachLoop(sessions SessionAttacher, tmuxName string, selfHealing bool) 
 	// (tests / no hub wired). It spans the reconnect loop so a transport drop and
 	// reconnect keeps the same forwarding session. The opener forwards ride the ssh
 	// control master regardless of the attach transport, so this works under tssh too.
-	return withOpenForwarding(func() Outcome {
+	return withOpenForwarding(tmuxName, func() Outcome {
 		rc := newReconnector(selfHealing)
 		rc.remember = productionRemember
 		return rc.run(sessions, tmuxName)

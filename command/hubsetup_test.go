@@ -149,15 +149,17 @@ func TestTsshdPathProbe(t *testing.T) {
 }
 
 // TestOpenInterceptorInstall pins the hub-side open-interceptor install: the
-// shim lands in ~/.duck/bin, open/xdg-open symlink to it, the rc block is
-// idempotent (marker-guarded) and exports the env Claude Code and bare openers
-// both need, and the embedded shim itself routes to the reverse-forwarded port.
+// shim lands in ~/.duck/bin, open/xdg-open symlink to it, the runtime dir for
+// per-session sockets is created, the rc block is idempotent (marker-guarded)
+// and exports the env Claude Code and bare openers both need, and the embedded
+// shim routes to a per-session unix socket (no shared port).
 func TestOpenInterceptorInstall(t *testing.T) {
 	if !strings.Contains(writeDuckOpenCmd(), "~/.duck/bin/duck-open") {
 		t.Errorf("shim must be written to ~/.duck/bin/duck-open: %s", writeDuckOpenCmd())
 	}
 	inst := installOpenInterceptorCmd()
 	for _, want := range []string{
+		"mkdir -p ~/.duck/run", // per-session opener sockets live here
 		"chmod +x ~/.duck/bin/duck-open",
 		"ln -sf ~/.duck/bin/duck-open ~/.duck/bin/open",
 		"ln -sf ~/.duck/bin/duck-open ~/.duck/bin/xdg-open",
@@ -170,14 +172,24 @@ func TestOpenInterceptorInstall(t *testing.T) {
 			t.Errorf("install script missing %q:\n%s", want, inst)
 		}
 	}
+	// The fixed shared port is gone — the rc block must NOT reintroduce it.
+	if strings.Contains(inst, "DUCK_OPEN_PORT") {
+		t.Errorf("install script must not export the removed DUCK_OPEN_PORT:\n%s", inst)
+	}
 	// The rc block must target both zsh rc files so non-login (interactive) and
 	// login panes both pick it up.
 	if !strings.Contains(inst, "~/.zshrc") || !strings.Contains(inst, "~/.zprofile") {
 		t.Errorf("install script must write both ~/.zshrc and ~/.zprofile:\n%s", inst)
 	}
-	// The shim asset must POST to the forwarded port and pass the target through.
-	if !strings.Contains(assets.DuckOpen, "DUCK_OPEN_PORT") || !strings.Contains(assets.DuckOpen, "/open") {
-		t.Errorf("duck-open shim must curl the DUCK_OPEN_PORT /open endpoint:\n%s", assets.DuckOpen)
+	// The shim asset must resolve the per-session socket and POST /open to it via
+	// a unix socket — the whole point of the multiplexed design.
+	for _, want := range []string{"DUCK_OPEN_SOCK", "--unix-socket", "/open"} {
+		if !strings.Contains(assets.DuckOpen, want) {
+			t.Errorf("duck-open shim must reference %q (per-session socket /open):\n%s", want, assets.DuckOpen)
+		}
+	}
+	if strings.Contains(assets.DuckOpen, "DUCK_OPEN_PORT") {
+		t.Errorf("duck-open shim must not reference the removed DUCK_OPEN_PORT:\n%s", assets.DuckOpen)
 	}
 }
 
