@@ -131,7 +131,7 @@ func build() (*wiring, error) {
 	// on a CleanLeave outcome — the sole outcome that permits flow's existing
 	// fresh-untouched cleanup.
 	fl.SetInteractiveAttach(func(tmuxName string, _ bool) (bool, error) {
-		return runAttachLoop(sess, tmuxName, useTssh) == CleanLeave, nil
+		return runAttachLoop(sess, tmuxName, "", useTssh) == CleanLeave, nil
 	})
 	// Per-folder Claude history co-sync (ON by default): when on, a bare `duck`
 	// that mirrors a folder also co-syncs that folder's ~/.claude/projects/<slug>.

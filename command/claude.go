@@ -61,7 +61,7 @@ duck session inside another.`,
 			return err
 		}
 		// Hand off to the interactive attach (reconnect loop), same as bare `duck`.
-		runAttachLoop(w.sessions, id, w.tsshAttach)
+		runAttachLoop(w.sessions, id, "", w.tsshAttach)
 		return nil
 	},
 }

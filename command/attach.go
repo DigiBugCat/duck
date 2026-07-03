@@ -253,7 +253,14 @@ func productionRemember(tmuxName string) { _ = ttyMemSet(CurrentTTY(), tmuxName)
 // It runs the reconnect loop and, on a GaveUp, records the session per-terminal.
 // Returns the terminal Outcome. selfHealing is true for the tssh transport (tssh
 // roams on its own, so duck skips the ssh-255 backoff retry — see attachWithReconnect).
-func runAttachLoop(sessions SessionAttacher, tmuxName string, selfHealing bool) Outcome {
+// title labels the terminal tab for the duration of the attach; empty falls back
+// to the internal tmux name (callers that know the session's display name — the
+// picker — pass it, the direct-attach paths don't).
+func runAttachLoop(sessions SessionAttacher, tmuxName, title string, selfHealing bool) Outcome {
+	if title == "" {
+		title = tmuxName
+	}
+	setTerminalTitle(title)
 	// Wrap the whole interactive attach in the open-interceptor: while attached,
 	// the hub's open attempts route to this laptop. A no-op when the hook is unset
 	// (tests / no hub wired). It spans the reconnect loop so a transport drop and

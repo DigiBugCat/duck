@@ -47,16 +47,20 @@ func runResume(name string) error {
 	if name != "" {
 		// Direct attach by internal tmux name, through the reconnect loop so a
 		// transport drop reconnects and a ^c give-up is remembered per-terminal.
-		runAttachLoop(w.sessions, name, w.tsshAttach)
+		runAttachLoop(w.sessions, name, "", w.tsshAttach)
 		return nil
 	}
+
+	// Label the tab while the picker is up; the attach below re-labels it with
+	// the chosen session's name.
+	setTerminalTitle("duck")
 
 	// Names come from each session's live tmux pane title (Claude Code writes a
 	// task summary there), resolved for free with no codex call — so --resume does
 	// NOT force codex auto-naming. Codex stays the opt-in per-folder fallback
 	// (build wires cfg.AutoNameEnabled) for sessions with no useful pane title;
 	// ^n in the picker still generates one on demand.
-	chosen, doUpdate, err := tui.Run(w.app, cwdDir, updateCheck)
+	chosen, display, doUpdate, err := tui.Run(w.app, cwdDir, updateCheck)
 	if err != nil {
 		return err
 	}
@@ -69,7 +73,7 @@ func runResume(name string) error {
 		return nil // user quit without choosing
 	}
 	// The TUI has fully torn down; hand the process off to the reconnect loop.
-	runAttachLoop(w.sessions, chosen, w.tsshAttach)
+	runAttachLoop(w.sessions, chosen, display, w.tsshAttach)
 	return nil
 }
 

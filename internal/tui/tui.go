@@ -35,8 +35,10 @@ import (
 // Run launches the picker. checkUpdate is an optional background command (nil to
 // disable) that reports a newer release via UpdateAvailableMsg; when one is
 // available the picker shows a banner and ^u sets doUpdate so the caller can
-// self-update after teardown. Returns the chosen tmux name (or ""), and doUpdate.
-func Run(svc app.Service, cwdDir string, checkUpdate func() tea.Msg) (tmuxName string, doUpdate bool, err error) {
+// self-update after teardown. Returns the chosen tmux name (or ""), that
+// session's resolved display name (for the caller's terminal-tab title; may be
+// "" when unknown), and doUpdate.
+func Run(svc app.Service, cwdDir string, checkUpdate func() tea.Msg) (tmuxName, display string, doUpdate bool, err error) {
 	// Detect (and PIN) the terminal background ONCE, before bubbletea takes over
 	// stdin — same as flock/internal/tui. Otherwise lipgloss's AdaptiveColor
 	// detection probes the terminal (OSC 11) lazily during the render loop while
@@ -59,13 +61,27 @@ func Run(svc app.Service, cwdDir string, checkUpdate func() tea.Msg) (tmuxName s
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	fm, ok := final.(model)
 	if !ok {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return fm.selected, fm.doUpdate, nil
+	return fm.selected, fm.displayFor(fm.selected), fm.doUpdate, nil
+}
+
+// displayFor resolves a tmux name to its display name from the loaded rows;
+// "" when unknown (empty selection or the row is gone).
+func (m model) displayFor(tmuxName string) string {
+	if tmuxName == "" {
+		return ""
+	}
+	for _, r := range m.rows {
+		if r.TmuxName == tmuxName {
+			return r.Display
+		}
+	}
+	return ""
 }
 
 type loadState int

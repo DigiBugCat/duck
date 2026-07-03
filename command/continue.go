@@ -79,6 +79,6 @@ func runContinue() error {
 		hasSession: w.sessions.HasSession,
 		ensureDir:  func() (string, error) { return w.flow.EnsureSyncedGated(cwd) },
 		recent:     w.sessions.Recent,
-		attach:     func(name string) { runAttachLoop(w.sessions, name, w.tsshAttach) },
+		attach:     func(name string) { runAttachLoop(w.sessions, name, "", w.tsshAttach) },
 	})
 }
