@@ -23,11 +23,12 @@ func setTerminalTitle(title string) {
 	fmt.Fprintf(os.Stdout, "\x1b]0;%s\x07", sanitizeTitle(title))
 }
 
-// sanitizeTitle strips control characters (ESC, BEL, newlines, …) so a display
-// name can never smuggle a second escape sequence into the title write.
+// sanitizeTitle strips C0 (ESC, BEL, newlines, …), DEL, and C1 (CSI, ST, …)
+// control characters so a display name can never smuggle a second escape
+// sequence into the title write, even on terminals that honor C1 controls.
 func sanitizeTitle(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			return -1
 		}
 		return r

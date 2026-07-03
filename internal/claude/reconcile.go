@@ -33,7 +33,7 @@ type ReconcileOptions struct {
 // ReconcileResult summarizes a pass for logging.
 type ReconcileResult struct {
 	Scanned     int      // slug dirs that held at least one transcript
-	Mapped      int      // foreign slug dirs mapped onto a local target
+	Mapped      int      // distinct local projects that had transcripts mapped onto them
 	CopiedFiles int      // transcript files copied into a local slug dir
 	Registered  []string // local abs paths newly added to the registry
 }
@@ -90,12 +90,20 @@ func Reconcile(opt ReconcileOptions) (ReconcileResult, error) {
 			if !ok {
 				continue // not a fleet path — leave it alone
 			}
-			localAbs := opt.LocalHome + cwd[len(home):]
+			suffix := cwd[len(home):]
+			localAbs := opt.LocalHome + suffix
 			localSlug := Slug(localAbs)
 			if localSlug == e.Name() {
 				continue // already filed under this machine's slug — nothing to do
 			}
-			res.Mapped++
+			// Only re-file when the dir it sits in is some FLEET machine's slug for
+			// this same project — the cross-machine signature (started there, or
+			// resumed there and cwd rewritten). A local-cwd transcript under any
+			// other dir name (legacy slug scheme, hand-made dir) is not ours to
+			// re-file; leave it alone.
+			if !fleetSlugMatches(e.Name(), suffix, opt.Homes) {
+				continue
+			}
 			dst := filepath.Join(opt.Root, localSlug, f)
 			copied, err := copyIfAbsent(filepath.Join(srcDir, f), dst, opt.DryRun)
 			if err != nil {
@@ -106,6 +114,7 @@ func Reconcile(opt ReconcileOptions) (ReconcileResult, error) {
 			}
 			if !seen[localAbs] {
 				seen[localAbs] = true
+				res.Mapped++ // count distinct projects, not files ("N project(s) mapped")
 				toRegister = append(toRegister, localAbs)
 			}
 		}
@@ -137,6 +146,19 @@ func transcripts(dir string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// fleetSlugMatches reports whether dirName is the slug some fleet home derives
+// for the project suffix (e.g. "/Obsidian/aviary/kestrel") — i.e. the dir is a
+// recognized cross-machine filing of this project, safe to map onto the local
+// slug.
+func fleetSlugMatches(dirName, suffix string, homes []string) bool {
+	for _, h := range homes {
+		if h != "" && Slug(h+suffix) == dirName {
+			return true
+		}
+	}
+	return false
 }
 
 // homeOf returns the fleet home that contains cwd (segment-aware: cwd equals the

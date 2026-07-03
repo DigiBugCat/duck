@@ -178,3 +178,28 @@ func TestReconcileDryRunCopiesNothing(t *testing.T) {
 		t.Fatal("dry run actually wrote a file")
 	}
 }
+
+// Hardening: a transcript whose cwd is under a fleet home but which sits in a
+// dir that is NOT any fleet machine's slug for that project (legacy slug
+// scheme, hand-made dir) is not the cross-machine signature — it must be left
+// alone, not re-filed/registered.
+func TestReconcileLeavesNonFleetSlugDirsAlone(t *testing.T) {
+	root := t.TempDir()
+	localHome, otherHome := "/home/andrew", "/Users/andrew.sulistio"
+	// Local-cwd transcript filed under a dir name no fleet home's slug produces.
+	seedSession(t, root, "-some-legacy-slug", "s1", localHome+"/Obsidian/aviary/kestrel")
+
+	res, err := Reconcile(ReconcileOptions{
+		Root: root, LocalHome: localHome, Homes: []string{localHome, otherHome},
+		Register: func(p ...string) ([]string, error) { t.Fatal("must not register"); return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Mapped != 0 || res.CopiedFiles != 0 {
+		t.Fatalf("non-fleet slug dir must be left alone: %+v", res)
+	}
+	if exists(filepath.Join(root, "-home-andrew-Obsidian-aviary-kestrel")) {
+		t.Fatal("re-filed a transcript from a non-fleet slug dir")
+	}
+}

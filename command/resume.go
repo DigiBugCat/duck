@@ -62,14 +62,17 @@ func runResume(name string) error {
 	// ^n in the picker still generates one on demand.
 	chosen, display, doUpdate, err := tui.Run(w.app, cwdDir, updateCheck)
 	if err != nil {
+		setTerminalTitle("") // leaving without attaching: hand the tab back
 		return err
 	}
 	if doUpdate {
+		setTerminalTitle("")
 		// ^u in the picker: self-update now that the TUI has torn down (brew-free,
 		// pulls the binary from the GitHub release). The user re-runs duck after.
 		return selfUpdateNow()
 	}
 	if chosen == "" {
+		setTerminalTitle("")
 		return nil // user quit without choosing
 	}
 	// The TUI has fully torn down; hand the process off to the reconnect loop.
