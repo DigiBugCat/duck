@@ -29,12 +29,21 @@ const defaultBundle = "duck"
 // >60s sync is proven to complete (no old 60s cap) without wall-clock waiting.
 // progress is the visible sync-wait reporter (no-op by default).
 type realSyncer struct {
-	addr     string
-	progress Progress
-	monitor  func(name string) (mutagen.Session, error)
-	poll     time.Duration
-	failsafe time.Duration
+	addr string
+	// machineAddr, when non-empty, switches this syncer to HUB-OWNED mode: the
+	// hub's mutagen daemon owns the sessions (created/inspected via `duck
+	// hubsync ...` over SSH) and machineAddr is how the hub dials back to this
+	// machine. Empty keeps the classic laptop-owned mode.
+	machineAddr string
+	progress    Progress
+	monitor     func(name string) (mutagen.Session, error)
+	flush       func(name string) error
+	poll        time.Duration
+	failsafe    time.Duration
 }
+
+// hubOwned reports whether this syncer runs in hub-owned mode.
+func (s realSyncer) hubOwned() bool { return s.machineAddr != "" }
 
 // failsafeTimeout is the GENEROUS last-resort bound on the initial sync wait. It
 // replaces the old 60s cap, which could cut off a large first sync: a real sync
@@ -44,17 +53,45 @@ const failsafeTimeout = 30 * time.Minute
 // newRealSyncer builds the production realSyncer for hub addr with the live
 // mutagen.Monitor seam, a 500ms poll, and the 30-minute failsafe. progress is
 // the visible sync-wait reporter (caller passes the no-op when none is wired).
-func newRealSyncer(addr string, progress Progress) realSyncer {
+func newRealSyncer(addr, machineAddr string, progress Progress) realSyncer {
 	if progress == nil {
 		progress = nilProgress{}
 	}
-	return realSyncer{
-		addr:     addr,
-		progress: progress,
-		monitor:  mutagen.Monitor,
-		poll:     500 * time.Millisecond,
-		failsafe: failsafeTimeout,
+	s := realSyncer{
+		addr:        addr,
+		machineAddr: machineAddr,
+		progress:    progress,
+		monitor:     mutagen.Monitor,
+		flush:       mutagen.Flush,
+		poll:        500 * time.Millisecond,
+		failsafe:    failsafeTimeout,
 	}
+	if s.hubOwned() {
+		// The sessions live on the hub's daemon, so status/flush are remote:
+		// `duck hubsync ...` over SSH (multiplexed via the control master, so a
+		// 1s poll is one cheap channel open, not a new connection).
+		h := hub.New(addr)
+		s.monitor = func(name string) (mutagen.Session, error) {
+			out, err := h.Run("duck hubsync status --name " + paths.Quote(name))
+			if err != nil {
+				return mutagen.Session{}, err
+			}
+			return mutagen.Session{Name: name, Status: strings.TrimSpace(out)}, nil
+		}
+		s.flush = func(name string) error {
+			_, err := h.Run("duck hubsync flush --name " + paths.Quote(name))
+			return err
+		}
+		s.poll = time.Second
+	}
+	return s
+}
+
+// hubLedger lists the hub-owned sessions that belong to THIS machine in
+// laptop perspective (see actions.HubOwnedSessions, the shared fetcher behind
+// this and the `duck sync` commands).
+func (s realSyncer) hubLedger() ([]mutagen.Session, error) {
+	return actions.HubOwnedSessions(s.addr, s.machineAddr)
 }
 
 // IsSynced reports whether tildeDir is already covered by a running mutagen
@@ -74,6 +111,21 @@ func (s realSyncer) IsSynced(tildeDir string) (bool, error) {
 	local, err := paths.Expand(tildeDir)
 	if err != nil {
 		return false, err
+	}
+	if s.hubOwned() {
+		// The ledger is already scoped to this machine and mapped to laptop
+		// perspective, and hub-owned sessions live ON the current hub by
+		// construction — coverage is the only check left.
+		sessions, err := s.hubLedger()
+		if err != nil {
+			return false, err
+		}
+		for _, ms := range sessions {
+			if pathCoveredBy(local, ms.Alpha.Path) {
+				return true, nil
+			}
+		}
+		return false, nil
 	}
 	sessions, err := mutagen.List()
 	if err != nil {
@@ -114,6 +166,31 @@ func (s realSyncer) retireForeignHub(tildeDir string) error {
 	return nil
 }
 
+// retireLocalSessions terminates every LOCAL-daemon duck session whose alpha
+// is (or covers) the local expansion of tildeDir, regardless of which hub its
+// beta points at. Hub-owned mode's dual-daemon guard: once the hub's daemon
+// owns a directory, no local session may keep syncing it.
+func (s realSyncer) retireLocalSessions(tildeDir string) error {
+	local, err := paths.Expand(tildeDir)
+	if err != nil {
+		return err
+	}
+	sessions, err := mutagen.List()
+	if err != nil {
+		// No local daemon/mutagen at all is FINE in hub-owned mode — a thin
+		// client without mutagen installed has nothing to retire.
+		return nil
+	}
+	for _, ms := range sessions {
+		if pathCoveredBy(local, ms.Alpha.Path) || pathCoveredBy(ms.Alpha.Path, local) {
+			if err := mutagen.Terminate(ms.Name); err != nil {
+				return fmt.Errorf("retiring laptop-owned sync %s (hub now owns %s): %w", ms.Name, tildeDir, err)
+			}
+		}
+	}
+	return nil
+}
+
 // pathCoveredBy reports whether dir is the same as, or nested under, ancestor —
 // i.e. a mutagen session rooted at ancestor already keeps dir in sync. It is a
 // path-segment comparison (not a raw string prefix) so "/a/foobar" is NOT treated
@@ -126,18 +203,34 @@ func pathCoveredBy(dir, ancestor string) bool {
 }
 
 // CheckContainment lists the active duck Mutagen sessions and classifies
-// localAbs against their local (Alpha) paths via folder.CheckContainment.
+// localAbs against their local (Alpha) paths via folder.CheckContainment. In
+// hub-owned mode the ledger already presents sessions in laptop perspective
+// (Alpha = this machine's path), so the same classification applies.
 func (s realSyncer) CheckContainment(localAbs string) (folder.Containment, error) {
-	sessions, err := mutagen.List()
+	sessions, err := s.listOwned()
 	if err != nil {
 		return folder.Containment{}, err
 	}
 	return folder.CheckContainment(localAbs, sessions), nil
 }
 
+// listOwned returns this machine's duck sessions from whichever daemon owns
+// them: the hub ledger in hub-owned mode, the local daemon otherwise.
+func (s realSyncer) listOwned() ([]mutagen.Session, error) {
+	if s.hubOwned() {
+		return s.hubLedger()
+	}
+	return mutagen.List()
+}
+
 // Terminate stops and removes a Mutagen session by name; a missing session is
-// not an error (mutagen.Terminate already treats it as a no-op).
+// not an error. In hub-owned mode the session lives on the hub's daemon, so
+// the terminate runs there.
 func (s realSyncer) Terminate(sessionName string) error {
+	if s.hubOwned() {
+		_, err := hub.New(s.addr).Run("duck hubsync terminate --name " + paths.Quote(sessionName))
+		return err
+	}
 	return mutagen.Terminate(sessionName)
 }
 
@@ -202,11 +295,22 @@ func (s realSyncer) AddAndWait(tildeDir string, force bool) (err error) {
 			s.progress.Stop(false)
 		}
 	}()
-	// Self-heal a hub migration: if a stale session for this exact path still
-	// points at a previous hub, retire it first so the recreate below binds to the
-	// current hub instead of colliding with (or being masked by) the old one.
-	if err := s.retireForeignHub(tildeDir); err != nil {
-		return err
+	if s.hubOwned() {
+		// Dual-daemon guard: a leftover LAPTOP-owned session for this dir (any
+		// hub) must die before the hub-owned one starts, or two daemons sync
+		// the same directory and conflict-ping-pong. This is also the per-dir
+		// incremental migration: the first duck into a dir after enabling
+		// hub-owned sync retires the old local session and hands ownership over.
+		if err := s.retireLocalSessions(tildeDir); err != nil {
+			return err
+		}
+	} else {
+		// Self-heal a hub migration: if a stale session for this exact path still
+		// points at a previous hub, retire it first so the recreate below binds to the
+		// current hub instead of colliding with (or being masked by) the old one.
+		if err := s.retireForeignHub(tildeDir); err != nil {
+			return err
+		}
 	}
 	h := hub.New(s.addr)
 	exists, err := h.BundleExists(defaultBundle)
@@ -218,7 +322,12 @@ func (s realSyncer) AddAndWait(tildeDir string, force bool) (err error) {
 			return err
 		}
 	}
-	_, sessionName, err := actions.AddPath(s.addr, defaultBundle, tildeDir, force)
+	var sessionName string
+	if s.hubOwned() {
+		_, sessionName, err = actions.AddPathHubOwned(s.addr, s.machineAddr, defaultBundle, tildeDir, force)
+	} else {
+		_, sessionName, err = actions.AddPath(s.addr, defaultBundle, tildeDir, force)
+	}
 	if err != nil {
 		return err
 	}
@@ -240,7 +349,13 @@ func (s realSyncer) waitSteady(sessionName, tildeDir string) (err error) {
 	// on any error (flush failure, monitor error, failsafe).
 	defer func() { s.progress.Stop(err == nil) }()
 
-	if ferr := mutagen.Flush(sessionName); ferr != nil {
+	flush := s.flush
+	if flush == nil {
+		// A directly-constructed realSyncer (unit tests) may leave the seam
+		// unset; production always wires it in newRealSyncer.
+		flush = mutagen.Flush
+	}
+	if ferr := flush(sessionName); ferr != nil {
 		return fmt.Errorf("flushing initial sync: %w", ferr)
 	}
 	deadline := time.Now().Add(s.failsafe)

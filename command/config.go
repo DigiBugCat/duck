@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/DigiBugCat/duck/internal/config"
+	"github.com/DigiBugCat/duck/internal/hub"
 )
 
 var configCmd = &cobra.Command{
@@ -51,6 +52,13 @@ var configCmd = &cobra.Command{
 		}
 		fmt.Fprintf(tw, "claude history sync\t%s  (duck config claude-sync on|off)\n", claudeSync)
 		fmt.Fprintf(tw, "attach transport\t%s  (duck config attach-transport auto|ssh|tssh)\n", cfg.Transport())
+		machineAddr := cfg.MachineAddr
+		if machineAddr == "" {
+			machineAddr = "(unset — sync sessions are laptop-owned)"
+		} else {
+			machineAddr += "  (hub-owned sync)"
+		}
+		fmt.Fprintf(tw, "machine addr\t%s  (duck config machine-addr <user@host>|off)\n", machineAddr)
 		autoUpdate := "on"
 		if !cfg.AutoUpdateEnabled() {
 			autoUpdate = "off"
@@ -116,6 +124,61 @@ var configEditCmd = &cobra.Command{
 		ed.Stdin, ed.Stdout, ed.Stderr = os.Stdin, os.Stdout, os.Stderr
 		return ed.Run()
 	},
+}
+
+// configMachineAddrCmd sets (or clears, with "off") this machine's dial-back
+// address — how the HUB reaches this laptop over SSH. Setting it is the opt-in
+// to hub-owned sync sessions (the hub's mutagen daemon owning this machine's
+// sessions instead of a local one). After saving, it best-effort probes the
+// reverse path by asking the hub to `ssh <addr> true`: a failed probe only
+// warns (the user may not have copied keys yet), but a passing one confirms
+// hub-owned sync will actually work.
+var configMachineAddrCmd = &cobra.Command{
+	Use:   "machine-addr <user@host|off>",
+	Short: "Set how the hub dials back to this machine (enables hub-owned sync)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(c *cobra.Command, args []string) error {
+		cfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		if args[0] == "off" {
+			cfg.MachineAddr = ""
+			if err := config.Save(cfg); err != nil {
+				return err
+			}
+			fmt.Fprintln(c.OutOrStdout(), "machine address cleared: sync sessions stay laptop-owned.")
+			return nil
+		}
+		addr := args[0]
+		if err := hub.ValidateAddr(addr); err != nil {
+			return err
+		}
+		cfg.MachineAddr = addr
+		if err := config.Save(cfg); err != nil {
+			return err
+		}
+		fmt.Fprintf(c.OutOrStdout(), "machine address set: %s (hub-owned sync enabled)\n", addr)
+		if cfg.Hub == "" {
+			fmt.Fprintln(c.OutOrStdout(), "  note: no hub configured yet; the dial-back probe was skipped.")
+			return nil
+		}
+		if _, err := hub.New(cfg.Hub).Run(dialBackProbeCmd(addr)); err != nil {
+			fmt.Fprintf(c.OutOrStdout(), "  warning: the hub could not reach %s over SSH (%v).\n", addr, err)
+			fmt.Fprintln(c.OutOrStdout(), "  hub-owned sessions need key-based SSH from the hub to this machine — copy the hub's key here (ssh-copy-id from the hub) and re-run this command to re-probe.")
+		} else {
+			fmt.Fprintf(c.OutOrStdout(), "  verified: the hub can reach %s.\n", addr)
+		}
+		return nil
+	},
+}
+
+// dialBackProbeCmd is the remote command the HUB runs to prove it can SSH back
+// to the laptop non-interactively. BatchMode keeps a missing key from hanging
+// on a password prompt; the short timeout keeps `duck config machine-addr`
+// snappy when the laptop address is wrong.
+func dialBackProbeCmd(addr string) string {
+	return fmt.Sprintf("ssh -o BatchMode=yes -o ConnectTimeout=5 %s true", addr)
 }
 
 // configClaudeSyncCmd toggles the per-folder Claude history co-sync. It is a
@@ -252,7 +315,7 @@ var configAttachTransportCmd = &cobra.Command{
 }
 
 func init() {
-	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd, configAttachTransportCmd, configAutoUpdateCmd)
+	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd, configAttachTransportCmd, configAutoUpdateCmd, configMachineAddrCmd)
 }
 
 func sortedKeys(m map[string]string) []string {

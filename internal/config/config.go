@@ -39,6 +39,16 @@ type Config struct {
 	// token/secret: auth is whatever SSH access already reaches that host.
 	AnchorHost string `toml:"anchor_host,omitempty"`
 
+	// MachineAddr is how the HUB dials back to THIS machine (user@host — for
+	// most fleets a tailscale/wireguard name, since a laptop's LAN address
+	// moves). It is the prerequisite for hub-owned sync sessions: when set, the
+	// hub's mutagen daemon owns this machine's sessions (alpha = hub path,
+	// beta = ssh://MachineAddr/path) instead of a laptop-local daemon — one
+	// daemon, one spec, no per-client drift. Empty means hub-owned sync is off
+	// for this machine and sessions stay laptop-owned. Laptop-side only, never
+	// anchor-shared: each machine's dial-back address is its own.
+	MachineAddr string `toml:"machine_addr,omitempty"`
+
 	// CodexModel selects the laptop-side codex model used for auto-naming
 	// (DESIGN §5). Empty falls back to the built-in default in command/wiring.go.
 	CodexModel string `toml:"codex_model,omitempty"`

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DigiBugCat/duck/internal/hub"
 	"github.com/DigiBugCat/duck/internal/mutagen"
@@ -132,6 +133,131 @@ func AddPath(addr, bundle, rawLocalPath string, force bool, ignores ...string) (
 	return entry, sessionName, nil
 }
 
+// AddPathHubOwned is AddPath for HUB-OWNED sync: the hub-side registry
+// bookkeeping (and its rollback) is identical, but instead of creating a
+// session on the local mutagen daemon it asks the duck binary on the hub
+// (`duck hubsync add`, installed by `duck hub setup`) to create it on the
+// HUB's daemon — alpha the hub-local path, beta this machine at machineAddr.
+// The hub-side data location is the same natural location AddPath uses, so a
+// folder migrated between ownership modes lands in the same place. The
+// session name embeds the machine (paths.HubSessionName) so two laptops
+// syncing the same tilde path never collide on the hub's daemon.
+func AddPathHubOwned(addr, machineAddr, bundle, rawLocalPath string, force bool, ignores ...string) (hub.PathEntry, string, error) {
+	if err := hub.ValidateBundleName(bundle); err != nil {
+		return hub.PathEntry{}, "", err
+	}
+
+	expanded, err := paths.Expand(rawLocalPath)
+	if err != nil {
+		return hub.PathEntry{}, "", err
+	}
+	expanded, err = filepath.Abs(expanded)
+	if err != nil {
+		return hub.PathEntry{}, "", err
+	}
+	info, err := os.Stat(expanded)
+	if err != nil {
+		return hub.PathEntry{}, "", fmt.Errorf("local path: %w", err)
+	}
+	if !info.IsDir() {
+		return hub.PathEntry{}, "", fmt.Errorf("only directory paths are supported (got %s)", expanded)
+	}
+	tildePath := paths.Contract(expanded)
+	if err := hub.ValidatePath(tildePath); err != nil {
+		return hub.PathEntry{}, "", err
+	}
+
+	h := hub.New(addr)
+	exists, err := h.BundleExists(bundle)
+	if err != nil {
+		return hub.PathEntry{}, "", err
+	}
+	if !exists {
+		return hub.PathEntry{}, "", fmt.Errorf("bundle %q does not exist on hub. run: duck sync new %s", bundle, bundle)
+	}
+
+	if !force {
+		nonEmpty, err := h.RemoteDirNonEmpty(tildePath)
+		if err != nil {
+			return hub.PathEntry{}, "", err
+		}
+		if nonEmpty {
+			return hub.PathEntry{}, "", ErrHubNonEmpty{Path: tildePath}
+		}
+	}
+
+	entry, err := h.AddPath(bundle, tildePath)
+	if err != nil {
+		return hub.PathEntry{}, "", err
+	}
+
+	sessionName := paths.HubSessionName(bundle, tildePath, machineAddr)
+	if _, err := h.Run(HubsyncAddCmd(sessionName, tildePath, machineAddr, expanded, ignores)); err != nil {
+		// Best-effort rollback so the hub doesn't accumulate orphaned records.
+		_ = h.RemovePath(bundle, tildePath)
+		return hub.PathEntry{}, "", fmt.Errorf("starting hub-owned mutagen session: %w", err)
+	}
+	return entry, sessionName, nil
+}
+
+// HubsyncAddCmd builds the remote `duck hubsync add` invocation. Every
+// user-influenced value is single-quoted (paths.Quote) — the string runs under
+// the hub's login shell.
+func HubsyncAddCmd(sessionName, tildePath, machineAddr, localAbs string, ignores []string) string {
+	cmd := fmt.Sprintf("duck hubsync add --name %s --hub-path %s --peer %s --peer-path %s",
+		paths.Quote(sessionName), paths.Quote(tildePath), paths.Quote(machineAddr), paths.Quote(localAbs))
+	for _, ig := range ignores {
+		cmd += " --ignore " + paths.Quote(ig)
+	}
+	return cmd
+}
+
+// HubOwnedSessions lists the HUB-owned sessions that belong to the machine at
+// machineAddr, mapped into that machine's perspective: each returned session
+// carries the MACHINE-local path in Alpha (mirroring what a laptop-owned
+// mutagen.List entry looks like, so coverage/containment/status code works
+// unchanged on either ownership mode) and the true hub-side session name in
+// Name. Beta holds the peer identity and the HUB path. Sessions for other
+// machines are filtered out — every caller only ever cares about its own.
+func HubOwnedSessions(addr, machineAddr string) ([]mutagen.Session, error) {
+	out, err := hub.New(addr).Run("duck hubsync list")
+	if err != nil {
+		return nil, err
+	}
+	user, host := "", machineAddr
+	if at := strings.LastIndex(machineAddr, "@"); at >= 0 {
+		user, host = machineAddr[:at], machineAddr[at+1:]
+	}
+	var sessions []mutagen.Session
+	for _, line := range strings.Split(out, "\n") {
+		// name|status|alphaDisplay|betaDisplay|spec, beta as user@host:path.
+		fields := strings.Split(strings.TrimSpace(line), "|")
+		if len(fields) < 5 {
+			continue
+		}
+		beta := fields[3]
+		colon := strings.Index(beta, ":")
+		if colon < 0 {
+			continue // local beta — not a hub-owned duck session
+		}
+		peer, peerPath := beta[:colon], beta[colon+1:]
+		peerUser, peerHost := "", peer
+		if at := strings.LastIndex(peer, "@"); at >= 0 {
+			peerUser, peerHost = peer[:at], peer[at+1:]
+		}
+		if peerHost != host || (user != "" && peerUser != "" && peerUser != user) {
+			continue
+		}
+		sessions = append(sessions, mutagen.Session{
+			Name:   fields[0],
+			Status: fields[1],
+			Alpha:  mutagen.Endpoint{Protocol: "Local", Path: peerPath},
+			Beta:   mutagen.Endpoint{Protocol: "SSH", User: peerUser, Host: peerHost, Path: fields[2]},
+		})
+	}
+	return sessions, nil
+}
+
 // RemovePath removes a path from a bundle on the hub and terminates this
 // machine's sync session for it. The local files are not deleted. The local
 // session is torn down first (best-effort) so a hub-side removal failure leaves
@@ -213,6 +339,99 @@ func SyncPath(addr, bundle string, e hub.PathEntry, force bool) (SyncStatus, err
 		return SyncCreated, fmt.Errorf("syncing %s: %w", e.TildePath, err)
 	}
 	return SyncCreated, nil
+}
+
+// GetBundleHubOwned is GetBundle for hub-owned sync: every created session
+// lives on the HUB's daemon (beta = this machine at machineAddr).
+func GetBundleHubOwned(addr, machineAddr, bundle string, force bool) ([]SyncResult, error) {
+	if err := hub.ValidateBundleName(bundle); err != nil {
+		return nil, err
+	}
+	h := hub.New(addr)
+	exists, err := h.BundleExists(bundle)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("bundle %q does not exist on hub", bundle)
+	}
+	entries, err := h.ListPaths(bundle)
+	if err != nil {
+		return nil, err
+	}
+	// One ledger fetch up front (not per path): it is an SSH round-trip.
+	owned, err := HubOwnedSessions(addr, machineAddr)
+	if err != nil {
+		return nil, err
+	}
+	have := make(map[string]bool, len(owned))
+	for _, s := range owned {
+		have[s.Name] = true
+	}
+	results := make([]SyncResult, 0, len(entries))
+	for _, e := range entries {
+		sessionName := paths.HubSessionName(bundle, e.TildePath, machineAddr)
+		if have[sessionName] {
+			results = append(results, SyncResult{Tilde: e.TildePath, Session: sessionName, Status: SyncAlready})
+			continue
+		}
+		if err := syncPathHubOwned(addr, machineAddr, sessionName, e.TildePath, force); err != nil {
+			return results, err
+		}
+		results = append(results, SyncResult{Tilde: e.TildePath, Session: sessionName, Status: SyncCreated})
+	}
+	return results, nil
+}
+
+// syncPathHubOwned mirrors SyncPath's local-side guards (non-empty refusal,
+// mkdir) and then creates the session on the hub's daemon. The hub-side `add`
+// is declarative, so re-running it against an existing matching session is a
+// cheap no-op — callers pre-check the ledger only to report Already correctly.
+func syncPathHubOwned(addr, machineAddr, sessionName, tildePath string, force bool) error {
+	local, err := paths.Expand(tildePath)
+	if err != nil {
+		return err
+	}
+	empty, err := paths.IsEmptyDir(local)
+	if err != nil {
+		return err
+	}
+	if !empty && !force {
+		return ErrLocalNonEmpty{Local: local}
+	}
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		return err
+	}
+	if _, err := hub.New(addr).Run(HubsyncAddCmd(sessionName, tildePath, machineAddr, local, nil)); err != nil {
+		return fmt.Errorf("syncing %s: %w", tildePath, err)
+	}
+	return nil
+}
+
+// RemovePathHubOwned is RemovePath for hub-owned sync: this machine's session
+// lives on the hub's daemon, so the terminate runs there (before the registry
+// removal, mirroring RemovePath's ordering).
+func RemovePathHubOwned(addr, machineAddr, bundle, tildePath string) (warn string, err error) {
+	if err := hub.ValidateBundleName(bundle); err != nil {
+		return "", err
+	}
+	h := hub.New(addr)
+	if _, terr := h.Run(hubsyncTerminateCmd(paths.HubSessionName(bundle, tildePath, machineAddr))); terr != nil {
+		warn = fmt.Sprintf("terminating hub-owned session: %v", terr)
+	}
+	return warn, h.RemovePath(bundle, tildePath)
+}
+
+// DropPathHubOwned terminates this machine's HUB-owned session for a single
+// path (a missing session is a no-op on the hub side).
+func DropPathHubOwned(addr, machineAddr, bundle, tildePath string) error {
+	_, err := hub.New(addr).Run(hubsyncTerminateCmd(paths.HubSessionName(bundle, tildePath, machineAddr)))
+	return err
+}
+
+// hubsyncTerminateCmd builds the remote `duck hubsync terminate` invocation.
+func hubsyncTerminateCmd(sessionName string) string {
+	return "duck hubsync terminate --name " + paths.Quote(sessionName)
 }
 
 // DropPath terminates this machine's Mutagen session for a single path.

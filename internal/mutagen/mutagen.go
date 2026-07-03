@@ -17,6 +17,8 @@ package mutagen
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -40,11 +42,23 @@ var DefaultIgnores = []string{
 	".vscode",
 }
 
+// SpecLabelKey is the mutagen session label under which duck records the
+// fingerprint of the session's creation-time spec (endpoints + ignores + mode).
+// Mutagen bakes configuration in at `sync create`, so without this a session
+// created under an older DefaultIgnores silently diverges from a fresh one
+// forever. The label lets a declarative caller (hub-owned sync) compare a
+// running session against the CURRENT spec and recreate it only when they
+// differ.
+const SpecLabelKey = "duck-spec"
+
 // listTemplate is a pipe-delimited per-session template. The order of fields
 // here is the public contract between Mutagen and our parser.
-// Fields: name | status | alpha-spec | beta-spec
-// where each spec is "<protocol>|<user>|<host>|<path>".
-const listTemplate = `{{range .}}{{.Name}}|{{.Status}}|{{.Alpha.Protocol}}|{{.Alpha.User}}|{{.Alpha.Host}}|{{.Alpha.Path}}|{{.Beta.Protocol}}|{{.Beta.User}}|{{.Beta.Host}}|{{.Beta.Path}}` + "\n" + `{{end}}`
+// Fields: name | status | alpha-spec | beta-spec | spec-label
+// where each spec is "<protocol>|<user>|<host>|<path>". The spec-label field is
+// the duck-spec label value (empty for sessions created before labeling); the
+// parser tolerates its absence so output from an older mutagen/duck still
+// parses.
+const listTemplate = `{{range .}}{{.Name}}|{{.Status}}|{{.Alpha.Protocol}}|{{.Alpha.User}}|{{.Alpha.Host}}|{{.Alpha.Path}}|{{.Beta.Protocol}}|{{.Beta.User}}|{{.Beta.Host}}|{{.Beta.Path}}|{{index .Labels "` + SpecLabelKey + `"}}` + "\n" + `{{end}}`
 
 // Session is a minimal view of a Mutagen sync session.
 type Session struct {
@@ -52,6 +66,9 @@ type Session struct {
 	Status string
 	Alpha  Endpoint
 	Beta   Endpoint
+	// Spec is the duck-spec label recorded at creation (see SpecLabelKey);
+	// empty for pre-labeling sessions.
+	Spec string
 }
 
 // Endpoint describes one side of a sync session.
@@ -137,12 +154,29 @@ func Create(name, alpha, beta string, extraIgnores []string) error {
 		"sync", "create",
 		"--name", name,
 		"-m", "two-way-resolved",
+		"--label", SpecLabelKey + "=" + SpecFingerprint(alpha, beta, extraIgnores),
 	}
 	for _, ig := range append(append([]string{}, DefaultIgnores...), extraIgnores...) {
 		args = append(args, "--ignore", ig)
 	}
 	args = append(args, alpha, beta)
 	return runVar(args...)
+}
+
+// SpecFingerprint hashes everything that determines a session's behavior and
+// is FROZEN at `sync create` time: endpoints, mode, and the full effective
+// ignore list (DefaultIgnores + extras). Any change to these — a new default
+// ignore shipped in a duck release, a hub move, a mode change — yields a new
+// fingerprint, which is how a declarative caller detects that a running
+// session no longer matches the current spec.
+func SpecFingerprint(alpha, beta string, extraIgnores []string) string {
+	h := sha256.New()
+	for _, part := range append([]string{"two-way-resolved", alpha, beta},
+		append(append([]string{}, DefaultIgnores...), extraIgnores...)...) {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:6])
 }
 
 // Terminate stops and removes a sync session by name. Missing sessions are not an error.
@@ -221,12 +255,16 @@ func all() ([]Session, error) {
 		if len(fields) < 10 {
 			continue
 		}
-		sessions = append(sessions, Session{
+		s := Session{
 			Name:   fields[0],
 			Status: fields[1],
 			Alpha:  Endpoint{Protocol: fields[2], User: fields[3], Host: fields[4], Path: fields[5]},
 			Beta:   Endpoint{Protocol: fields[6], User: fields[7], Host: fields[8], Path: fields[9]},
-		})
+		}
+		if len(fields) > 10 {
+			s.Spec = fields[10]
+		}
+		sessions = append(sessions, s)
 	}
 	return sessions, nil
 }

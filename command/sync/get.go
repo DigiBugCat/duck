@@ -33,7 +33,13 @@ two-way merge in which this machine wins conflicts.`,
 			return err
 		}
 
-		results, err := actions.GetBundle(cfg.Hub, name, force)
+		var results []actions.SyncResult
+		if cfg.MachineAddr != "" {
+			// Hub-owned mode: sessions are created on the hub's daemon.
+			results, err = actions.GetBundleHubOwned(cfg.Hub, cfg.MachineAddr, name, force)
+		} else {
+			results, err = actions.GetBundle(cfg.Hub, name, force)
+		}
 		// Print whatever succeeded before reporting any error, mirroring the
 		// previous incremental output.
 		for _, r := range results {

@@ -64,6 +64,15 @@ func SessionName(bundle, tildePath string) string {
 	return fmt.Sprintf("duck-%s-%s", bundle, ID(tildePath))
 }
 
+// HubSessionName returns the session name for a HUB-OWNED sync of a
+// bundle/path pair to one machine. Unlike SessionName (whose sessions live on
+// each laptop's own daemon, so the same name on two laptops never meets), all
+// hub-owned sessions share the hub's single daemon — the machine suffix is
+// what keeps two laptops syncing the same tilde path from colliding.
+func HubSessionName(bundle, tildePath, machineAddr string) string {
+	return fmt.Sprintf("%s-%s", SessionName(bundle, tildePath), ID(machineAddr)[:6])
+}
+
 // NOTE: Claude Code corpus paths (the ~/.claude/projects slug rule, ProjectsRoot,
 // ProjectDir) moved to internal/claude, the dedicated module that owns duck's
 // knowledge of Claude's on-disk state.

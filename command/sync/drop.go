@@ -48,7 +48,13 @@ by more than one bundle, the mirror is stopped in each of them.`,
 
 		var dropped int
 		for _, bundle := range bundles {
-			if err := actions.DropPath(cfg.Hub, bundle, tildePath); err != nil {
+			// Hub-owned mode: this machine's session lives on the hub's daemon.
+			drop := func() error { return actions.DropPath(cfg.Hub, bundle, tildePath) }
+			if cfg.MachineAddr != "" {
+				b := bundle
+				drop = func() error { return actions.DropPathHubOwned(cfg.Hub, cfg.MachineAddr, b, tildePath) }
+			}
+			if err := drop(); err != nil {
 				fmt.Printf("warning: %s in %s: %v\n", tildePath, bundle, err)
 				continue
 			}

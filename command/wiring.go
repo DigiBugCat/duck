@@ -120,7 +120,7 @@ func build() (*wiring, error) {
 	sess := session.NewManager(client, client)
 	store := names.NewStore(client)
 	nm := namer.NewCodexExec(client, codexLocal{}, model)
-	fl := flow.New(cfg.Hub, sess, store, ttyPrompter{}, newTTYProgress())
+	fl := flow.New(cfg.Hub, cfg.MachineAddr, sess, store, ttyPrompter{}, newTTYProgress())
 	// Running ON the hub: skip the sync-awareness gate entirely (mirroring a folder
 	// to the machine it already lives on is a no-op), so bare `duck` opens a local
 	// session in cwd without prompting to sync. Same hostname match as client.Local.

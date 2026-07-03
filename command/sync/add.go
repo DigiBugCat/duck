@@ -34,7 +34,16 @@ so it can be replayed on machines with a different home directory.`,
 			return err
 		}
 
-		entry, sessionName, err := actions.AddPath(cfg.Hub, name, rawPath, force, ignores...)
+		// Hub-owned mode: the session must live on the hub's daemon, or this
+		// command would quietly reintroduce the laptop-owned drift the mode
+		// exists to eliminate (and set up a two-daemons-one-dir fight).
+		var entry hub.PathEntry
+		var sessionName string
+		if cfg.MachineAddr != "" {
+			entry, sessionName, err = actions.AddPathHubOwned(cfg.Hub, cfg.MachineAddr, name, rawPath, force, ignores...)
+		} else {
+			entry, sessionName, err = actions.AddPath(cfg.Hub, name, rawPath, force, ignores...)
+		}
 		if err != nil {
 			return err
 		}

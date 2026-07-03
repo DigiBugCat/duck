@@ -32,7 +32,13 @@ The local files on this machine are NOT deleted; only the sync is stopped.`,
 		if err != nil {
 			return err
 		}
-		warn, err := actions.RemovePath(cfg.Hub, name, tildePath)
+		var warn string
+		if cfg.MachineAddr != "" {
+			// Hub-owned mode: this machine's session lives on the hub's daemon.
+			warn, err = actions.RemovePathHubOwned(cfg.Hub, cfg.MachineAddr, name, tildePath)
+		} else {
+			warn, err = actions.RemovePath(cfg.Hub, name, tildePath)
+		}
 		if warn != "" {
 			fmt.Printf("warning: %s\n", warn)
 		}

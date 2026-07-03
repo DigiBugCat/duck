@@ -274,7 +274,9 @@ func (classifyFunc) IsRisky(localAbs string) (bool, string) {
 // progress is treated as the no-op reporter. NewWithDeps (used by the
 // decision-tree unit tests) injects a Syncer wholesale and so builds no
 // realSyncer — progress is a realSyncer concern only, so it is a New param.
-func New(addr string, sessions *session.Manager, store *names.Store, prompter Prompter, progress Progress) *Flow {
+// machineAddr, when non-empty, switches the syncer to hub-owned sessions (see
+// realSyncer.machineAddr); pass cfg.MachineAddr.
+func New(addr, machineAddr string, sessions *session.Manager, store *names.Store, prompter Prompter, progress Progress) *Flow {
 	if progress == nil {
 		progress = nilProgress{}
 	}
@@ -282,7 +284,7 @@ func New(addr string, sessions *session.Manager, store *names.Store, prompter Pr
 		addr:       addr,
 		sessions:   sessions,
 		names:      store,
-		sync:       newRealSyncer(addr, progress),
+		sync:       newRealSyncer(addr, machineAddr, progress),
 		policy:     folder.NewStore(),
 		classifier: classifyFunc{},
 		prompter:   prompter,

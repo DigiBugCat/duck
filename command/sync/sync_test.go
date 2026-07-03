@@ -9,7 +9,7 @@ func TestSubcommandsRegisterOnSyncCmd(t *testing.T) {
 	want := map[string]bool{
 		"new": true, "add": true, "get": true, "ls": true,
 		"rm": true, "drop": true, "show": true, "status": true,
-		"prune": true,
+		"prune": true, "migrate": true,
 	}
 	got := map[string]bool{}
 	for _, c := range syncCmd.Commands() {
