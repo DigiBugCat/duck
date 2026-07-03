@@ -73,34 +73,41 @@ func Reconcile(opt ReconcileOptions) (ReconcileResult, error) {
 		}
 		res.Scanned++
 
-		cwd := firstCwd(srcDir, files)
-		if cwd == "" {
-			continue // can't tell where it ran — leave it alone
-		}
-		home, ok := homeOf(cwd, opt.Homes)
-		if !ok || home == opt.LocalHome {
-			continue // not a fleet path, or already this machine's — nothing to map
-		}
-		localAbs := opt.LocalHome + cwd[len(home):]
-		localSlug := Slug(localAbs)
-		if localSlug == e.Name() {
-			continue // maps to itself (defensive) — already local
-		}
-		res.Mapped++
-		dstDir := filepath.Join(opt.Root, localSlug)
-
+		// Route each transcript by ITS OWN cwd, not one representative cwd for the
+		// whole dir. A slug dir can hold a MIX of cwds — Claude Code resumed
+		// cross-machine rewrites the transcript's cwd to the resuming host while
+		// leaving the file under its original-host slug — so a single foreign-named
+		// dir may contain both foreign and already-local sessions. Per-file routing
+		// re-files each one under the correct local slug and, critically, stops one
+		// already-local file from making the whole dir look "already ours" and get
+		// skipped (the bug that stranded cross-machine-resumed transcripts).
 		for _, f := range files {
-			copied, err := copyIfAbsent(filepath.Join(srcDir, f), filepath.Join(dstDir, f), opt.DryRun)
+			cwd := scanCwd(filepath.Join(srcDir, f))
+			if cwd == "" {
+				continue // can't tell where it ran — leave it alone
+			}
+			home, ok := homeOf(cwd, opt.Homes)
+			if !ok {
+				continue // not a fleet path — leave it alone
+			}
+			localAbs := opt.LocalHome + cwd[len(home):]
+			localSlug := Slug(localAbs)
+			if localSlug == e.Name() {
+				continue // already filed under this machine's slug — nothing to do
+			}
+			res.Mapped++
+			dst := filepath.Join(opt.Root, localSlug, f)
+			copied, err := copyIfAbsent(filepath.Join(srcDir, f), dst, opt.DryRun)
 			if err != nil {
 				return res, err
 			}
 			if copied {
 				res.CopiedFiles++
 			}
-		}
-		if !seen[localAbs] {
-			seen[localAbs] = true
-			toRegister = append(toRegister, localAbs)
+			if !seen[localAbs] {
+				seen[localAbs] = true
+				toRegister = append(toRegister, localAbs)
+			}
 		}
 	}
 
@@ -130,19 +137,6 @@ func transcripts(dir string) ([]string, error) {
 		}
 	}
 	return out, nil
-}
-
-// firstCwd returns the first non-empty "cwd" field found across dir's transcript
-// files (all sessions in one slug dir share the same cwd, so the first hit is
-// representative). files are the *.jsonl basenames in dir. A file with no cwd is
-// skipped; "" means none of them recorded one.
-func firstCwd(dir string, files []string) string {
-	for _, f := range files {
-		if cwd := scanCwd(filepath.Join(dir, f)); cwd != "" {
-			return cwd
-		}
-	}
-	return ""
 }
 
 // homeOf returns the fleet home that contains cwd (segment-aware: cwd equals the

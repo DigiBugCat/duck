@@ -117,6 +117,51 @@ func TestReconcileLeavesNativeAndUnknownDirsAlone(t *testing.T) {
 	}
 }
 
+// Regression: a foreign-NAMED slug dir can hold a MIX of cwds because Claude
+// Code, when a session is resumed on another machine, rewrites the transcript's
+// cwd to the resuming host but leaves the file under the original host's slug.
+// The old per-dir logic read one representative cwd; if that happened to be the
+// already-local one, the WHOLE dir was skipped and the genuinely-foreign
+// sessions in it were stranded (invisible to `claude --resume`). Per-file
+// routing must re-file every session by its own cwd.
+func TestReconcileRoutesMixedCwdDirPerFile(t *testing.T) {
+	root := t.TempDir()
+	localHome, otherHome := "/home/andrew", "/Users/andrew.sulistio"
+	// A dir NAMED for the Mac slug, but holding two sessions:
+	//   - one whose cwd is already local (a cross-machine-resumed session), and
+	//   - one whose cwd is still the Mac path (a genuinely-foreign session).
+	dir := "-Users-andrew-sulistio-Obsidian-aviary-kestrel"
+	seedSession(t, root, dir, "local-sess", localHome+"/Obsidian/aviary/kestrel")
+	seedSession(t, root, dir, "mac-sess", otherHome+"/Obsidian/aviary/kestrel")
+
+	var registered []string
+	res, err := Reconcile(ReconcileOptions{
+		Root: root, LocalHome: localHome, Homes: []string{localHome, otherHome},
+		Register: func(p ...string) ([]string, error) { registered = append(registered, p...); return p, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both sessions must now be resumable under the LOCAL slug.
+	localDir := filepath.Join(root, "-home-andrew-Obsidian-aviary-kestrel")
+	if !exists(filepath.Join(localDir, "local-sess.jsonl")) {
+		t.Fatal("already-local session not re-filed under the local slug (stranded)")
+	}
+	if !exists(filepath.Join(localDir, "mac-sess.jsonl")) {
+		t.Fatal("foreign session in a mixed dir not mapped onto the local slug")
+	}
+	// Originals untouched (non-destructive).
+	if !exists(filepath.Join(root, dir, "mac-sess.jsonl")) {
+		t.Fatal("original removed — must be non-destructive")
+	}
+	if len(registered) != 1 || registered[0] != localHome+"/Obsidian/aviary/kestrel" {
+		t.Fatalf("registered = %v, want the local kestrel path once", registered)
+	}
+	if res.CopiedFiles != 2 {
+		t.Fatalf("want 2 files re-filed, got %+v", res)
+	}
+}
+
 func TestReconcileDryRunCopiesNothing(t *testing.T) {
 	root := t.TempDir()
 	macHome, hubHome := "/Users/andrew.sulistio", "/home/andrew"
