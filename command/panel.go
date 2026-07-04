@@ -54,8 +54,10 @@ inside a tmux (duck) session.`,
 			return err
 		}
 		// The workspace's standing furniture: an immortal scratch buffer,
-		// parked until selected (roster: buffers tab, or the e key).
+		// parked until selected.
 		panel.EnsureScratch(run, outer)
+		// Geometry is asserted, never assumed: converge any mangled layout.
+		panel.Heal(run, outer)
 		return nil
 	},
 }

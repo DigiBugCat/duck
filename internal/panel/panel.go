@@ -621,3 +621,39 @@ func EnsureSlot(run Runner, outer string) {
 	_, _ = run("set-option", "-p", "-t", hid, NameOption, "terminal")
 	_, _ = run("set-option", "-p", "-t", hid, kindOption, KindShell)
 }
+
+// Heal re-asserts the canonical panel geometry — main pane(s) left, a
+// full-height 34% sidebar column on the right holding the viewport over a
+// 10-row roster — by MOVING the existing panes (join-pane repositions
+// without touching processes). Pane surgery, resizes, and mishaps mangle
+// layouts; heal makes the workspace self-asserting: every `duck panel`
+// (and thus every attach) converges the geometry instead of trusting it.
+func Heal(run Runner, outer string) {
+	roles, err := Panes(run, outer)
+	if err != nil || roles["viewport"] == "" || roles["list"] == "" {
+		return // Open owns creation; heal only repositions complete panels
+	}
+	// Reference: the first pane in the current window that is NOT panel
+	// furniture — the user's main pane.
+	out, err := run("list-panes", "-t", outer+":", "-F", "#{pane_id}\t#{"+roleOption+"}")
+	if err != nil {
+		return
+	}
+	main := ""
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.SplitN(line, "\t", 2)
+		if len(f) == 2 && strings.TrimSpace(f[1]) == "" {
+			main = f[0]
+			break
+		}
+	}
+	if main == "" {
+		return
+	}
+	// Viewport becomes the full-height right column of the main pane's
+	// window; the roster docks under it at 10 rows. join-pane moves panes
+	// even within the same window, so this is idempotent-by-outcome.
+	_, _ = run("join-pane", "-d", "-f", "-h", "-l", "34%", "-s", roles["viewport"], "-t", main)
+	_, _ = run("join-pane", "-d", "-v", "-l", "10", "-s", roles["list"], "-t", roles["viewport"])
+	_, _ = run("resize-pane", "-t", roles["list"], "-y", "10")
+}
