@@ -139,6 +139,51 @@ func TestResolveOnlyPairsCodexSpawns(t *testing.T) {
 	}
 }
 
+// TestHandleNotifyPinsRolloutByThreadID: the codex notify hook carries the
+// thread id (a UUIDv7 whose first 48 bits are unix-ms), which names the date
+// partition directly — the rollout is located and pinned with no tree walk.
+func TestHandleNotifyPinsRolloutByThreadID(t *testing.T) {
+	root := t.TempDir()
+	// Thread id minted from a known time so the date dir is derived, not
+	// hardcoded to "today".
+	ts := time.Date(2026, 7, 4, 12, 0, 0, 0, time.Local)
+	hexMS := fmt.Sprintf("%012x", ts.UnixMilli())
+	threadID := hexMS[:8] + "-" + hexMS[8:12] + "-7000-8000-000000000001"
+	day := filepath.Join(root, ts.Format("2006/01/02"))
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rollout := filepath.Join(day, "rollout-2026-07-04T12-00-00-"+threadID+".jsonl")
+	if err := os.WriteFile(rollout, []byte(metaLine(ts, "/work")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DUCK_CODEX_SESSIONS", root)
+
+	f := &fakeRunner{out: map[string]string{}}
+	payload := fmt.Sprintf(`{"type":"agent-turn-complete","thread-id":%q,"last-assistant-message":"done"}`, threadID)
+	if err := HandleNotify(f.run, "%7", payload); err != nil {
+		t.Fatal(err)
+	}
+	want := "set-option -p -t %7 @duck_rollout " + rollout
+	found := false
+	for _, c := range f.calls {
+		if c == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("notify must pin the rollout option; calls=%v", f.calls)
+	}
+	// Outside tmux, or an unknown thread id → quiet no-op.
+	if err := HandleNotify(f.run, "", payload); err != nil {
+		t.Fatal(err)
+	}
+	n := len(f.calls)
+	if err := HandleNotify(f.run, "%7", `{"type":"agent-turn-complete","thread-id":"019f0000-0000-7000-8000-00000000dead"}`); err != nil || len(f.calls) != n {
+		t.Fatalf("unknown thread id must be a no-op, err=%v calls=%v", err, f.calls[n:])
+	}
+}
+
 func TestCmdRunsCodex(t *testing.T) {
 	yes := []string{"codex", "codex --model x", "/usr/local/bin/codex resume", "env FOO=1 codex",
 		// duck spawn stamps the paths.Quote'd line — tokens arrive quoted.

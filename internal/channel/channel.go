@@ -114,6 +114,61 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 	return nil
 }
 
+// HandleNotify is `duck channel notify <json>` — codex's notify hook, wired
+// in by `duck spawn`. Codex execs it at end of turn, INSIDE the agent's pane
+// environment, with a payload carrying the thread id (= the rollout session
+// id). That makes attribution exact: decode the thread id, locate the rollout
+// file directly, pin it on $TMUX_PANE. No cwd+time correlation, no scanning —
+// matchRollout survives only as the fallback for codex started outside duck.
+//
+// It deliberately pins WITHOUT publishing the event: serve's sweep drains the
+// (now-paired) rollout within 2s, so pushing here too would double-deliver.
+func HandleNotify(run panel.Runner, paneID, payload string) error {
+	if paneID == "" {
+		return nil // notify fired outside tmux — nothing to attribute
+	}
+	var p struct {
+		Type     string `json:"type"`
+		ThreadID string `json:"thread-id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return fmt.Errorf("notify payload: %w", err)
+	}
+	if p.Type != "agent-turn-complete" || p.ThreadID == "" {
+		return nil
+	}
+	path := rolloutByThreadID(SessionsDir(), p.ThreadID)
+	if path == "" {
+		return nil // rollout not on disk (yet) — the sweep's fallback pairing stands
+	}
+	// Unconditional: the process itself says so — this also heals a wrong
+	// pairing the correlation fallback might have guessed earlier.
+	_, err := run("set-option", "-p", "-t", paneID, panel.RolloutOption, path)
+	return err
+}
+
+// rolloutByThreadID locates root/YYYY/MM/DD/rollout-*-<id>.jsonl without
+// walking the tree: codex thread ids are UUIDv7, whose first 48 bits are the
+// creation time in unix ms — that names the date partition directly. The
+// neighboring days are tried too (UTC-vs-local partitioning drift).
+func rolloutByThreadID(root, threadID string) string {
+	if root == "" || len(threadID) < 13 {
+		return ""
+	}
+	ms, err := strconv.ParseUint(strings.ReplaceAll(threadID, "-", "")[:12], 16, 64)
+	if err != nil {
+		return ""
+	}
+	day := time.UnixMilli(int64(ms)).Local()
+	for _, d := range []int{0, -1, 1} {
+		dir := filepath.Join(root, day.AddDate(0, 0, d).Format("2006/01/02"))
+		if m, _ := filepath.Glob(filepath.Join(dir, "rollout-*-"+threadID+".jsonl")); len(m) > 0 {
+			return m[0]
+		}
+	}
+	return ""
+}
+
 // cmdRunsCodex reports whether a spawn cmdline launches codex: some token's
 // path basename is exactly "codex" (covers "codex", "codex --model x",
 // "/usr/local/bin/codex resume"), without false-positiving on incidental

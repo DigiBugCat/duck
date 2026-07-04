@@ -53,6 +53,7 @@ Examples:
 			return err
 		}
 		args = withCodexFullAccess(args)
+		args = withCodexNotify(args)
 		quoted := make([]string, len(args))
 		for i, a := range args {
 			quoted[i] = paths.Quote(a)
@@ -109,6 +110,32 @@ func withCodexFullAccess(args []string) []string {
 	}
 	out := append([]string{}, args[:at]...)
 	out = append(out, "--dangerously-bypass-approvals-and-sandbox")
+	return append(out, args[at:]...)
+}
+
+// withCodexNotify wires codex's end-of-turn notify hook to `duck channel
+// notify`, which pins the pane's rollout from the payload's thread id —
+// exact, instant channel attribution instead of cwd+time correlation.
+// Skipped when the user configured their own notify (an explicit -c wins).
+func withCodexNotify(args []string) []string {
+	if len(args) == 0 || filepath.Base(args[0]) != "codex" {
+		return args
+	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "notify=") {
+			return args
+		}
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return args
+	}
+	at := 1
+	if len(args) > 1 && (args[1] == "exec" || args[1] == "e" || args[1] == "review") {
+		at = 2
+	}
+	out := append([]string{}, args[:at]...)
+	out = append(out, "-c", fmt.Sprintf(`notify=[%q,"channel","notify"]`, self))
 	return append(out, args[at:]...)
 }
 

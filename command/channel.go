@@ -138,6 +138,16 @@ sidecar is alive the event parks in the spool and is delivered when one starts.`
 	},
 }
 
+var channelNotifyCmd = &cobra.Command{
+	Use:    "notify <payload-json>",
+	Hidden: true, // plumbing: codex's notify hook target, wired in by duck spawn
+	Short:  "codex notify hook: pin this pane's rollout from the turn payload",
+	Args:   cobra.ExactArgs(1),
+	RunE: func(c *cobra.Command, args []string) error {
+		return channel.HandleNotify(panel.ExecRunner, os.Getenv("TMUX_PANE"), args[0])
+	},
+}
+
 var channelServeAll bool
 
 var channelServeCmd = &cobra.Command{
@@ -173,6 +183,6 @@ func init() {
 	channelServeCmd.Flags().BoolVar(&channelServeAll, "all", false, "sweep every workspace on the machine (motherduck), not just the enclosing one")
 	channelTailCmd.Flags().BoolVarP(&channelTailFollow, "follow", "f", false, "keep streaming as new events arrive")
 	channelTailCmd.Flags().BoolVar(&channelTailRaw, "raw", false, "raw rollout lines (unfiltered)")
-	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd, channelPublishCmd)
+	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd, channelPublishCmd, channelNotifyCmd)
 	rootCmd.AddCommand(channelCmd)
 }
