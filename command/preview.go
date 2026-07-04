@@ -17,7 +17,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -106,20 +105,15 @@ var previewCmd = &cobra.Command{
 // it is one-shot (prints and exits → the caller adds a hold). Files are
 // resolved to absolute paths (the window's cwd is the pane dir, but absolute
 // is unambiguous); a missing file is an error here rather than a dead window.
-// htmlRenderer picks the page engine, best first: gosling (duck's own CDP→
-// kitty viewer: pixel rendering with fps/bandwidth budgets so a runaway page
-// can never lag the terminal), then casty (pixels, unbudgeted), then carbonyl
-// cells as the floor. The swap-based viewport is ONE tmux layer from the
-// terminal, which is what lets the pixel renderers work at all. Watched
-// previews stay on carbonyl: the change-detecting wrapper needs
-// --allow-file-access-from-files, which the pixel renderers' managed Chrome
-// doesn't expose (yet — gosling is ours, so that's a queued follow-up).
+// htmlRenderer picks the page engine. Carbonyl (cells), full stop: preview
+// is the terminal porthole onto static artifacts — legible, a few KB per
+// screen, no passthrough machinery. The gosling/casty pixel ladder is
+// retired (see docs/WINDOW.md): anything that needs fidelity or motion
+// belongs in the browser (duck render) or the planned duck window, not
+// squeezed through the escape stream. Two carbonyl gotchas documented in
+// WINDOW.md: it reports prefers-color-scheme:light, and it caches file://
+// pages hard (reload won't see edits — bump ?v= or respawn).
 func htmlRenderer() string {
-	for _, r := range []string{"gosling", "casty"} {
-		if _, err := exec.LookPath(r); err == nil {
-			return r
-		}
-	}
 	return "carbonyl"
 }
 

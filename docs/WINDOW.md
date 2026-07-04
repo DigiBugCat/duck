@@ -17,12 +17,43 @@ controls — navigate it, position it, close it, intercept its traffic, and
 inject an annotation layer so the human can highlight/comment/draw on the
 page and the agent can query those marks back as structured data.
 
-The division of labor:
+The routing model (settled 2026-07-04) — two KINDS, not three surfaces:
 
-| verb    | surface            | for                                      |
-|---------|--------------------|------------------------------------------|
-| preview | terminal (sidebar) | lightweight ideas, one-offs, glances      |
-| window  | chromium on client | heavy lifts: animation, interaction, markup |
+- **Static → it's an artifact.** Docs, reports, tables, charts, images,
+  diagrams — anything without time or interaction. One canonical form: a
+  page published at a URL. Viewport is a separate, free choice:
+  - `duck preview` = the terminal porthole onto the artifact (cells only:
+    micro for md, lynx/carbonyl for html) — the in-flow glance.
+  - the browser/laptop = the full-fidelity view of the SAME artifact.
+  There is no separate preview render pipeline and no file-type ladder;
+  preview is just "show this artifact URL in cells."
+- **Dynamic → it's a window thing.** Time, interaction, markup, bandwidth.
+  This is the only other surface.
+
+## What this obsoletes (kill list)
+
+Sequence: build the window first, live with both for a week, then delete.
+
+- **gosling** — CDP→kitty viewer with fps/bandwidth budgets; its entire
+  reason to exist (squeezing chromium through the escape stream) is gone.
+- **casty + the local patch ritual** (`~/.duck/patches/patch_casty.py`
+  re-applied after every npm upgrade) — pure liability, retired.
+- **chafa / the image tier** — a static image is an artifact, not a
+  terminal pixel job.
+- **kitty graphics plumbing** — `allow-passthrough` in panel.Open, the
+  "viewport must be ONE tmux layer" constraint, the capture-pane-can't-see-
+  pixels testing blind spot. All existed to serve kitty graphics.
+- **preview's type-dispatch ladder** (`command/preview.go` htmlRenderer
+  et al) — collapses to cells-only artifact viewing.
+- Kept: **carbonyl** — not just the emergency floor: eyeballed side-by-side
+  against the gosling/kitty render (2026-07-04) and preferred; it is THE
+  html renderer for preview. Plus micro, lynx. All cells, zero maintenance.
+  This means the kitty path can be retired ahead of the window shipping.
+  Gotchas: carbonyl actively reports `prefers-color-scheme: light` (so a
+  light override fires even on dark-default pages — artifact pages meant
+  for the sidebar should commit to dark unconditionally), and it caches
+  `file://` pages hard — its own reload button won't pick up edits; bump a
+  `?v=` query or respawn the pane.
 
 ## Architecture
 

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>duck routing — what goes where</title>
+<style>
+  :root {
+    /* dark by default — carbonyl doesn't forward prefers-color-scheme */
+    --bg: #101614; --panel: #16201C; --ink: #E4EAE5; --muted: #8FA096;
+    --line: #263129; --accent: #5BC4A8; --accent-soft: #5BC4A81A;
+    --amber: #D9A254; --amber-soft: #D9A25418; --term: #A9B8AF;
+    --term-soft: #A9B8AF14; --kill: #D08A7C;
+  }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Seravek", "Segoe UI", "Ubuntu", system-ui, sans-serif;
+    line-height: 1.55; margin: 0; padding: 3rem 1.25rem 5rem;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; }
+  header { margin-bottom: 2.5rem; }
+  .eyebrow {
+    font-family: ui-monospace, monospace; font-size: .72rem;
+    letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+  }
+  h1 { font-size: 1.9rem; font-weight: 650; margin: .35rem 0 .5rem; text-wrap: balance; }
+  .lede { color: var(--muted); max-width: 42rem; margin: 0; }
+  .lede strong { color: var(--ink); font-weight: 600; }
+
+  .kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+  @media (max-width: 46rem) { .kinds { grid-template-columns: 1fr; } }
+  .kind {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 1.4rem 1.4rem 1.6rem;
+  }
+  .kind h2 {
+    margin: 0 0 .15rem; font-size: 1.2rem; font-weight: 650;
+    display: flex; align-items: baseline; gap: .6rem;
+  }
+  .kind .verb {
+    font-family: ui-monospace, monospace; font-size: .78rem; font-weight: 500;
+    padding: .1rem .45rem; border-radius: 4px;
+  }
+  .kind.static .verb { color: var(--accent); background: var(--accent-soft); }
+  .kind.dynamic .verb { color: var(--amber); background: var(--amber-soft); }
+  .kind .rule { margin: 0 0 1.1rem; color: var(--muted); font-size: .92rem; }
+
+  .ex { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .65rem; }
+  .ex li {
+    display: grid; grid-template-columns: 1.1rem 1fr; gap: .6rem;
+    align-items: baseline; font-size: .95rem;
+  }
+  .ex .dot { font-family: ui-monospace, monospace; font-size: .8rem; }
+  .static .dot { color: var(--accent); }
+  .dynamic .dot { color: var(--amber); }
+  .ex b { font-weight: 600; }
+  .ex small { color: var(--muted); display: block; font-size: .85rem; }
+
+  .bridge {
+    margin: 1.25rem 0 0; border: 1px dashed var(--line); border-radius: 6px;
+    padding: 1rem 1.4rem; background: var(--term-soft);
+    display: grid; grid-template-columns: auto 1fr; gap: .9rem; align-items: baseline;
+  }
+  .bridge .verb {
+    font-family: ui-monospace, monospace; font-size: .78rem; color: var(--term);
+    border: 1px solid var(--line); border-radius: 4px; padding: .1rem .45rem;
+    white-space: nowrap;
+  }
+  .bridge p { margin: 0; font-size: .92rem; color: var(--muted); }
+  .bridge p strong { color: var(--ink); font-weight: 600; }
+
+  .edge { margin-top: 2.5rem; }
+  .edge h2 { font-size: 1.05rem; font-weight: 650; margin: 0 0 .8rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  .tablewrap { overflow-x: auto; }
+  th {
+    text-align: left; font-family: ui-monospace, monospace; font-size: .72rem;
+    letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+    font-weight: 500; padding: .4rem .75rem .4rem 0; border-bottom: 1px solid var(--line);
+  }
+  td { padding: .55rem .75rem .55rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { white-space: nowrap; font-weight: 600; }
+  .to-a { color: var(--accent); font-weight: 600; }
+  .to-w { color: var(--amber); font-weight: 600; }
+  td small { color: var(--muted); }
+
+  footer { margin-top: 2.5rem; font-size: .85rem; color: var(--muted); }
+  footer .k { color: var(--kill); }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">duck · routing model · 2026-07-04</div>
+  <h1>What goes where</h1>
+  <p class="lede">Two kinds, not three surfaces. <strong>Static content is an artifact</strong> — a page at a URL, with the terminal as an optional porthole. <strong>Dynamic content gets a window</strong> — the duck-owned chromium on the client machine. Nothing else exists.</p>
+</header>
+
+<div class="kinds">
+  <section class="kind static">
+    <h2>Static <span class="verb">→ artifact</span></h2>
+    <p class="rule">No time, no interaction. If a screenshot of it loses nothing, it's an artifact.</p>
+    <ul class="ex">
+      <li><span class="dot">●</span><span><b>Design docs &amp; reviews</b><small>WINDOW.md itself, ROUTINES.md, a PR walkthrough with code excerpts</small></span></li>
+      <li><span class="dot">●</span><span><b>Reports &amp; digests</b><small>test-run summary, the morning fleet digest, a bug investigation writeup</small></span></li>
+      <li><span class="dot">●</span><span><b>Tables &amp; comparisons</b><small>benchmark results, dependency audit, session inventory</small></span></li>
+      <li><span class="dot">●</span><span><b>Static charts</b><small>a rendered line chart of sync latency — the image, not a live feed</small></span></li>
+      <li><span class="dot">●</span><span><b>Diagrams</b><small>the fleet SVG, an architecture sketch, a sequence diagram</small></span></li>
+      <li><span class="dot">●</span><span><b>Images</b><small>a screenshot to look at, a generated figure — formerly chafa's job</small></span></li>
+    </ul>
+  </section>
+
+  <section class="kind dynamic">
+    <h2>Dynamic <span class="verb">→ window</span></h2>
+    <p class="rule">Time, interaction, or your pen on it. If it moves or talks back, it's a window thing.</p>
+    <ul class="ex">
+      <li><span class="dot">◆</span><span><b>Animations &amp; simulations</b><small>a boids run, a physics toy, an animated algorithm visualization</small></span></li>
+      <li><span class="dot">◆</span><span><b>Live dashboards</b><small>streaming fleet metrics, a tail of build output with sparklines</small></span></li>
+      <li><span class="dot">◆</span><span><b>Interactive explorations</b><small>a filterable dataset, a zoomable flame graph, a map</small></span></li>
+      <li><span class="dot">◆</span><span><b>Anything you'll mark up</b><small>review a mock and circle the wrong part; highlight a number and comment "off by 10×" — the agent queries your marks back</small></span></li>
+      <li><span class="dot">◆</span><span><b>Web apps &amp; prototypes</b><small>a spiked UI you want to actually click through</small></span></li>
+      <li><span class="dot">◆</span><span><b>Video / heavy motion</b><small>anything the ~2–3 MB/s escape stream could never carry</small></span></li>
+    </ul>
+  </section>
+</div>
+
+<div class="bridge">
+  <span class="verb">duck preview</span>
+  <p><strong>Not a third kind — a viewport.</strong> The terminal porthole onto the <em>same</em> artifact: micro for markdown, lynx/carbonyl for html. Cells only, zero pixel machinery. For the in-flow glance when you don't want to leave the pane.</p>
+</div>
+
+<section class="edge">
+  <h2>Edge cases, called</h2>
+  <div class="tablewrap">
+  <table>
+    <tr><th>Content</th><th>Goes to</th><th>Why</th></tr>
+    <tr><td>Chart that <em>could</em> be live</td><td class="to-a">artifact</td><td>Default static. Promote to window only when the liveness is the point.</td></tr>
+    <tr><td>Big document you'll annotate</td><td class="to-w">window</td><td>Markup is interaction — the static/dynamic line is about what <em>you</em> do, not the bytes.</td></tr>
+    <tr><td>Screenshot for the agent's eyes</td><td class="to-a">artifact <small>(or just Read)</small></td><td>Nothing renders to a human at all; `snap` already covers it.</td></tr>
+    <tr><td>Slideshow / carousel</td><td class="to-a">artifact</td><td>Paging isn't interaction, it's reading. Scroll it.</td></tr>
+    <tr><td>Agent demoing a UI to you</td><td class="to-w">window</td><td>Duck drives the page via CDP while you watch — custody is the feature.</td></tr>
+    <tr><td>Quick `htop`-style monitoring</td><td>terminal <small>(spawn)</small></td><td>It's a terminal <em>program</em>, not rendered content. Sidebar as always.</td></tr>
+  </table>
+  </div>
+</section>
+
+<footer>Consequence: <span class="k">gosling, casty (+ patch ritual), chafa, kitty passthrough, preview's type ladder</span> all retire once the window ships. Kept: micro, lynx, carbonyl — the cells floor.</footer>
+</div>
+</body>
+</html>
