@@ -72,9 +72,39 @@ func (m watchModel) load() tea.Msg {
 	return agentsMsg{agents: agents, statuses: statuses, err: err}
 }
 
-// headerLines is the number of rendered lines above the first agent row —
+// headerLines is the number of rendered lines above the first roster row —
 // the contract between View and the mouse-click row mapping.
 const headerLines = 2
+
+// rowRef is one rendered roster line: a section header (agentIdx == -1) or
+// an entry pointing into m.agents. View and the mouse/cursor mapping share
+// this so a click can never land on the wrong item.
+type rowRef struct {
+	section  string // non-empty → section header line
+	agentIdx int    // index into m.agents; -1 for headers
+}
+
+// rows lays out the roster: agents section first, then artifacts — each with
+// a header line, omitted when the section is empty.
+func (m watchModel) rows() []rowRef {
+	var out []rowRef
+	appendKind := func(section, kind string) {
+		first := true
+		for i, a := range m.agents {
+			if a.Kind != kind {
+				continue
+			}
+			if first {
+				out = append(out, rowRef{section: section, agentIdx: -1})
+				first = false
+			}
+			out = append(out, rowRef{agentIdx: i})
+		}
+	}
+	appendKind("agents", KindAgent)
+	appendKind("artifacts", KindArtifact)
+	return out
+}
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -109,10 +139,11 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focused, m.swallowNext = true, false
 				return m, nil
 			}
+			rows := m.rows()
 			row := msg.Y - headerLines
-			if row >= 0 && row < len(m.agents) {
-				m.cursor = row
-				_ = Select(m.run, m.agents[row].WindowID)
+			if row >= 0 && row < len(rows) && rows[row].agentIdx >= 0 {
+				m.cursor = rows[row].agentIdx
+				_ = Select(m.run, m.agents[m.cursor].WindowID)
 				return m, m.load
 			}
 		}
@@ -144,7 +175,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s":
 			// Quick shell agent in the outer session's dir.
 			if dir, err := CurrentPanePath(m.run); err == nil {
-				_, _ = Spawn(m.run, m.comp, "shell", dir, "")
+				_, _ = Spawn(m.run, m.comp, "shell", dir, "", KindAgent)
 			}
 			return m, m.load
 		}
@@ -159,6 +190,7 @@ var (
 	activeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	workingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))  // yellow: turn in flight
 	doneStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green: finished, result waiting
+	sectionStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
 )
 
 // statusGlyph renders the notification dot for one agent state.
@@ -184,7 +216,7 @@ func (m watchModel) View() string {
 			done++
 		}
 	}
-	head := titleStyle.Render(" agents ") + dimStyle.Render(fmt.Sprintf("(%d)", len(m.agents)))
+	head := titleStyle.Render(" duck ") + dimStyle.Render(fmt.Sprintf("(%d)", len(m.agents)))
 	if working > 0 {
 		head += workingStyle.Render(fmt.Sprintf("  ● %d working", working))
 	}
@@ -194,9 +226,14 @@ func (m watchModel) View() string {
 	b.WriteString(head + "\n")
 	b.WriteString(dimStyle.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 	if len(m.agents) == 0 {
-		b.WriteString(dimStyle.Render("\n  none running\n\n  duck spawn <cmd>\n  or press s for a shell"))
+		b.WriteString(dimStyle.Render("\n  nothing running\n\n  duck spawn <cmd>\n  duck preview <file>\n  or press s for a shell"))
 	}
-	for i, a := range m.agents {
+	for _, r := range m.rows() {
+		if r.agentIdx < 0 {
+			b.WriteString(sectionStyle.Render(" "+r.section) + "\n")
+			continue
+		}
+		a := m.agents[r.agentIdx]
 		marker := "  "
 		if a.Active {
 			marker = activeStyle.Render("▶ ")
@@ -206,7 +243,7 @@ func (m watchModel) View() string {
 			label += dimStyle.Render(" · " + a.Command)
 		}
 		line := marker + statusGlyph(m.statuses[a.WindowID]) + " " + label
-		if i == m.cursor {
+		if r.agentIdx == m.cursor {
 			line = marker + statusGlyph(m.statuses[a.WindowID]) + " " + selectedStyle.Render(" "+a.Name+" ")
 		}
 		b.WriteString(truncate(line, m.width) + "\n")

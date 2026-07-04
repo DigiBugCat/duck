@@ -69,9 +69,9 @@ func TestEnsureCompanionCreatesOnceAndStamps(t *testing.T) {
 
 func TestAgentsParsesAndSkipsPlaceholder(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
-		"list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{pane_title}": "@1\t0\tterminal\t0\tsh\t1\t\n" +
-			"@2\t1\tcodex\t1\tcodex\t\tfixing tests\n" +
-			"@3\t2\tbuild\t0\tcargo\t\t\n",
+		"list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}": "@1\t0\tterminal\t0\tsh\t1\t\t\n" +
+			"@2\t1\tcodex\t1\tcodex\t\tagent\tfixing tests\n" +
+			"@3\t2\tbuild\t0\tcargo\t\t\t\n",
 	}}
 	agents, err := Agents(f.run, "work-agents")
 	if err != nil {
@@ -89,12 +89,12 @@ func TestAgentsParsesAndSkipsPlaceholder(t *testing.T) {
 }
 
 func TestSpawnRetiresPlaceholderAndPinsName(t *testing.T) {
-	listKey := "list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{pane_title}"
+	listKey := "list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}"
 	f := &fakeRunner{out: map[string]string{
 		"new-window -t work-agents: -P -F #{window_id} -n codex -c /d codex": "@7\n",
-		listKey: "@1\t0\tterminal\t0\tsh\t1\t\n@7\t1\tcodex\t1\tcodex\t\t\n",
+		listKey: "@1\t0\tterminal\t0\tsh\t1\t\t\n@7\t1\tcodex\t1\tcodex\t\tagent\t\n",
 	}}
-	id, err := Spawn(f.run, "work-agents", "codex", "/d", "codex")
+	id, err := Spawn(f.run, "work-agents", "codex", "/d", "codex", KindAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,10 +152,10 @@ func TestSpawnHealsMissingPlaceholder(t *testing.T) {
 	listKey := "list-windows -t work-agents -F " + agentsFormat
 	f := &fakeRunner{out: map[string]string{
 		"new-window -t work-agents: -P -F #{window_id} -n codex -c /d codex": "@7\n",
-		listKey: "@7\t1\tcodex\t1\tcodex\t\t\n", // no placeholder anywhere
+		listKey: "@7\t1\tcodex\t1\tcodex\t\tagent\t\n", // no placeholder anywhere
 		"new-window -d -t work-agents: -n terminal -P -F #{window_id} " + placeholderCmd: "@9\n",
 	}}
-	if _, err := Spawn(f.run, "work-agents", "codex", "/d", "codex"); err != nil {
+	if _, err := Spawn(f.run, "work-agents", "codex", "/d", "codex", KindAgent); err != nil {
 		t.Fatal(err)
 	}
 	if !f.called("set-option -w -t @9 @duck_placeholder 1") {

@@ -85,6 +85,17 @@ const placeholderWindow = "terminal"
 // Agents/Spawn identify it structurally rather than by its display name.
 const placeholderOption = "@duck_placeholder"
 
+// KindAgent and KindArtifact are the two window kinds the roster sections
+// windows into: runners you supervise vs things you look at (previews).
+// Stored in the kindOption window option; an unset kind reads as agent.
+const (
+	KindAgent    = "agent"
+	KindArtifact = "artifact"
+)
+
+// kindOption is the WINDOW user option carrying the kind.
+const kindOption = "@duck_kind"
+
 // placeholderCmd runs a real interactive shell in a respawn loop: typing
 // `exit` just gives a fresh shell instead of killing the companion (and the
 // viewport with it). $SHELL falls back to sh for exotic setups.
@@ -178,6 +189,12 @@ func Open(run Runner, outer, comp, duckBin string) error {
 	if _, err := run("set-option", "-t", outer, "focus-events", "on"); err != nil {
 		return err
 	}
+	// Unlock pixel graphics: kitty graphics protocol with Unicode placeholders
+	// passed through tmux is the ONE pixel path that reaches Ghostty (sixel is
+	// rejected there). chafa/timg auto-negotiate it; everything else ignores it.
+	if _, err := run("set-option", "-t", outer, "allow-passthrough", "on"); err != nil {
+		return err
+	}
 	if roles["viewport"] == "" {
 		// -f: span the window's full height; -d: keep focus in the main pane.
 		// TMUX= lets the nested client attach from inside a pane; -S pins it to
@@ -231,14 +248,14 @@ type Agent struct {
 	Name     string // window name (agent label)
 	Active   bool   // currently shown in the viewport
 	Command  string // pane_current_command, e.g. "codex", "node", "zsh"
+	Kind     string // KindAgent (default) or KindArtifact — roster section
 	Title    string // pane_title — agents like Claude Code write status here
 }
 
 // agentsFormat is the list-windows template Agents and placeholders parse.
-// pane_title is free text and NOT last, so the split is bounded (SplitN) with
-// the controlled placeholder marker trailing — a tab inside a title cannot
-// shift fields.
-const agentsFormat = "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{pane_title}"
+// pane_title is free text, so it is the LAST field and the split is bounded
+// (SplitN) — a tab inside a title cannot shift the controlled fields.
+const agentsFormat = "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}"
 
 // Agents lists the companion's windows, excluding the placeholder (identified
 // by its @duck_placeholder marker, never by name).
@@ -249,11 +266,15 @@ func Agents(run Runner, comp string) ([]Agent, error) {
 	}
 	var agents []Agent
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 7)
-		if len(f) < 7 || strings.TrimSpace(f[5]) != "" {
+		f := strings.SplitN(line, "\t", 8)
+		if len(f) < 8 || strings.TrimSpace(f[5]) != "" {
 			continue
 		}
-		a := Agent{WindowID: f[0], Name: f[2], Active: f[3] == "1", Command: f[4], Title: f[6]}
+		kind := strings.TrimSpace(f[6])
+		if kind == "" {
+			kind = KindAgent
+		}
+		a := Agent{WindowID: f[0], Name: f[2], Active: f[3] == "1", Command: f[4], Kind: kind, Title: f[7]}
 		fmt.Sscanf(f[1], "%d", &a.Index)
 		agents = append(agents, a)
 	}
@@ -268,8 +289,8 @@ func placeholders(run Runner, comp string) []string {
 	}
 	var ids []string
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 7)
-		if len(f) >= 7 && strings.TrimSpace(f[5]) != "" {
+		f := strings.SplitN(line, "\t", 8)
+		if len(f) >= 8 && strings.TrimSpace(f[5]) != "" {
 			ids = append(ids, f[0])
 		}
 	}
@@ -278,8 +299,9 @@ func placeholders(run Runner, comp string) []string {
 
 // Spawn launches cmdline (or an interactive shell when empty) as a new named
 // window of the companion, selects it (so the viewport shows the newcomer),
-// and retires the placeholder window once a real agent exists.
-func Spawn(run Runner, comp, name, dir, cmdline string) (windowID string, err error) {
+// stamps its kind (roster section), and ensures the keep-alive placeholder
+// exists. kind is KindAgent or KindArtifact; empty means KindAgent.
+func Spawn(run Runner, comp, name, dir, cmdline, kind string) (windowID string, err error) {
 	args := []string{"new-window", "-t", comp + ":", "-P", "-F", "#{window_id}"}
 	if name != "" {
 		args = append(args, "-n", name)
@@ -298,6 +320,10 @@ func Spawn(run Runner, comp, name, dir, cmdline string) (windowID string, err er
 	// Stamp the spawn instant: the channel layer uses it to map this window to
 	// the codex rollout file that appears right after (internal/channel).
 	_, _ = run("set-option", "-w", "-t", windowID, SpawnedAtOption, strconv.FormatInt(time.Now().Unix(), 10))
+	if kind == "" {
+		kind = KindAgent
+	}
+	_, _ = run("set-option", "-w", "-t", windowID, kindOption, kind)
 	if name != "" {
 		// Keep the user/derived label; don't let tmux rename it to the running cmd.
 		_, _ = run("set-option", "-w", "-t", windowID, "automatic-rename", "off")

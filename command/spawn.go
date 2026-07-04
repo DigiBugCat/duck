@@ -54,7 +54,7 @@ Examples:
 				name = "shell"
 			}
 		}
-		if _, err := panel.Spawn(run, comp, name, dir, line); err != nil {
+		if _, err := panel.Spawn(run, comp, name, dir, line, panel.KindAgent); err != nil {
 			return err
 		}
 		bin, err := os.Executable()

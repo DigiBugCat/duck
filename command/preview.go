@@ -41,7 +41,7 @@ var previewCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if _, err := panel.Spawn(run, comp, "preview", dir, line); err != nil {
+		if _, err := panel.Spawn(run, comp, "preview", dir, line, panel.KindArtifact); err != nil {
 			return err
 		}
 		bin, err := os.Executable()
@@ -73,8 +73,13 @@ func previewLine(target string) (string, error) {
 	case ".md", ".markdown":
 		return "glow -p " + q, nil
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp":
-		// chafa prints and exits; hold the window until a keypress so the
-		// image doesn't vanish with the process.
+		// Cell mode (symbols), deliberately: the viewport is a NESTED tmux
+		// client, and kitty-pixel passthrough cannot cross two tmux layers (the
+		// inner tmux unwraps it, the outer drops the bare escape → blank pane).
+		// chafa's symbol mode at truecolor is the highest fidelity that
+		// actually renders here; zoom the pane (prefix+z) for more resolution,
+		// or `open <file>` for real pixels in the laptop browser. Hold the
+		// window until a keypress so the image doesn't vanish with the process.
 		return fmt.Sprintf(`sh -c 'chafa %s; printf "\n  [enter to close] "; read -r _'`, q), nil
 	default:
 		return "lynx " + q, nil
