@@ -664,3 +664,57 @@ func Heal(run Runner, outer string) {
 	_, _ = run("join-pane", "-d", "-v", "-l", rosterRows, "-s", roles["list"], "-t", roles["viewport"])
 	_, _ = run("resize-pane", "-t", roles["list"], "-y", rosterRows)
 }
+
+// Workspace is one duck session on this hub, as the roster's ws view shows.
+type Workspace struct {
+	Name     string
+	Attached bool
+	Current  bool
+}
+
+// Workspaces lists the hub's duck sessions (companions excluded), current
+// first, then attached, then name order preserved from tmux.
+func Workspaces(run Runner, outer string) ([]Workspace, error) {
+	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{"+panelOfOption+"}")
+	if err != nil {
+		return nil, err
+	}
+	var ws []Workspace
+	// TrimRight newlines ONLY: TrimSpace would also eat the LAST line's
+	// trailing tab (an empty @duck_panel_of), silently dropping whichever
+	// session tmux lists last — a real bug we hit.
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		f := strings.SplitN(line, "\t", 3)
+		if len(f) < 2 {
+			continue
+		}
+		panelOf := ""
+		if len(f) == 3 {
+			panelOf = strings.TrimSpace(f[2])
+		}
+		if panelOf != "" {
+			continue // companions are plumbing
+		}
+		ws = append(ws, Workspace{Name: f[0], Attached: f[1] != "0" && f[1] != "", Current: f[0] == outer})
+	}
+	return ws, nil
+}
+
+// SwitchTo moves the outer session's attached client to another workspace,
+// arming the target's panel first so the jump lands in a furnished cockpit.
+func SwitchTo(run Runner, outer, target, duckBin string) error {
+	if comp, err := EnsureCompanion(run, target, ""); err == nil {
+		_ = Open(run, target, comp, duckBin)
+		EnsureScratch(run, target)
+	}
+	out, err := run("list-clients", "-t", outer, "-F", "#{client_name}")
+	if err != nil {
+		return err
+	}
+	client := strings.TrimSpace(strings.Split(strings.TrimSpace(out), "\n")[0])
+	if client == "" {
+		return fmt.Errorf("no attached client to switch")
+	}
+	_, err = run("switch-client", "-c", client, "-t", target)
+	return err
+}

@@ -44,6 +44,7 @@ var verbs = []struct{ name, usage string }{
 	{"preview", "preview <file|url>  — render in the viewport"},
 	{"render", "render <file|url>  — open in your laptop browser"},
 	{"kill", "kill <name>  — kill an agent/buffer"},
+	{"workspaces", "workspaces  — list hub workspaces; ↵ switches you there"},
 	{"close", "close  — close this panel (everything keeps running)"},
 	{"help", "help  — how this panel works"},
 }
@@ -55,14 +56,16 @@ type watchModel struct {
 
 	agents   []Agent
 	statuses map[string]string
-	tab      int
-	cursor   int // index into visible() rows
+	tabKind  string // active tab BY NAME (hiding empty tabs must not scramble selection)
+	cursor   int    // index into visible() rows
 	width    int
 	height   int
 
 	input       textinput.Model
-	helpMode    bool   // showing the cheat sheet instead of rows
-	lastMsg     string // result/error of the last command, shown until next keypress
+	helpMode    bool        // showing the cheat sheet instead of rows
+	wsMode      bool        // showing hub workspaces instead of this workspace's rows
+	workspaces  []Workspace // loaded when entering wsMode
+	lastMsg     string      // result/error of the last command, shown until next keypress
 	focused     bool
 	swallowNext bool // the click that focuses the pane must not also select
 }
@@ -73,7 +76,7 @@ func Watch(run Runner, outer string, status StatusFn) error {
 	ti.Prompt = "❯ "
 	ti.Placeholder = "type here — a name jumps to it · spawn <cmd> · help"
 	ti.Focus()
-	m := watchModel{run: run, outer: outer, statusFn: status, input: ti}
+	m := watchModel{run: run, outer: outer, statusFn: status, input: ti, tabKind: KindAgent}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus()).Run()
 	return err
 }
@@ -98,30 +101,54 @@ func (m watchModel) load() tea.Msg {
 // headerLines: tab bar + rule, above the first row (mouse-mapping contract).
 const headerLines = 2
 
-// tabs: base set always visible, dynamic kinds appended sorted.
+// tabs: non-empty kinds only (plus the active one), base order first, then
+// dynamic kinds sorted — empty base tabs are noise, not navigation.
 func (m watchModel) tabs() []string {
-	out := append([]string{}, BaseKinds...)
+	count := map[string]int{}
+	for _, a := range m.agents {
+		count[a.Kind]++
+	}
+	var out []string
+	for _, k := range BaseKinds {
+		if count[k] > 0 || k == m.tabKind {
+			out = append(out, k)
+		}
+	}
 	base := map[string]bool{}
 	for _, k := range BaseKinds {
 		base[k] = true
 	}
-	seen := map[string]bool{}
-	for _, a := range m.agents {
-		if !base[a.Kind] && !seen[a.Kind] {
-			seen[a.Kind] = true
-			out = append(out, a.Kind)
+	var extra []string
+	for k := range count {
+		if !base[k] && k != "" {
+			extra = append(extra, k)
 		}
 	}
-	sort.Strings(out[len(BaseKinds):])
+	sort.Strings(extra)
+	out = append(out, extra...)
+	if len(out) == 0 {
+		out = []string{KindAgent}
+	}
 	return out
 }
 
-func (m watchModel) activeKind() string {
-	t := m.tabs()
-	if m.tab >= len(t) {
-		return t[len(t)-1]
+func (m watchModel) activeKind() string { return m.tabKind }
+
+// tabIndex locates the active tab in the visible bar (0 when hidden-edge
+// cases collapse it away).
+func (m watchModel) tabIndex() int {
+	for i, k := range m.tabs() {
+		if k == m.tabKind {
+			return i
+		}
 	}
-	return t[m.tab]
+	return 0
+}
+
+func (m *watchModel) cycleTab(delta int) {
+	t := m.tabs()
+	i := (m.tabIndex() + delta + len(t)) % len(t)
+	m.tabKind, m.cursor = t[i], 0
 }
 
 // visible returns the rows on screen: the active tab's items, live-filtered
@@ -195,6 +222,9 @@ func (m watchModel) suggest() (ghost, hint string) {
 		}
 		return ""
 	}
+	if f[0] == "ws" {
+		return "", "workspaces  — list hub workspaces; ↵ switches you there"
+	}
 	// Verb completion (first token only).
 	if len(f) == 1 && !strings.HasSuffix(val, " ") {
 		for _, v := range verbs {
@@ -265,6 +295,9 @@ func (m *watchModel) runInput() string {
 		return ""
 	}
 	f := strings.Fields(line)
+	if f[0] == "ws" { // natural abbreviation, not a prefix of "workspaces"
+		f[0] = "workspaces"
+	}
 	// Accept unambiguous verb prefixes ("sp cargo…" == spawn).
 	verb := ""
 	for _, v := range verbs {
@@ -377,6 +410,13 @@ func (m *watchModel) runInput() string {
 	case "help":
 		m.helpMode = true
 		return ""
+	case "workspaces":
+		ws, err := Workspaces(m.run, m.outer)
+		if err != nil {
+			return err.Error()
+		}
+		m.workspaces, m.wsMode, m.cursor = ws, true, 0
+		return ""
 	}
 	// Bare words: jump.
 	if a := m.fuzzyAgent(strings.ToLower(line)); a != nil {
@@ -429,9 +469,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agents = msg.agents
 		}
 		m.statuses = msg.statuses
-		if n := len(m.tabs()); m.tab >= n {
-			m.tab = n - 1
-		}
+
 		if n := len(m.visible()); m.cursor >= n {
 			m.cursor = max(0, n-1)
 		}
@@ -449,7 +487,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, spans := m.renderTabs()
 				for _, sp := range spans {
 					if msg.X >= sp.start && msg.X < sp.end {
-						m.tab, m.cursor = sp.tab, 0
+						m.tabKind, m.cursor = m.tabs()[sp.tab], 0
 						return m, nil
 					}
 				}
@@ -471,16 +509,43 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.helpMode = false // any key returns from help
 			return m, nil
 		}
+		if m.wsMode {
+			switch msg.String() {
+			case "esc", "ctrl+c":
+				m.wsMode = false
+			case "up":
+				if m.cursor > 0 {
+					m.cursor--
+				}
+			case "down":
+				if m.cursor < len(m.workspaces)-1 {
+					m.cursor++
+				}
+			case "enter":
+				if m.cursor < len(m.workspaces) {
+					target := m.workspaces[m.cursor]
+					if target.Current {
+						m.wsMode = false
+						return m, nil
+					}
+					self, _ := os.Executable()
+					if err := SwitchTo(m.run, m.outer, target.Name, self); err != nil {
+						m.lastMsg = err.Error()
+					}
+					m.wsMode = false
+				}
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "left":
 			if m.input.Value() == "" {
-				n := len(m.tabs())
-				m.tab, m.cursor = (m.tab+n-1)%n, 0
+				m.cycleTab(-1)
 				return m, nil
 			}
 		case "right":
 			if m.input.Value() == "" {
-				m.tab, m.cursor = (m.tab+1)%len(m.tabs()), 0
+				m.cycleTab(1)
 				return m, nil
 			}
 		}
@@ -512,11 +577,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.SetValue(m.input.Value() + g)
 				m.input.CursorEnd()
 			} else {
-				m.tab, m.cursor = (m.tab+1)%len(m.tabs()), 0
+				m.cycleTab(1)
 			}
 		case "shift+tab":
-			n := len(m.tabs())
-			m.tab, m.cursor = (m.tab+n-1)%n, 0
+			m.cycleTab(-1)
 		default:
 			var cmd tea.Cmd
 			m.input, cmd = m.input.Update(msg)
@@ -554,7 +618,7 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 		}
 		label := fmt.Sprintf("%s%s %d ", view, kind, n)
 		cell := tabStyle.Render(label)
-		if ti == m.tab {
+		if kind == m.tabKind {
 			cell = tabActiveStyle.Render(label)
 		}
 		w := lipgloss.Width(cell)
@@ -610,6 +674,31 @@ func (m watchModel) View() string {
 	b.WriteString(truncate(bar, m.width) + "\n")
 	b.WriteString(dimStyle.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 
+	if m.wsMode {
+		b.WriteString(activeStyle.Render(" workspaces on this hub") + "\n")
+		for i, w := range m.workspaces {
+			mark := "  "
+			label := w.Name
+			if w.Current {
+				label += dimStyle.Render(" · here")
+			} else if w.Attached {
+				label += dimStyle.Render(" · attached")
+			}
+			line := mark + label
+			if i == m.cursor {
+				line = mark + selectedStyle.Render(" "+w.Name+" ")
+			}
+			b.WriteString(truncate(line, m.width) + "\n")
+		}
+		body := b.String()
+		if m.height > 0 {
+			lines := strings.Count(body, "\n") + 1
+			for i := lines; i < m.height-1; i++ {
+				body += "\n"
+			}
+		}
+		return body + dimStyle.Render(" ↵ switch there · esc back")
+	}
 	if m.helpMode {
 		for _, line := range helpLines() {
 			b.WriteString(truncate(line, m.width) + "\n")
