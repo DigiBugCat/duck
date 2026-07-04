@@ -13,6 +13,8 @@
 package command
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,9 +46,25 @@ var previewCmd = &cobra.Command{
 			if strings.HasPrefix(args[0], "http://") || strings.HasPrefix(args[0], "https://") {
 				return fmt.Errorf("--watch needs a local file (URLs have no mtime to watch)")
 			}
-			// The watch loop itself keeps the window open; no hold needed.
 			abs, _ := filepath.Abs(args[0])
-			line = watchWrap(abs, render)
+			switch strings.ToLower(filepath.Ext(abs)) {
+			case ".html", ".htm":
+				// The boring way to live-update HTML: a wrapper page that
+				// self-refreshes (meta http-equiv) around an iframe of the
+				// target. ONE carbonyl runs for the window's lifetime — no
+				// process churn, no scroll pollution; edits appear within ~2s.
+				// (Verified: carbonyl allows file→file iframes; it has no
+				// reload keybinding and blocks file:// fetch, so page-driven
+				// refresh is the only in-place mechanism.)
+				wrap, err := writeRefreshWrapper(abs)
+				if err != nil {
+					return err
+				}
+				line = "carbonyl file://" + paths.Quote(wrap)
+			default:
+				// Cheap renderers re-run on change; the loop holds the window.
+				line = watchWrap(abs, render)
+			}
 		} else if hold {
 			// One-shot renderers print and exit; hold the window for a keypress
 			// so the output doesn't vanish with the process.
@@ -129,6 +147,27 @@ func watchWrap(absPath, renderLine string) string {
 	// Quote the WHOLE script through paths.Quote: renderLine carries its own
 	// quoted paths, and hand-rolled outer quotes would collide with them.
 	return "sh -c " + paths.Quote(script)
+}
+
+// writeRefreshWrapper writes (idempotently, keyed by target hash) the
+// self-refreshing iframe wrapper page for a watched HTML preview and returns
+// its path. Lives under ~/.duck/previews; tiny, overwrite-safe, no cleanup
+// needed.
+func writeRefreshWrapper(target string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".duck", "previews")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(target))
+	path := filepath.Join(dir, hex.EncodeToString(sum[:8])+".html")
+	body := fmt.Sprintf(`<meta http-equiv="refresh" content="2">
+<body style="margin:0;background:#111"><iframe src="file://%s" style="border:0;width:100vw;height:100vh"></iframe></body>
+`, target)
+	return path, os.WriteFile(path, []byte(body), 0o644)
 }
 
 func init() {
