@@ -406,15 +406,18 @@ func TestServeDrainsFirstTurnOfFreshAgent(t *testing.T) {
 				types = append(types, meta["type"].(string))
 			}
 		}
-		if len(types) >= 2 {
+		if len(types) >= 1 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	pw.Close()
 	<-done
-	if len(types) != 2 || types[0] != "task_started" || types[1] != "task_complete" {
-		t.Fatalf("first turn must push task_started+task_complete, got %v; output:\n%s", types, out.String())
+	// The task_started drained in the same sweep as its task_complete, so
+	// only the completion pushes — a started for an already-finished turn is
+	// noise.
+	if len(types) != 1 || types[0] != "task_complete" {
+		t.Fatalf("first turn must push exactly task_complete, got %v; output:\n%s", types, out.String())
 	}
 }
 

@@ -53,6 +53,7 @@ var verbs = []struct{ name, usage string }{
 	{"kill", "kill <name>  — kill an agent/buffer"},
 	{"workspaces", "workspaces  — jump to the ⌂ ws tab"},
 	{"close", "close  — close this panel (everything keeps running)"},
+	{"exit", "exit  — kill this ENTIRE workspace (session + all agents)"},
 	{"help", "help  — how this panel works"},
 }
 
@@ -468,6 +469,14 @@ func (m *watchModel) runInput() string {
 		return ""
 	case "close":
 		_ = Close(m.run, m.outer)
+		return "__quit__"
+	case "exit":
+		// Kill the ENTIRE workspace directly via tmux (`duck kill` is the
+		// laptop-client verb — it wants a configured hub, and the roster runs
+		// ON the hub). Companion first: the outer kill takes this TUI down
+		// with it, so it must be the last thing we ask tmux to do.
+		_, _ = m.run("kill-session", "-t", Companion(m.outer))
+		_, _ = m.run("kill-session", "-t", m.outer)
 		return "__quit__"
 	case "help":
 		m.helpMode = true

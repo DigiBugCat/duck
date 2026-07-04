@@ -55,6 +55,12 @@ type AgentRef struct {
 	Name     string // window name (agent label)
 	WindowID string // tmux window id, e.g. "@7"
 	Rollout  string // resolved rollout path; empty if not (yet) paired
+	// SpawnedAt is the pane's spawn stamp, set by Resolve when it attempts a
+	// fresh pairing (zero for cached hits and pairing-ineligible panes). The
+	// Resolver uses it to retry YOUNG codex panes every sweep instead of
+	// every retryEvery — a fresh agent's first turn shouldn't wait 15s for
+	// its channel to attach.
+	SpawnedAt time.Time
 }
 
 // FindAgent locates the named agent window in outer's companion session.
@@ -94,6 +100,7 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 	if err != nil {
 		return err
 	}
+	ref.SpawnedAt = spawnedAt
 	dir, err := run("display-message", "-p", "-t", ref.WindowID, "#{pane_current_path}")
 	if err != nil {
 		return err
@@ -508,6 +515,12 @@ type rstate struct {
 // retryEvery throttles re-pairing attempts for windows with no rollout yet.
 const retryEvery = 15 * time.Second
 
+// youngAge is how long after spawn a codex pane retries pairing on EVERY
+// sweep instead of every retryEvery: codex creates its rollout lazily, and a
+// first turn can start and finish inside one retryEvery window — the channel
+// must attach within a sweep or two, not up to 15s late.
+const youngAge = 2 * time.Minute
+
 // NewResolver returns a Resolver over the local tmux runner.
 func NewResolver(run panel.Runner) *Resolver {
 	return &Resolver{run: run, m: map[string]*rstate{}}
@@ -533,6 +546,9 @@ func (r *Resolver) Rollout(windowID string) string {
 	st.rollout = ref.Rollout
 	if st.rollout == "" {
 		st.nextTry = time.Now().Add(retryEvery)
+		if !ref.SpawnedAt.IsZero() && time.Since(ref.SpawnedAt) < youngAge {
+			st.nextTry = time.Time{} // young codex pane: retry next sweep
+		}
 	}
 	return st.rollout
 }

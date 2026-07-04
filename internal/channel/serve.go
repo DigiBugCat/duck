@@ -311,6 +311,7 @@ func (s *server) drain(ref AgentRef) {
 	var buf strings.Builder
 	newOff, _ := Tail(&buf, ref.Rollout, off, false, false)
 	s.offsets[ref.Rollout] = newOff
+	var events []Event
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
 		if line == "" {
 			continue
@@ -318,6 +319,23 @@ func (s *server) drain(ref AgentRef) {
 		var ev Event
 		if json.Unmarshal([]byte(line), &ev) != nil || !pushTypes[ev.Type] {
 			continue
+		}
+		events = append(events, ev)
+	}
+	for i, ev := range events {
+		// A task_started whose task_complete drained in the same sweep is
+		// noise — the turn is already over; push only the completion.
+		if ev.Type == "task_started" {
+			superseded := false
+			for _, later := range events[i+1:] {
+				if later.Type == "task_complete" {
+					superseded = true
+					break
+				}
+			}
+			if superseded {
+				continue
+			}
 		}
 		msg := ev.Message
 		if len(msg) > maxPush {
