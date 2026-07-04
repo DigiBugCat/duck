@@ -49,44 +49,52 @@ are forwarded directly. The sidebar (duck preview) stays the in-terminal
 tier; render is for content that outgrows it.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		target := args[0]
-		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-			return openOnClient(target)
-		}
-		abs, err := filepath.Abs(target)
+		u, err := publishArtifact(args[0])
 		if err != nil {
 			return err
 		}
-		if _, err := os.Stat(abs); err != nil {
-			return fmt.Errorf("no such file: %s", target)
-		}
-		root, err := renderRoot()
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(root, 0o755); err != nil {
-			return err
-		}
-		// Expose the file's PARENT dir (relative assets must resolve) under a
-		// stable hash name; re-linking is idempotent.
-		dir := filepath.Dir(abs)
-		sum := sha256.Sum256([]byte(dir))
-		slug := hex.EncodeToString(sum[:6])
-		link := filepath.Join(root, slug)
-		_ = os.Remove(link)
-		if err := os.Symlink(dir, link); err != nil {
-			return err
-		}
-		if err := ensureRenderServer(root); err != nil {
-			return err
-		}
-		host, err := os.Hostname()
-		if err != nil {
-			return err
-		}
-		u := fmt.Sprintf("http://%s:%d/%s/%s", host, renderPort, slug, url.PathEscape(filepath.Base(abs)))
 		return openOnClient(u)
 	},
+}
+
+// publishArtifact turns a target into a URL: http(s) passes through; a file
+// is exposed via the render server (parent dir symlinked under a stable hash
+// so relative assets resolve; re-linking is idempotent) and addressed by the
+// hub's tailnet hostname. Shared by `duck render` and `duck window`.
+func publishArtifact(target string) (string, error) {
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
+		return target, nil
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("no such file: %s", target)
+	}
+	root, err := renderRoot()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(abs)
+	sum := sha256.Sum256([]byte(dir))
+	slug := hex.EncodeToString(sum[:6])
+	link := filepath.Join(root, slug)
+	_ = os.Remove(link)
+	if err := os.Symlink(dir, link); err != nil {
+		return "", err
+	}
+	if err := ensureRenderServer(root); err != nil {
+		return "", err
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("http://%s:%d/%s/%s", host, renderPort, slug, url.PathEscape(filepath.Base(abs))), nil
 }
 
 // renderServeCmd is the detached singleton's entrypoint; not for humans.
