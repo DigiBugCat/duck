@@ -30,7 +30,7 @@ import (
 const pollEvery = 2 * time.Second
 
 // wsTab is the pinned pseudo-tab showing hub workspaces.
-const wsTab = "⌂ ws"
+const wsTab = "workspaces"
 
 type tickMsg time.Time
 type agentsMsg struct {
@@ -157,8 +157,36 @@ func (m watchModel) filterText() string {
 	return strings.ToLower(strings.TrimSpace(m.input.Value()))
 }
 
+// rowBudget is how many rows fit between the header and the input+hint.
+func (m watchModel) rowBudget() int {
+	b := m.height - headerLines - 2
+	if b < 1 {
+		b = 1
+	}
+	return b
+}
+
+// rowWindow returns the scroll window over visible(): start offset and the
+// slice on screen, keeping the cursor inside the window. View and the mouse
+// row-mapping share it so a click can never hit the wrong row.
+func (m watchModel) rowWindow() (int, []int) {
+	idx := m.visible()
+	budget := m.rowBudget()
+	if len(idx) <= budget {
+		return 0, idx
+	}
+	start := m.cursor - budget/2
+	if start < 0 {
+		start = 0
+	}
+	if start > len(idx)-budget {
+		start = len(idx) - budget
+	}
+	return start, idx[start : start+budget]
+}
+
 // visible returns the row indexes for the active tab: agent indexes, or
-// workspace indexes on the ⌂ ws tab — both honoring the live filter.
+// workspace indexes on the workspaces tab — both honoring the live filter.
 func (m watchModel) visible() []int {
 	q := m.filterText()
 	var idx []int
@@ -517,10 +545,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			idx := m.visible()
+			start, win := m.rowWindow()
 			row := msg.Y - headerLines
-			if row >= 0 && row < len(idx) {
-				m.cursor = row
+			if row >= 0 && row < len(win) {
+				m.cursor = start + row
 				m.lastMsg = m.viewSelected()
 				return m, m.load
 			}
@@ -653,9 +681,16 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 		if kind == activeKind {
 			view = "▶"
 		}
-		label := view + kind + " "
-		if n > 0 && kind != wsTab {
-			label = fmt.Sprintf("%s%s %d ", view, kind, n)
+		// Inactive tabs collapse to their emoji (the bar stays narrow no
+		// matter how many tabs exist); the ACTIVE tab spells its full name.
+		label := view + KindEmoji(kind) + " "
+		if kind == m.tabKind {
+			label = view + kind + " "
+			if n > 0 && kind != wsTab {
+				label = fmt.Sprintf("%s%s %d ", view, kind, n)
+			}
+		} else if n > 0 && kind != wsTab {
+			label = fmt.Sprintf("%s%s%d ", view, KindEmoji(kind), n)
 		}
 		cell := tabStyle.Render(label)
 		if kind == m.tabKind {
@@ -754,11 +789,15 @@ func (m watchModel) View() string {
 		return body + dimStyle.Render(" any key to return")
 	}
 
-	idx := m.visible()
-	if len(idx) == 0 {
+	start, win := m.rowWindow()
+	if len(win) == 0 {
 		b.WriteString(dimStyle.Render("  nothing here — press : and try `new`") + "\n")
 	}
-	for row, i := range idx {
+	if start > 0 {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  ↑ %d more", start)) + "\n")
+	}
+	for w, i := range win {
+		row := start + w
 		var line string
 		if m.tabKind == wsTab {
 			w := m.workspaces[i]
@@ -788,6 +827,9 @@ func (m watchModel) View() string {
 			}
 		}
 		b.WriteString(truncate(line, m.width) + "\n")
+	}
+	if rest := len(m.visible()) - (start + len(win)); rest > 0 {
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  ↓ %d more", rest)) + "\n")
 	}
 
 	ghost, hint := "", ""

@@ -108,6 +108,9 @@ func KindEmoji(kind string) string {
 	case KindBuffer:
 		return "📝"
 	}
+	if kind == "workspaces" {
+		return "⌂"
+	}
 	return "📦"
 }
 
@@ -733,25 +736,35 @@ type Workspace struct {
 // Workspaces lists the hub's duck sessions (companions excluded), current
 // first, then attached, then name order preserved from tmux.
 func Workspaces(run Runner, outer string) ([]Workspace, error) {
-	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{"+panelOfOption+"}")
+	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{@duck_dir}\t#{"+panelOfOption+"}")
 	if err != nil {
 		return nil, err
 	}
+	myProj := ProjectName(run, outer)
 	var ws []Workspace
-	// TrimRight newlines ONLY: TrimSpace would also eat the LAST line's
-	// trailing tab (an empty @duck_panel_of), silently dropping whichever
-	// session tmux lists last — a real bug we hit.
+	// TrimRight newlines ONLY (TrimSpace eats the last line's trailing tab).
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 3)
-		if len(f) < 2 {
+		f := strings.SplitN(line, "\t", 4)
+		if len(f) < 3 {
 			continue
 		}
 		panelOf := ""
-		if len(f) == 3 {
-			panelOf = strings.TrimSpace(f[2])
+		if len(f) == 4 {
+			panelOf = strings.TrimSpace(f[3])
 		}
 		if panelOf != "" {
 			continue // companions are plumbing
+		}
+		// PROJECT-scoped: only siblings of THIS workspace's project — a finch
+		// workspace has no business in duck's ⌂ tab. The current session is
+		// always shown.
+		dir := strings.TrimSpace(f[2])
+		proj := ""
+		if dir != "" {
+			proj = filepath.Base(dir)
+		}
+		if f[0] != outer && (proj == "" || proj != myProj) {
+			continue
 		}
 		ws = append(ws, Workspace{Name: f[0], Attached: f[1] != "0" && f[1] != "", Current: f[0] == outer})
 	}
