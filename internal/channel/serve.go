@@ -1,6 +1,7 @@
 // serve.go is the Claude Code channel sidecar (`duck channel serve`): a
-// minimal MCP stdio server that multiplexes EVERY sidebar agent on this
-// machine into ONE Claude channel. Claude launches it via .mcp.json +
+// minimal MCP stdio server that multiplexes a workspace's sidebar agents
+// into ONE Claude channel (unscoped = every workspace on the machine, for
+// motherduck). Claude launches it via .mcp.json +
 // `claude --channels server:duck-agents --dangerously-load-development-channels`
 // (the feature is a research preview, hence the flag).
 //
@@ -38,8 +39,12 @@ const maxPush = 2000
 // Serve runs the channel sidecar until stdin closes (Claude exiting kills
 // us). run drives the local tmux server; in production it is
 // panel.ExecRunner and rw is stdin/stdout.
-func Serve(run panel.Runner, in io.Reader, out io.Writer) error {
-	s := &server{run: run, out: out, offsets: map[string]int64{}, resolver: NewResolver(run)}
+//
+// workspace scopes the sweep to ONE duck session's agents — the down edge of
+// the org chart: a manager hears its own lot, not every workspace on the
+// machine. Empty means machine-wide (motherduck / explicit --all).
+func Serve(run panel.Runner, workspace string, in io.Reader, out io.Writer) error {
+	s := &server{run: run, workspace: workspace, out: out, offsets: map[string]int64{}, resolver: NewResolver(run)}
 	go s.watch()
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
@@ -54,9 +59,10 @@ func Serve(run panel.Runner, in io.Reader, out io.Writer) error {
 }
 
 type server struct {
-	run      panel.Runner
-	out      io.Writer
-	resolver *Resolver // memoized pairing/status — watch goroutine only
+	run       panel.Runner
+	workspace string // sweep only this duck session's agents ("" = machine-wide)
+	out       io.Writer
+	resolver  *Resolver // memoized pairing/status — watch goroutine only
 
 	mu      sync.Mutex       // guards out and ready (watcher + handler both touch them)
 	offsets map[string]int64 // rollout → drained byte offset; watch goroutine only
@@ -71,6 +77,19 @@ func (s *server) write(v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	fmt.Fprintln(s.out, string(b))
+}
+
+// instructions is the system-prompt blurb Claude gets at launch: what the
+// events mean and how to reply — scoped to the manager's own workspace when
+// the sidecar is.
+func (s *server) instructions() string {
+	scope := "duck sidebar agents (codex etc.)"
+	if s.workspace != "" {
+		scope = "YOUR sidebar agents (workspace " + s.workspace + " — you are its manager)"
+	}
+	return "Events from " + scope + " arrive as <channel source=\"duck-agents\"> " +
+		"with meta {session, agent, type}. task_complete means the agent finished a turn. " +
+		"To answer or give the agent its next instruction, call the reply tool with that session+agent."
 }
 
 type request struct {
@@ -108,27 +127,31 @@ func (s *server) handle(line []byte) {
 				"experimental": map[string]any{"claude/channel": map[string]any{}},
 				"tools":        map[string]any{},
 			},
-			"serverInfo": map[string]any{"name": "duck-agents", "version": "0.1.0"},
-			"instructions": "Events from duck sidebar agents (codex etc.) arrive as <channel source=\"duck-agents\"> " +
-				"with meta {session, agent, type}. task_complete means the agent finished a turn. " +
-				"To answer or give the agent its next instruction, call the reply tool with that session+agent.",
+			"serverInfo":   map[string]any{"name": "duck-agents", "version": "0.1.0"},
+			"instructions": s.instructions(),
 		})
 	case "notifications/initialized":
 		s.mu.Lock()
 		s.ready = true
 		s.mu.Unlock()
 	case "tools/list":
+		required := []string{"session", "agent", "message"}
+		sessionDesc := "duck session owning the agent (from event meta)"
+		if s.workspace != "" {
+			required = []string{"agent", "message"}
+			sessionDesc = "duck session owning the agent (default: your workspace, " + s.workspace + ")"
+		}
 		s.reply(req.ID, map[string]any{"tools": []any{map[string]any{
 			"name":        "reply",
 			"description": "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport).",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"session": map[string]any{"type": "string", "description": "duck session owning the agent (from event meta)"},
+					"session": map[string]any{"type": "string", "description": sessionDesc},
 					"agent":   map[string]any{"type": "string", "description": "agent name (from event meta)"},
 					"message": map[string]any{"type": "string"},
 				},
-				"required": []string{"session", "agent", "message"},
+				"required": required,
 			},
 		}}})
 	case "tools/call":
@@ -141,6 +164,9 @@ func (s *server) handle(line []byte) {
 		if json.Unmarshal(req.Params, &p) != nil || p.Name != "reply" {
 			s.replyErr(req.ID, -32602, "unknown tool")
 			return
+		}
+		if p.Args.Session == "" {
+			p.Args.Session = s.workspace
 		}
 		ref, err := FindAgent(s.run, p.Args.Session, p.Args.Agent)
 		if err == nil {
@@ -179,6 +205,9 @@ func (s *server) watch() {
 		}
 		keep := map[string]bool{}
 		for _, outer := range owners {
+			if s.workspace != "" && outer != s.workspace {
+				continue // another workspace's lot — not this manager's to hear
+			}
 			agents, err := panel.Agents(s.run, outer)
 			if err != nil {
 				continue // raced away — next sweep

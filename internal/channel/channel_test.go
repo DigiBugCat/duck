@@ -168,7 +168,7 @@ func TestServeHandshakeAndReply(t *testing.T) {
 			`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n" +
 			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reply","arguments":{"session":"work","agent":"codex","message":"go on"}}}` + "\n")
 	var out bytes.Buffer
-	if err := Serve(f.run, in, &out); err != nil {
+	if err := Serve(f.run, "", in, &out); err != nil {
 		t.Fatal(err)
 	}
 	var replies []map[string]any

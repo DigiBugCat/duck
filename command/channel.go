@@ -6,9 +6,9 @@
 //	duck channel serve         Claude Code channel sidecar (MCP stdio)
 //
 // ls/tail/send default to the current tmux session's agents (--session to
-// target another). serve is machine-wide: it multiplexes every sidebar agent
-// on this machine into one Claude channel; register it in .mcp.json and
-// launch Claude with `--channels server:duck-agents
+// target another). serve multiplexes the enclosing workspace's agents into
+// one Claude channel (--all for machine-wide, e.g. motherduck); register it
+// in .mcp.json and launch Claude with `--channels server:duck-agents
 // --dangerously-load-development-channels` (research preview). Without tmux
 // or without any agents, everything here degrades to a quiet no-op.
 package command
@@ -111,23 +111,39 @@ var channelSendCmd = &cobra.Command{
 	},
 }
 
+var channelServeAll bool
+
 var channelServeCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Claude Code channel sidecar: all agents on this machine, one channel",
+	Short: "Claude Code channel sidecar: this workspace's agents, one channel",
 	Long: `MCP stdio server pushing sidebar-agent events (turn started/finished) into a
 Claude Code session, with a reply tool routing answers back into the agent's
-TUI. Register in .mcp.json:
+TUI. Scoped to the enclosing workspace's agents by default (a manager hears
+its own lot, not the whole machine); --session picks another workspace, --all
+sweeps every workspace (motherduck). Register in .mcp.json:
 
   {"mcpServers": {"duck-agents": {"command": "duck", "args": ["channel", "serve"]}}}
 
 and launch: claude --channels server:duck-agents --dangerously-load-development-channels`,
 	RunE: func(c *cobra.Command, args []string) error {
-		return channel.Serve(panel.ExecRunner, os.Stdin, os.Stdout)
+		workspace := ""
+		if !channelServeAll {
+			ws, err := channelOuter(panel.ExecRunner)
+			if err != nil {
+				// Outside tmux with no --session there is nothing to scope to:
+				// sweep machine-wide rather than dying — degrade, don't demand.
+				fmt.Fprintln(os.Stderr, "duck channel serve: no enclosing workspace, sweeping machine-wide (use --session or --all to be explicit)")
+			} else {
+				workspace = ws
+			}
+		}
+		return channel.Serve(panel.ExecRunner, workspace, os.Stdin, os.Stdout)
 	},
 }
 
 func init() {
 	channelCmd.PersistentFlags().StringVar(&channelSession, "session", "", "duck session owning the agent (default: current tmux session)")
+	channelServeCmd.Flags().BoolVar(&channelServeAll, "all", false, "sweep every workspace on the machine (motherduck), not just the enclosing one")
 	channelTailCmd.Flags().BoolVarP(&channelTailFollow, "follow", "f", false, "keep streaming as new events arrive")
 	channelTailCmd.Flags().BoolVar(&channelTailRaw, "raw", false, "raw rollout lines (unfiltered)")
 	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd)
