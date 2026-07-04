@@ -20,6 +20,7 @@ import (
 	"github.com/DigiBugCat/duck/internal/names"
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/session"
+	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
 // Syncer is the seam onto the M1 sync engine. IsSynced reports whether cwd
@@ -190,6 +191,7 @@ type Flow struct {
 	addr       string
 	sessions   *session.Manager
 	names      *names.Store
+	workspaces *workspaces.Store // durable per-workspace ledger; dual-written alongside names.json
 	sync       Syncer
 	policy     PolicyStore
 	classifier Classifier
@@ -231,6 +233,14 @@ func (f *Flow) SetClaudeReconciler(fn func()) {
 	}
 	f.reconcileClaude = fn
 }
+
+// SetWorkspaces wires the durable workspace ledger so EnsureSession dual-writes
+// a Record alongside the names.json entry. Injected from the command layer (like
+// SetClaudeHistory) so flow's New/NewWithDeps signatures — and their existing
+// callers/tests — stay unchanged. A nil store leaves the dual-write off (flow
+// tests that don't care about the ledger need no wiring); names.json behavior is
+// never affected either way.
+func (f *Flow) SetWorkspaces(store *workspaces.Store) { f.workspaces = store }
 
 // SetInteractiveAttach overrides the interactive-attach seam (the command layer
 // wires in its reconnect loop). A nil arg restores the default. Called by the
@@ -520,7 +530,16 @@ func (f *Flow) registerDir(id, tildeDir string) error {
 		e.CreatedAt = time.Now()
 	}
 	n.Names[id] = e
-	return f.names.Save(n)
+	if err := f.names.Save(n); err != nil {
+		return err
+	}
+	// Dual-write the durable workspace ledger (in ADDITION to names.json). Keyed by
+	// the project dir so many workspaces per dir coexist. Best-effort and OFF when
+	// no store is wired — a ledger write must never block session creation.
+	if f.workspaces != nil {
+		_ = f.workspaces.Save(workspaces.Record{Name: id, Dir: tildeDir})
+	}
+	return nil
 }
 
 // mintID derives a tmux-legal id from tildeDir and appends -<n> until it does

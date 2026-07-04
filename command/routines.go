@@ -28,6 +28,7 @@ import (
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/routines"
+	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
 const routinesSystemdUnit = "duck-routines"
@@ -156,6 +157,43 @@ func appendUnique(xs []string, x string) []string {
 	return append(xs, x)
 }
 
+// setPersistentForCurrentDir marks (or clears) Persistent on the live
+// workspace's durable record for proj, so a persistent workspace is healed back
+// after a reboot and the tick's sweep sees the dir even with no file-registry
+// entry. It is the DURABLE half of enable/disable, in ADDITION to the file
+// registry. When no live workspace exists in proj there is nothing to stamp — we
+// fall back to the file registry alone (exactly the old behavior), so enabling
+// still works with every workspace closed. Best-effort and reported, never
+// fatal: a hub/ledger failure must not fail the enable/disable the user asked
+// for (the file registry write has already succeeded by the time this runs).
+func setPersistentForCurrentDir(c *cobra.Command, proj string, persistent bool) {
+	w, err := build()
+	if err != nil {
+		return // no hub configured: file registry alone (the pre-ledger behavior).
+	}
+	tilde := paths.Contract(proj)
+	s, ok, err := w.sessions.Recent(tilde)
+	if err != nil || !ok {
+		return // no live workspace in this dir: nothing to stamp.
+	}
+	store := workspaces.NewStore(w.client)
+	rec, found, err := store.Load(tilde, s.Name)
+	if err != nil {
+		fmt.Fprintf(c.ErrOrStderr(), "routines: could not read workspace record: %v\n", err)
+		return
+	}
+	if !found {
+		rec = workspaces.Record{Name: s.Name, Dir: tilde}
+	}
+	if rec.Persistent == persistent {
+		return // already in the desired state.
+	}
+	rec.Persistent = persistent
+	if err := store.Save(rec); err != nil {
+		fmt.Fprintf(c.ErrOrStderr(), "routines: could not update workspace record: %v\n", err)
+	}
+}
+
 var routinesEnableCmd = &cobra.Command{
 	Use:   "enable",
 	Short: "Register the current project so its routines fire even with no workspace open",
@@ -168,6 +206,10 @@ var routinesEnableCmd = &cobra.Command{
 		if err := routines.Enable(proj); err != nil {
 			return err
 		}
+		// Durable form: if a live workspace exists here, mark its record Persistent
+		// so it heals back after a reboot (the file registry is legacy — see
+		// routines.SweepProjects).
+		setPersistentForCurrentDir(c, proj, true)
 		fmt.Fprintf(c.OutOrStdout(), "enabled routines for %s\n", proj)
 		return nil
 	},
@@ -185,6 +227,7 @@ var routinesDisableCmd = &cobra.Command{
 		if err := routines.Disable(proj); err != nil {
 			return err
 		}
+		setPersistentForCurrentDir(c, proj, false)
 		fmt.Fprintf(c.OutOrStdout(), "disabled routines for %s\n", proj)
 		return nil
 	},

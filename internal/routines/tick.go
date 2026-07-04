@@ -20,7 +20,18 @@ import (
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/session"
+	"github.com/DigiBugCat/duck/internal/workspaces"
 )
+
+// wsStore constructs a workspaces.Store over a LOCAL shell runner. The tick
+// always runs hub-local (panel.ExecRunner drives the local tmux server), and
+// the workspace records live on the hub filesystem, so a local sh runner is the
+// right seam here — NOT the SSH client the laptop-side flow uses. panel.
+// ExecRunner itself prepends "tmux" and so cannot double as the store's shell.
+// It is a package var so tests can point the ledger at a scratch base.
+var wsStore = func() *workspaces.Store {
+	return workspaces.NewStore(workspaces.LocalRunner{})
+}
 
 // codexBin is the executor binary tick launches per fire. Overridable via
 // DUCK_CODEX_BIN (a test seam, and genuinely useful when codex isn't named
@@ -46,6 +57,11 @@ var getenv = os.Getenv
 // run is the LOCAL tmux runner (tick always runs on the hub). now is injected
 // for tests. logw receives human-readable progress/skip/error lines.
 func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
+	// Heal first: bring every Persistent workspace back to life before due-ness is
+	// computed, so a routine whose workspace died in a reboot fires into the healed
+	// session this same tick rather than waiting for the next one.
+	healPersistent(run, logw)
+
 	projects, err := SweepProjects(run)
 	if err != nil {
 		return fmt.Errorf("enumerate projects: %w", err)
@@ -142,10 +158,17 @@ func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
 	return true
 }
 
-// sweepProjects is the union of (a) live workspaces' @duck_dir and (b) the
-// registered projects file, all as absolute paths. A project may appear in
-// both; the result is deduped. Registered projects survive all workspaces
-// being closed, so automation keeps running.
+// sweepProjects is the union of three sources, all as absolute deduped paths:
+// (a) live workspaces' @duck_dir, (b) the registered projects file, and (c)
+// dirs that have at least one Persistent workspace record. Registered projects
+// and persistent records both survive all workspaces being closed, so
+// automation keeps running across a reboot.
+//
+// NOTE: the routines-projects file (source b) is now LEGACY — `duck routines
+// enable` sets Persistent on the live workspace's record (source c) when one
+// exists, which is the durable form. The file union is kept working for
+// migration and for the enable-with-no-live-workspace fallback; it is not
+// removed here.
 func SweepProjects(run panel.Runner) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
@@ -172,6 +195,17 @@ func SweepProjects(run panel.Runner) ([]string, error) {
 	}
 	for _, p := range registered {
 		add(p)
+	}
+
+	// Persistent records: a dir with one keeps automation alive even with every
+	// workspace closed. Best-effort — a ledger read failure (or empty ledger) must
+	// not stop the sweep, which still fires for live + registered projects.
+	if recs, err := wsStore().All(); err == nil {
+		for _, r := range recs {
+			if r.Persistent {
+				add(r.Dir)
+			}
+		}
 	}
 	return out, nil
 }
@@ -200,6 +234,62 @@ func workspaceDirs(run panel.Runner) ([]string, error) {
 		dirs = append(dirs, dir)
 	}
 	return dirs, nil
+}
+
+// healPersistent recreates every Persistent workspace record whose tmux session
+// is no longer live, so persistent workspaces survive a hub reboot. Each healed
+// session is minted headless under the record's OWN name (not a fresh derived
+// id) so its identity is stable across reboots, and its @duck_dir (and
+// @duck_parent, when the record names one) are restamped. Best-effort
+// throughout: a ledger-read or tmux failure logs and is skipped — healing must
+// never stop the tick's firing pass.
+func healPersistent(run panel.Runner, logw io.Writer) {
+	recs, err := wsStore().All()
+	if err != nil {
+		return // no ledger / read error: nothing to heal, and the sweep still fires.
+	}
+	live := liveSessionNames(run)
+	for _, r := range recs {
+		if !r.Persistent || live[r.Name] {
+			continue
+		}
+		abs, err := paths.Expand(r.Dir)
+		if err != nil {
+			fmt.Fprintf(logw, "routines: heal %s: bad dir %q: %v\n", r.Name, r.Dir, err)
+			continue
+		}
+		tilde := paths.Contract(abs)
+		if _, err := run("new-session", "-d", "-s", r.Name, "-c", abs); err != nil {
+			fmt.Fprintf(logw, "routines: heal %s: new-session: %v\n", r.Name, err)
+			continue
+		}
+		if _, err := run("set-option", "-t", r.Name, "@duck_dir", tilde); err != nil {
+			fmt.Fprintf(logw, "routines: heal %s: set @duck_dir: %v\n", r.Name, err)
+		}
+		if r.Parent != "" {
+			if _, err := run("set-option", "-t", r.Name, "@duck_parent", r.Parent); err != nil {
+				fmt.Fprintf(logw, "routines: heal %s: set @duck_parent: %v\n", r.Name, err)
+			}
+		}
+		fmt.Fprintf(logw, "routines: healed persistent workspace %s (%s)\n", r.Name, tilde)
+	}
+}
+
+// liveSessionNames returns the set of live tmux session names on the hub. An
+// empty/dead server yields an empty set (not an error) so heal simply treats
+// every record as needing revival — which is correct after a reboot.
+func liveSessionNames(run panel.Runner) map[string]bool {
+	names := map[string]bool{}
+	out, err := run("list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		return names
+	}
+	for _, n := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if n = strings.TrimSpace(n); n != "" {
+			names[n] = true
+		}
+	}
+	return names
 }
 
 // ensureWorkspace returns the tmux session name for absDir, creating a headless

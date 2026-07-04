@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
 // fakeRunner scripts tmux responses by argv-prefix and records calls, so the
@@ -247,5 +249,54 @@ func TestTickFiresDueCron(t *testing.T) {
 	st2, _ := LoadState()
 	if got := st2.LastFire[Key(proj, "nightly")]; time.Since(got) > time.Minute {
 		t.Fatalf("last-fire not advanced: %v", got)
+	}
+}
+
+// TestTickHealsPersistentWorkspace verifies the heal path: a Persistent record
+// whose session is not live is recreated headless (new-session under the
+// record's own name) with @duck_dir and @duck_parent restamped, before any
+// firing. Uses a scratch ledger over the local sh runner so the real
+// ~/.claude/projects is never touched.
+func TestTickHealsPersistentWorkspace(t *testing.T) {
+	duckHome := t.TempDir()
+	t.Setenv("DUCK_HOME", duckHome) // isolate routines-state/-projects
+
+	// Point the ledger at a scratch base and seed one persistent record with a
+	// parent. Restore the package seam after the test.
+	base := t.TempDir()
+	prev := wsStore
+	wsStore = func() *workspaces.Store {
+		s := workspaces.NewStore(workspaces.LocalRunner{})
+		s.SetBase(base)
+		return s
+	}
+	defer func() { wsStore = prev }()
+
+	rec := workspaces.Record{Name: "duck-9", Dir: "~/dev/persistent", Parent: "motherduck", Persistent: true}
+	if err := wsStore().Save(rec); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	// No live sessions anywhere → heal must revive duck-9. list-sessions returns
+	// empty for every format the tick asks.
+	f := &fakeRunner{responder: func(args []string) (string, bool) {
+		if args[0] == "list-sessions" {
+			return "", true
+		}
+		return "", false
+	}}
+	var log bytes.Buffer
+	if err := Tick(f.run, time.Now(), &log); err != nil {
+		t.Fatalf("tick: %v\nlog=%s", err, log.String())
+	}
+
+	if !f.called("new-session -d -s duck-9") {
+		t.Fatalf("heal must new-session the persistent workspace; calls=%v\nlog=%s", f.calls, log.String())
+	}
+	if !f.called("set-option -t duck-9 @duck_dir ~/dev/persistent") {
+		t.Fatalf("heal must restamp @duck_dir; calls=%v", f.calls)
+	}
+	if !f.called("set-option -t duck-9 @duck_parent motherduck") {
+		t.Fatalf("heal must restamp @duck_parent from the record; calls=%v", f.calls)
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/session"
 	"github.com/DigiBugCat/duck/internal/sshx"
+	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
 // defaultCodexModel is the fallback codex model for laptop-side naming when the
@@ -138,6 +139,10 @@ func build() (*wiring, error) {
 	store := names.NewStore(client)
 	nm := namer.NewCodexExec(client, codexLocal{}, model)
 	fl := flow.New(cfg.Hub, cfg.MachineAddr, sess, store, ttyPrompter{}, newTTYProgress())
+	// Dual-write the durable workspace ledger on session creation, alongside
+	// names.json. Same SSH client seam as names.Store — records live in Claude's
+	// projects corpus on the hub, so reads/writes go over ssh from a laptop.
+	fl.SetWorkspaces(workspaces.NewStore(client))
 	// Running ON the hub: skip the sync-awareness gate entirely (mirroring a folder
 	// to the machine it already lives on is a no-op), so bare `duck` opens a local
 	// session in cwd without prompting to sync. Same hostname match as client.Local.
