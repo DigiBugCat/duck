@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DigiBugCat/duck/internal/paths"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -45,6 +46,9 @@ type watchModel struct {
 	focused     bool   // pane focus (tmux focus-events): the click that focuses us must not also select
 	swallowNext bool   // the next click is the one that focused the pane — ignore exactly one
 	armedKill   string // windowID armed for kill: x arms, second x confirms (accidental-kill guard)
+	cmdMode     bool   // the : palette (the roster is the minibuffer)
+	cmdInput    string
+	cmdErr      string // last palette error, shown until the next keypress
 }
 
 // Watch runs the list TUI until the user quits (q / ^c). It is the body of
@@ -227,7 +231,33 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.KeyMsg:
+		if m.cmdMode {
+			switch msg.String() {
+			case "esc", "ctrl+c":
+				m.cmdMode, m.cmdInput = false, ""
+			case "enter":
+				m.cmdErr = m.runPalette(strings.TrimSpace(m.cmdInput))
+				m.cmdMode, m.cmdInput = false, ""
+				return m, m.load
+			case "backspace":
+				if len(m.cmdInput) > 0 {
+					r := []rune(m.cmdInput)
+					m.cmdInput = string(r[:len(r)-1])
+				}
+			default:
+				if msg.Type == tea.KeyRunes || msg.String() == " " {
+					m.cmdInput += string(msg.Runes)
+					if msg.String() == " " && len(msg.Runes) == 0 {
+						m.cmdInput += " "
+					}
+				}
+			}
+			return m, nil
+		}
+		m.cmdErr = ""
 		switch msg.String() {
+		case ":":
+			m.cmdMode, m.cmdInput = true, ""
 		case "q", "ctrl+c":
 			// Close the whole panel: the viewport pane too, then quit (our own
 			// pane dies with the process).
@@ -292,6 +322,109 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// runPalette executes one palette line. Grammar (v1, deliberately tiny):
+//
+//	<bare words>        fuzzy-jump to the agent/buffer whose name matches
+//	s|spawn <cmd...>    spawn an agent running cmd
+//	e|edit [name]       open a pad (workspace pad when no name)
+//	k|kill <name>       kill by roster name (no confirm — you typed it)
+//
+// Returns "" on success or a short error for the footer.
+func (m *watchModel) runPalette(line string) string {
+	if line == "" {
+		return ""
+	}
+	f := strings.Fields(line)
+	switch f[0] {
+	case "s", "spawn":
+		if len(f) < 2 {
+			return "spawn what?"
+		}
+		dir, err := CurrentPanePath(m.run)
+		if err != nil {
+			return err.Error()
+		}
+		name := f[1]
+		if i := strings.LastIndex(f[1], "/"); i >= 0 {
+			name = f[1][i+1:]
+		}
+		if _, err := Spawn(m.run, m.outer, name, dir, strings.Join(f[1:], " "), KindAgent); err != nil {
+			return err.Error()
+		}
+		return ""
+	case "e", "edit":
+		name := m.outer
+		if len(f) > 1 {
+			name = f[1]
+		}
+		path, err := PadPath(name)
+		if err != nil {
+			return err.Error()
+		}
+		dir, _ := CurrentPanePath(m.run)
+		for _, a := range m.agents {
+			if a.Kind == KindBuffer && a.Name == name {
+				_ = Select(m.run, m.outer, a.PaneID)
+				return ""
+			}
+		}
+		cmd := "sh -c 'while :; do \"${EDITOR:-vim}\" " + paths.Quote(path) + "; sleep 0.3; done'"
+		if _, err := Spawn(m.run, m.outer, name, dir, cmd, KindBuffer); err != nil {
+			return err.Error()
+		}
+		return ""
+	case "k", "kill":
+		if len(f) < 2 {
+			return "kill what?"
+		}
+		if a := m.fuzzyAgent(strings.Join(f[1:], " ")); a != nil {
+			_ = Kill(m.run, a.PaneID)
+			return ""
+		}
+		return "no match: " + f[1]
+	}
+	// Bare words: switch-to-buffer.
+	if a := m.fuzzyAgent(line); a != nil {
+		_ = Select(m.run, m.outer, a.PaneID)
+		return ""
+	}
+	return "no match: " + line
+}
+
+// fuzzyAgent finds the best roster match: exact name, then prefix, then
+// subsequence — first hit in roster order wins each tier.
+func (m *watchModel) fuzzyAgent(q string) *Agent {
+	q = strings.ToLower(q)
+	var prefix, subseq *Agent
+	for i := range m.agents {
+		a := &m.agents[i]
+		n := strings.ToLower(a.Name)
+		if n == q {
+			return a
+		}
+		if prefix == nil && strings.HasPrefix(n, q) {
+			prefix = a
+		}
+		if subseq == nil && isSubseq(n, q) {
+			subseq = a
+		}
+	}
+	if prefix != nil {
+		return prefix
+	}
+	return subseq
+}
+
+func isSubseq(hay, needle string) bool {
+	i := 0
+	for _, c := range hay {
+		if i < len(needle) && byte(c) == needle[i] {
+			i++
+		}
+	}
+	return i == len(needle)
 }
 
 var (
@@ -370,9 +503,14 @@ func (m watchModel) View() string {
 			viewing = a.Name
 		}
 	}
-	help := dimStyle.Render(" ⇥ tab · ↵ view · e scratch · x kill · s shell · q close")
+	help := dimStyle.Render(" : cmd · ⇥ tab · ↵ view · e scratch · x kill · s shell · q close")
 	if viewing != "" {
 		help = activeStyle.Render(" ▶ viewing "+viewing) + dimStyle.Render(" · ⇥ tab · ↵ view · x kill · q close")
+	}
+	if m.cmdMode {
+		help = titleStyle.Render(" :") + m.cmdInput + selectedStyle.Render(" ")
+	} else if m.cmdErr != "" {
+		help = workingStyle.Render(" " + m.cmdErr)
 	}
 	if m.armedKill != "" {
 		for _, a := range m.agents {
