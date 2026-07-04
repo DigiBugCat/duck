@@ -56,8 +56,18 @@ var previewCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if _, err := panel.Spawn(run, comp, "preview", dir, line, panel.KindArtifact); err != nil {
+		wid, err := panel.Spawn(run, comp, "preview", dir, line, panel.KindArtifact)
+		if err != nil {
 			return err
+		}
+		// Stamp the render recipe on non-watch file previews so the roster can
+		// re-render on selection when the file has changed (click-to-refresh).
+		if !previewWatch && !strings.HasPrefix(args[0], "http") {
+			if abs, err := filepath.Abs(args[0]); err == nil {
+				if mtime, ok := panel.FileMtime(abs); ok {
+					panel.StampPreview(run, wid, line, abs, mtime)
+				}
+			}
 		}
 		bin, err := os.Executable()
 		if err != nil {

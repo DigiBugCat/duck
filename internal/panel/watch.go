@@ -205,7 +205,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			row := msg.Y - headerLines
 			if row >= 0 && row < len(idx) {
 				m.cursor = row
-				_ = Select(m.run, m.agents[idx[row]].WindowID)
+				wid := m.agents[idx[row]].WindowID
+				RefreshIfStale(m.run, wid, FileMtime)
+				_ = Select(m.run, wid)
 				return m, m.load
 			}
 		}
@@ -231,7 +233,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter", " ":
 			if idx := m.filtered(); m.cursor < len(idx) {
-				_ = Select(m.run, m.agents[idx[m.cursor]].WindowID)
+				wid := m.agents[idx[m.cursor]].WindowID
+				RefreshIfStale(m.run, wid, FileMtime)
+				_ = Select(m.run, wid)
 				return m, m.load
 			}
 		case "x":

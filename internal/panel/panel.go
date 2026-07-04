@@ -369,3 +369,56 @@ func Kill(run Runner, windowID string) error {
 	_, err := run("kill-window", "-t", windowID)
 	return err
 }
+
+// Preview windows carry their render recipe in window options so the roster
+// can re-render ON DEMAND: selecting an artifact whose source file changed
+// respawns the window with the same command — no background watch loop, no
+// restart flicker while you're looking at it. Unchanged file → plain select.
+const (
+	PreviewCmdOption   = "@duck_preview_cmd"
+	PreviewPathOption  = "@duck_preview_path"
+	PreviewMtimeOption = "@duck_preview_mtime"
+)
+
+// StampPreview records the recipe on a freshly spawned preview window.
+func StampPreview(run Runner, windowID, cmd, path string, mtime int64) {
+	_, _ = run("set-option", "-w", "-t", windowID, PreviewCmdOption, cmd)
+	_, _ = run("set-option", "-w", "-t", windowID, PreviewPathOption, path)
+	_, _ = run("set-option", "-w", "-t", windowID, PreviewMtimeOption, strconv.FormatInt(mtime, 10))
+}
+
+// RefreshIfStale re-renders a preview window whose source file changed since
+// the last render (respawn-window with the stamped command), restamping the
+// new mtime. Windows without a preview stamp — agents, shells — are a no-op,
+// so callers can invoke it on every selection unconditionally.
+func RefreshIfStale(run Runner, windowID string, stat func(string) (int64, bool)) {
+	read := func(name string) string {
+		out, err := run("show-options", "-w", "-t", windowID, "-v", name)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(out)
+	}
+	path := read(PreviewPathOption)
+	cmd := read(PreviewCmdOption)
+	if path == "" || cmd == "" {
+		return
+	}
+	mtime, ok := stat(path)
+	if !ok || strconv.FormatInt(mtime, 10) == read(PreviewMtimeOption) {
+		return
+	}
+	if _, err := run("respawn-window", "-k", "-t", windowID, cmd); err != nil {
+		return
+	}
+	_, _ = run("set-option", "-w", "-t", windowID, PreviewMtimeOption, strconv.FormatInt(mtime, 10))
+}
+
+// FileMtime is the production stat for RefreshIfStale.
+func FileMtime(path string) (int64, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	return info.ModTime().Unix(), true
+}
