@@ -120,6 +120,13 @@ func build() (*wiring, error) {
 	// tmux lives; best-effort and silent — an old hub binary just means no
 	// sidebar, never a broken attach.
 	armPanel = func(session string) {
+		// Stamp the client terminal's REAL cell pixel size on the hub's tmux
+		// server first (see cellsize.go): hub-side pixel renderers (gosling)
+		// read @duck_client_cell instead of trusting tmux's guess, which is
+		// wrong over SSH (clients report no pixels) and varies by client.
+		if cw, ch, ok := localCellSize(); ok {
+			_, _ = client.Run(fmt.Sprintf("tmux set-option -g @duck_client_cell %dx%d >/dev/null 2>&1 || true", cw, ch))
+		}
 		_, _ = client.Run("duck panel --session " + paths.Quote(session) + " >/dev/null 2>&1 || true")
 	}
 
