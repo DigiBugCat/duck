@@ -96,6 +96,16 @@ func tick() tea.Cmd {
 }
 
 func (m watchModel) load() tea.Msg {
+	// Self-heal: when the viewport occupant's PROCESS dies (codex exec
+	// finishing, a shell exiting), its pane vanishes and the panel is broken
+	// until something re-runs Open. The roster is the pane that survives, so
+	// it re-asserts the panel itself — a fresh terminal viewport appears
+	// within one poll instead of the user facing a mangled layout.
+	if roles, rerr := Panes(m.run, m.outer); rerr == nil && roles["viewport"] == "" && roles["list"] != "" {
+		if self, serr := os.Executable(); serr == nil {
+			_ = Open(m.run, m.outer, Companion(m.outer), self)
+		}
+	}
 	agents, err := Agents(m.run, m.outer)
 	statuses := map[string]string{}
 	if m.statusFn != nil {
