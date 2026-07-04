@@ -353,6 +353,16 @@ func Panes(run Runner, outer string) (map[string]string, error) {
 // panes are left alone. duckBin is the path of the duck binary to run the
 // roster TUI with.
 func Open(run Runner, outer, comp, duckBin string) error {
+	// Serialize concurrent arms of the SAME workspace: with auto-launched
+	// managers, the attach path's panel arm and the launch line's own `duck
+	// panel` (the user's claude shell function runs one in-tmux) fire at the
+	// same instant, and two interleaved Opens each minted a viewport+roster —
+	// a doubled sidebar (seen live on duck-5/6/7). All arms run hub-side, so a
+	// local flock is a real mutex; the loser re-reads roles and becomes a heal.
+	if unlock, lockErr := lockPanel(outer); lockErr == nil {
+		defer unlock()
+	} // lock failure degrades to the old racy-but-working behavior
+
 	roles, err := Panes(run, outer)
 	if err != nil {
 		return err
