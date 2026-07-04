@@ -442,7 +442,12 @@ func Spawn(run Runner, outer, name, dir, cmdline, kind string) (paneID string, e
 		args = append(args, "-c", dir)
 	}
 	if cmdline != "" {
-		args = append(args, cmdline)
+		// Hold the pane open when the command exits non-zero or near-
+		// instantly: otherwise `spawn test` (a builtin that exits in 1ms)
+		// lives and dies before the viewport can even show it — reads as
+		// "nothing happened".
+		script := cmdline + `; ec=$?; if [ $ec -ne 0 ]; then printf '\n[exited %d — enter to close] ' "$ec"; read -r _; fi`
+		args = append(args, "sh -c "+paths.Quote(script))
 	}
 	id, err := run(args...)
 	if err != nil {

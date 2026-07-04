@@ -87,7 +87,7 @@ func TestAgentsMergesSlotOccupantAndParkedPanes(t *testing.T) {
 
 func TestSpawnParksStampsAndSelects(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
-		"split-window -d -t work-agents:lot -P -F #{pane_id} -c /d codex": "%9\n",
+		"split-window -d -t work-agents:lot -P -F #{pane_id} -c /d sh -c 'codex; ec=$?; if [ $ec -ne 0 ]; then printf '\\''\\n[exited %d — enter to close] '\\'' \"$ec\"; read -r _; fi'": "%9\n",
 		rolesKey: "%5\tviewport\n",
 	}}
 	id, err := Spawn(f.run, "work", "fixer", "/d", "codex", KindAgent)

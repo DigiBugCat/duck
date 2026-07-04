@@ -40,12 +40,14 @@ type StatusFn func(paneID string) string
 // verbs the command box understands, with the usage hint the suggestion
 // line shows. Order = suggestion priority.
 var verbs = []struct{ name, usage string }{
+	{"new", ""}, // contextual: usage depends on the active tab (see newUsage)
 	{"spawn", "spawn <cmd…>  — launch an agent"},
 	{"edit", "edit [pad]  — open/create a pad (no name: workspace pad)"},
 	{"preview", "preview <file|url>  — render in the viewport"},
 	{"render", "render <file|url>  — open in your laptop browser"},
 	{"kill", "kill <name>  — kill an agent/buffer"},
 	{"close", "close  — close this panel (everything keeps running)"},
+	{"help", "help  — how this panel works"},
 }
 
 type watchModel struct {
@@ -61,6 +63,7 @@ type watchModel struct {
 	height   int
 
 	input       textinput.Model
+	helpMode    bool   // showing the cheat sheet instead of rows
 	lastMsg     string // result/error of the last command, shown until next keypress
 	focused     bool
 	swallowNext bool // the click that focuses the pane must not also select
@@ -70,7 +73,7 @@ type watchModel struct {
 func Watch(run Runner, outer string, status StatusFn) error {
 	ti := textinput.New()
 	ti.Prompt = "❯ "
-	ti.Placeholder = "type a name to jump · spawn <cmd> · edit <pad> · …"
+	ti.Placeholder = "type here — a name jumps to it · spawn <cmd> · help"
 	ti.Focus()
 	m := watchModel{run: run, outer: outer, statusFn: status, input: ti}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus()).Run()
@@ -159,6 +162,22 @@ func (m watchModel) isVerb() bool {
 	return false
 }
 
+// newUsage is the tab-aware meaning of the `new` verb.
+func (m watchModel) newUsage() string {
+	switch m.activeKind() {
+	case KindShell:
+		return "new  — open a fresh shell here"
+	case KindBuffer:
+		return "new <name>  — create a pad"
+	case KindArtifact:
+		return "new <file|url>  — preview something"
+	case KindAgent:
+		return "new <cmd…>  — launch an agent"
+	default:
+		return "new <cmd…>  — launch into the " + m.activeKind() + " tab"
+	}
+}
+
 // suggest computes the ghost completion and the hint line for the current
 // input. ghost is the REMAINDER to display after the typed text.
 func (m watchModel) suggest() (ghost, hint string) {
@@ -167,17 +186,28 @@ func (m watchModel) suggest() (ghost, hint string) {
 	if len(f) == 0 {
 		return "", ""
 	}
+	usage := func(v string) string {
+		if v == "new" {
+			return m.newUsage()
+		}
+		for _, e := range verbs {
+			if e.name == v {
+				return e.usage
+			}
+		}
+		return ""
+	}
 	// Verb completion (first token only).
 	if len(f) == 1 && !strings.HasSuffix(val, " ") {
 		for _, v := range verbs {
 			if strings.HasPrefix(v.name, f[0]) && v.name != f[0] {
-				return v.name[len(f[0]):], v.usage
+				return v.name[len(f[0]):], usage(v.name)
 			}
 		}
 	}
 	for _, v := range verbs {
 		if f[0] == v.name {
-			return "", v.usage
+			return "", usage(v.name)
 		}
 	}
 	// Jump: best fuzzy match across ALL agents (any tab).
@@ -257,6 +287,42 @@ func (m *watchModel) runInput() string {
 		}
 	}
 	switch verb {
+	case "new":
+		switch m.activeKind() {
+		case KindShell:
+			dir, _ := CurrentPanePath(m.run)
+			if _, err := Spawn(m.run, m.outer, "shell", dir, "", KindShell); err != nil {
+				return err.Error()
+			}
+			return "new shell"
+		case KindBuffer:
+			if len(f) < 2 {
+				return "new <name> — pads need names"
+			}
+			m.input.SetValue("edit " + f[1])
+			return m.runInput()
+		case KindArtifact:
+			if len(f) < 2 {
+				return "new <file|url>"
+			}
+			return m.duckExec("preview", f[1])
+		default: // agents + any custom tab: spawn INTO this tab
+			if len(f) < 2 {
+				return "new <cmd…>"
+			}
+			dir, err := CurrentPanePath(m.run)
+			if err != nil {
+				return err.Error()
+			}
+			name := f[1]
+			if i := strings.LastIndex(name, "/"); i >= 0 {
+				name = name[i+1:]
+			}
+			if _, err := Spawn(m.run, m.outer, name, dir, strings.Join(f[1:], " "), m.activeKind()); err != nil {
+				return err.Error()
+			}
+			return "spawned " + name + " → " + m.activeKind()
+		}
 	case "spawn":
 		if len(f) < 2 {
 			return "spawn what?"
@@ -311,6 +377,9 @@ func (m *watchModel) runInput() string {
 	case "close":
 		_ = Close(m.run, m.outer)
 		return "__quit__"
+	case "help":
+		m.helpMode = true
+		return ""
 	}
 	// Bare words: jump.
 	if a := m.fuzzyAgent(strings.ToLower(line)); a != nil {
@@ -401,6 +470,23 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		m.lastMsg = ""
+		if m.helpMode {
+			m.helpMode = false // any key returns from help
+			return m, nil
+		}
+		switch msg.String() {
+		case "left":
+			if m.input.Value() == "" {
+				n := len(m.tabs())
+				m.tab, m.cursor = (m.tab+n-1)%n, 0
+				return m, nil
+			}
+		case "right":
+			if m.input.Value() == "" {
+				m.tab, m.cursor = (m.tab+1)%len(m.tabs()), 0
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			_ = Close(m.run, m.outer)
@@ -527,6 +613,19 @@ func (m watchModel) View() string {
 	b.WriteString(truncate(bar, m.width) + "\n")
 	b.WriteString(dimStyle.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 
+	if m.helpMode {
+		for _, line := range helpLines() {
+			b.WriteString(truncate(line, m.width) + "\n")
+		}
+		body := b.String()
+		if m.height > 0 {
+			lines := strings.Count(body, "\n") + 1
+			for i := lines; i < m.height-1; i++ {
+				body += "\n"
+			}
+		}
+		return body + dimStyle.Render(" any key to return")
+	}
 	idx := m.visible()
 	if len(idx) == 0 {
 		b.WriteString(dimStyle.Render("  nothing here — try the box below") + "\n")
@@ -561,7 +660,7 @@ func (m watchModel) View() string {
 	case hint != "":
 		hintLine = dimStyle.Render(" " + hint)
 	default:
-		hintLine = dimStyle.Render(" ↵ view selected · ⇥ tabs/complete · spawn · edit · preview · render · kill · close")
+		hintLine = dimStyle.Render(" ↵ view · ←→ tabs · type to filter/command · help for the full guide")
 	}
 
 	body := b.String()
@@ -572,6 +671,32 @@ func (m watchModel) View() string {
 		}
 	}
 	return body + truncate(inputLine, m.width) + "\n" + truncate(hintLine, m.width)
+}
+
+// helpLines is the cheat sheet the help verb shows.
+func helpLines() []string {
+	h := []string{
+		activeStyle.Render(" this panel = your workspace"),
+		dimStyle.Render(" tabs group what's running; ▶ marks what the big pane shows;"),
+		dimStyle.Render(" ● working  ✔ done  ○ idle"),
+		"",
+		activeStyle.Render(" the box at the bottom is the whole interface:"),
+		" type letters   " + dimStyle.Render("filter the list / jump to a name on ↵"),
+		" ↑ ↓            " + dimStyle.Render("pick a row (↵ shows it in the big pane)"),
+		" ← → / ⇥        " + dimStyle.Render("switch tabs (when the box is empty)"),
+		" ⇥              " + dimStyle.Render("accept a grey suggestion while typing"),
+		" esc            " + dimStyle.Render("clear the box · ctrl+c closes the panel"),
+		"",
+		activeStyle.Render(" commands (type them in the box):"),
+	}
+	for _, v := range verbs {
+		if v.usage != "" {
+			h = append(h, " "+dimStyle.Render(v.usage))
+		}
+	}
+	h = append(h, " "+dimStyle.Render("new  — context verb: shell/pad/preview/agent depending on the tab"))
+	h = append(h, "", dimStyle.Render(" from any shell: duck spawn · duck edit · duck preview · duck render"))
+	return h
 }
 
 func truncate(s string, w int) string {
