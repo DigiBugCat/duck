@@ -1,11 +1,27 @@
-# ROUTINES — pulling flock into duck (design, settled 2026-07-04)
+# ROUTINES — the flock of ducks (design, settled 2026-07-04)
 
-Decision record + implementation spec. Flock (the Mac automation runtime)
-retires; duck absorbs it. Andrew's calls: nothing is Mac-only → execution
-moves hub-side; pane-per-run beats app-server threads (visible, killable,
-channel-able; our scale is handfuls, not fleets); runs land in each
-PROJECT's workspace under a `runs` tab; no remote-control surface — the hub
-runs everything, so claude-in-a-workspace with channels IS remote control.
+Decision record + implementation spec. Flock (the never-deployed Mac
+automation design) is superseded; duck absorbs the idea. Andrew's calls:
+hub-side execution; pane-per-run over app-server threads (visible, killable,
+channel-able); runs land in each project workspace's `runs` tab; no
+remote-control surface — the hub runs everything, so claude-in-a-workspace
+with channels IS remote control.
+
+## The organizational model (the actual point)
+
+A workspace is an EMPLOYEE, not furniture: **claude in the main pane is the
+manager; the sidebar is its flock of executors** (codex runs, shells,
+artifacts), pads are team memory, channels are how the manager tasks and
+reads its reports, and routines are the workspace's JOB DESCRIPTION. Each
+duck manages its flock and reports up; the ⌂ workspaces tab is the org
+chart; the human (or one day a chief-of-staff workspace consuming
+`duck channel serve`) sits at the top. This was implicit in the original
+main-pane-is-claude design — routines just make it official.
+
+Consequence: **beats address the MANAGER by default.** A heartbeat sends the
+claude pane a turn ("check your flock, advance the mission, report") and
+claude directs executors via channels. Spawning a bare codex executor is the
+special case (`target = "run"`), not the default.
 
 ## The duckisms this is built from
 
@@ -18,27 +34,31 @@ runs everything, so claude-in-a-workspace with channels IS remote control.
 - Definitions are FILES in the project (self-modifiable by agents, synced by
   duck, reviewable in git). tmux + files stay the only databases.
 
-## Routine format — adopt flock's `.flock/` verbatim
+## Routine format — duck-native (flock never shipped; no compat debt)
 
 ```
-<project>/.flock/flock.toml        ← project marker + defaults (model, sandbox)
-<project>/.flock/<name>/routine.toml   ← trigger (cron | heartbeat | manual), interval/schedule, codex overrides
-<project>/.flock/<name>/prompt.md      ← the instructions
+<project>/.duck/routines/<name>.toml   ← trigger + target + overrides
+<project>/.duck/routines/<name>.md     ← the prompt (the job description)
 ```
 
-Zero migration for existing projects (Cassandra-Finance et al). Implementer:
-read ~/Obsidian/aviary/flock internal/ for the exact routine.toml schema and
-keep field-compatibility; extensions go in ignored-by-flock keys.
+Fields (v1): `trigger = "cron" | "heartbeat" | "manual"`,
+`schedule`/`interval`, `target = "manager" (default) | "run"` (manager =
+send the prompt as a turn to the workspace's claude pane; run = fresh codex
+exec executor pane). The flock repo (~/Obsidian/aviary/flock) is reference
+reading for scheduler edge cases only — archive it with a pointer here.
 
 ## Semantics per trigger
 
-- **cron / manual** → a FRESH `codex exec --dangerously-bypass-approvals-and-sandbox
-  "$(prompt.md)"` pane per fire, cwd = project root, name `<routine>`,
-  kind `runs`. Exit-hold wrap (already in Spawn) keeps failures visible.
-- **heartbeat** → ONE persistent codex TUI pane per routine (name `<routine>`,
-  kind `runs`), created on first beat; each beat = `duck channel send` of
-  prompt.md into it — recurring turns in one thread, flock's core trick,
-  except watchable in the viewport.
+- **target=manager** (default) → the beat is a turn sent to the workspace's
+  MAIN claude pane (send-keys; claude is ensured running — `cass claude`
+  respawn/resume if the pane sits at a shell). Claude manages: reads its
+  flock via channels, spawns/directs executors, writes to pads, reports.
+- **target=run, cron/manual** → a FRESH `codex exec --dangerously-bypass-
+  approvals-and-sandbox "$(prompt)"` executor pane per fire, cwd = project
+  root, name `<routine>`, kind `runs`. Exit-hold keeps failures visible.
+- **target=run, heartbeat** → ONE persistent codex TUI pane per routine;
+  each beat = `duck channel send` of the prompt — recurring turns in one
+  thread, watchable in the viewport.
 - **Concurrency guard**: if the routine's pane exists and channel status is
   `working`, the tick SKIPS (logs, no queue). Missed beats are dropped, not
   replayed — heartbeats are idempotent by design.
