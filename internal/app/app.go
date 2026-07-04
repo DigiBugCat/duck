@@ -340,6 +340,17 @@ func (a *App) Kill(tmuxName string) error {
 	if err := a.sessions.Kill(tmuxName); err != nil && !session.IsNoSessionErr(err) {
 		return err
 	}
+	// The whole workspace dies, not just the outer session: its panel
+	// companion (the hidden lot holding every sidebar agent/preview pane,
+	// @duck_panel_of = owner) would otherwise linger as an orphan full of
+	// live processes that nothing lists and nothing ever reaps.
+	if live, err := a.sessions.List(); err == nil {
+		for _, s := range live {
+			if s.PanelOf == tmuxName {
+				_ = a.sessions.Kill(s.Name)
+			}
+		}
+	}
 	if err := a.sessions.ForgetEvicted(tmuxName); err != nil {
 		return err
 	}
@@ -377,13 +388,22 @@ func (a *App) CleanDetached() (int, error) {
 	}
 	killed := 0
 	dirty := false
+	// owners tracks which workspace sessions remain after the sweep, so the
+	// second pass can tell a companion with a live owner (plumbing — leave it)
+	// from an orphan (owner killed here or gone earlier — reap it).
+	owners := map[string]bool{}
+	for _, s := range live {
+		if s.PanelOf == "" {
+			owners[s.Name] = true
+		}
+	}
 	for _, s := range live {
 		if s.Attached {
 			continue // never kill a session someone is in
 		}
-		// Panel companions are detached by design (only the nested viewport
-		// client attaches them) but host LIVE sidebar agents — killing one would
-		// SIGHUP every agent. clean must leave the plumbing alone.
+		// Panel companions are detached by design but host LIVE sidebar
+		// agents — killing one would SIGHUP every agent. Handled in the
+		// orphan pass below, keyed on whether their owner survives.
 		if s.PanelOf != "" {
 			continue
 		}
@@ -393,10 +413,24 @@ func (a *App) CleanDetached() (int, error) {
 		}
 		fmt.Printf("killed %s\n", s.Name)
 		killed++
+		delete(owners, s.Name)
 		if _, ok := n.Names[s.Name]; ok {
 			delete(n.Names, s.Name)
 			dirty = true
 		}
+	}
+	// Orphan pass: a companion whose owner no longer exists is dead plumbing —
+	// its agents lost their workspace — and nothing else ever reaps it.
+	for _, s := range live {
+		if s.PanelOf == "" || owners[s.PanelOf] {
+			continue
+		}
+		if err := a.sessions.Kill(s.Name); err != nil {
+			fmt.Printf("  %s: %v\n", s.Name, err)
+			continue
+		}
+		fmt.Printf("killed %s (orphaned panel companion)\n", s.Name)
+		killed++
 	}
 	if dirty {
 		if err := a.names.Save(n); err != nil {

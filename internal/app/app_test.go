@@ -189,20 +189,32 @@ func TestNameNowFallsToFloorWithoutPoisoningCacheOnError(t *testing.T) {
 func TestKillForgetsNamesEntry(t *testing.T) {
 	r := &fakeRunner{out: map[string]string{
 		"cat ~/.duck/names.json 2>/dev/null || echo '{}'": `{"names":{"web":{"userName":"Web"}}}`,
+		// The workspace has a panel companion (@duck_panel_of=web) plus an
+		// unrelated session's companion that must NOT be touched.
+		listCmd: "web-agents\t~/dev/web\t0\t100\t1\t\tweb\t\nother-agents\t~/dev/other\t0\t100\t1\t\tother\t\n",
 	}}
 	a := newApp(r, namer.DirDerived{})
 	if err := a.Kill("web"); err != nil {
 		t.Fatalf("Kill: %v", err)
 	}
-	// It kills the tmux session …
-	var killed bool
+	// It kills the tmux session AND its companion — the whole workspace …
+	var killed, companion bool
 	for _, c := range r.cmds {
 		if c == "tmux kill-session -t 'web'" {
 			killed = true
 		}
+		if c == "tmux kill-session -t 'web-agents'" {
+			companion = true
+		}
+		if c == "tmux kill-session -t 'other-agents'" {
+			t.Fatalf("Kill must not touch another workspace's companion; cmds=%v", r.cmds)
+		}
 	}
 	if !killed {
 		t.Fatalf("Kill must issue tmux kill-session; cmds=%v", r.cmds)
+	}
+	if !companion {
+		t.Fatalf("Kill must also kill the panel companion; cmds=%v", r.cmds)
 	}
 	// … and drops the entry (the rewritten names.json no longer contains it).
 	if len(r.inputs) == 0 {
@@ -274,6 +286,40 @@ func TestCleanDetachedBatchesAndSkipsAttached(t *testing.T) {
 	}
 	if !strings.Contains(written, "live") {
 		t.Fatalf("the surviving attached session's entry must be kept; missing: %s", written)
+	}
+}
+
+// TestCleanDetachedReapsOrphanedCompanions: a companion whose owner is killed
+// in the sweep (or already gone) is dead plumbing and must be reaped; one
+// whose owner survives — even attached — is live plumbing and must be spared.
+func TestCleanDetachedReapsOrphanedCompanions(t *testing.T) {
+	r := &fakeRunner{out: map[string]string{
+		// live: attached, keeps its companion. gone: detached, killed — its
+		// companion orphans. stray-agents: owner never existed — also reaped.
+		listCmd: "live\t~/dev/live\t1\t100\t1\t\t\t\n" +
+			"live-agents\t~/dev/live\t0\t100\t1\t\tlive\t\n" +
+			"gone\t~/dev/gone\t0\t90\t1\t\t\t\n" +
+			"gone-agents\t~/dev/gone\t0\t90\t1\t\tgone\t\n" +
+			"stray-agents\t~/dev/stray\t0\t80\t1\t\tstray\t\n",
+		loadCmd: `{"names":{}}`,
+	}}
+	a := newApp(r, namer.DirDerived{})
+	killed, err := a.CleanDetached()
+	if err != nil {
+		t.Fatalf("CleanDetached: %v", err)
+	}
+	if killed != 3 { // gone + gone-agents + stray-agents
+		t.Fatalf("want 3 killed, got %d; cmds=%v", killed, r.cmds)
+	}
+	want := map[string]bool{"tmux kill-session -t 'gone'": true, "tmux kill-session -t 'gone-agents'": true, "tmux kill-session -t 'stray-agents'": true}
+	for _, c := range r.cmds {
+		if strings.HasPrefix(c, "tmux kill-session") && !want[c] {
+			t.Fatalf("unexpected kill %q (live workspace plumbing must survive); cmds=%v", c, r.cmds)
+		}
+		delete(want, c)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing kills: %v; cmds=%v", want, r.cmds)
 	}
 }
 
