@@ -140,7 +140,9 @@ func TestResolveOnlyPairsCodexSpawns(t *testing.T) {
 }
 
 func TestCmdRunsCodex(t *testing.T) {
-	yes := []string{"codex", "codex --model x", "/usr/local/bin/codex resume", "env FOO=1 codex"}
+	yes := []string{"codex", "codex --model x", "/usr/local/bin/codex resume", "env FOO=1 codex",
+		// duck spawn stamps the paths.Quote'd line — tokens arrive quoted.
+		"'codex' '--dangerously-bypass-approvals-and-sandbox'", `"codex" "resume"`}
 	no := []string{"", "carbonyl http://x", "gosling render codex-notes.html", "claude --ben", "sh"}
 	for _, c := range yes {
 		if !cmdRunsCodex(c) {

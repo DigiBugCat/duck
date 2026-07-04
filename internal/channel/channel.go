@@ -110,10 +110,12 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 // cmdRunsCodex reports whether a spawn cmdline launches codex: some token's
 // path basename is exactly "codex" (covers "codex", "codex --model x",
 // "/usr/local/bin/codex resume"), without false-positiving on incidental
-// substrings ("gosling render codex-notes.html").
+// substrings ("gosling render codex-notes.html"). Tokens are unwrapped from
+// shell quoting first — `duck spawn` stamps the paths.Quote'd line, so the
+// stored token is 'codex', not codex.
 func cmdRunsCodex(cmdline string) bool {
 	for _, tok := range strings.Fields(cmdline) {
-		if filepath.Base(tok) == "codex" {
+		if filepath.Base(strings.Trim(tok, `'"`)) == "codex" {
 			return true
 		}
 	}
