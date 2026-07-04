@@ -74,20 +74,21 @@ const SpawnedAtOption = "@duck_spawned_at"
 // path, so the (heuristic) pairing runs once and then sticks.
 const RolloutOption = "@duck_rollout"
 
-// placeholderWindow is the companion's initial window: it keeps the companion
-// alive (a tmux session dies with its last window) and gives the viewport
-// something friendly to show before the first agent is spawned. Spawn retires
-// it once a real agent window exists. It is IDENTIFIED by placeholderOption,
-// not by this name — a user is free to name a real agent "welcome".
-const placeholderWindow = "welcome"
+// placeholderWindow is the companion's always-present window: it keeps the
+// companion alive (a tmux session dies with its last window) and doubles as a
+// real TERMINAL in the viewport whenever no agent is selected — an empty
+// sidebar is still a usable shell. It is never retired and never listed in
+// the roster; identified by placeholderOption, not by this name.
+const placeholderWindow = "terminal"
 
 // placeholderOption is the WINDOW user option marking the placeholder, so
 // Agents/Spawn identify it structurally rather than by its display name.
 const placeholderOption = "@duck_placeholder"
 
-// placeholderCmd is what the placeholder window runs: a friendly idle screen
-// that sleeps forever, keeping the companion session alive.
-const placeholderCmd = `sh -c 'printf "\n\n   no agent selected\n\n   spawn one:  duck spawn <cmd>\n"; while :; do sleep 3600; done'`
+// placeholderCmd runs a real interactive shell in a respawn loop: typing
+// `exit` just gives a fresh shell instead of killing the companion (and the
+// viewport with it). $SHELL falls back to sh for exotic setups.
+const placeholderCmd = `sh -c 'while :; do "${SHELL:-sh}" -l || true; sleep 0.5; done'`
 
 // Companion returns the companion session name for an outer session.
 func Companion(outer string) string { return outer + "-agents" }

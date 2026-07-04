@@ -51,9 +51,11 @@ duck session inside another.`,
 		if err != nil {
 			return err
 		}
-		// Build the in-pane command line: `cass claude` plus each arg shell-quoted
-		// so the pane's shell re-parses them exactly as given.
-		line := claudeRunner
+		// Build the in-pane command line: open the agent sidebar first (duck
+		// panel is idempotent and quick; agents spawned later land in it), then
+		// `cass claude` plus each arg shell-quoted so the pane's shell re-parses
+		// them exactly as given. Panel failure must never block claude.
+		line := "duck panel >/dev/null 2>&1; " + claudeRunner
 		for _, a := range args {
 			line += " " + paths.Quote(a)
 		}
