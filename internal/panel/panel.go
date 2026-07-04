@@ -143,6 +143,24 @@ func CurrentPanePath(run Runner) (string, error) {
 func EnsureCompanion(run Runner, outer, dir string) (string, error) {
 	comp := Companion(outer)
 	if _, err := run("has-session", "-t", "="+comp); err == nil {
+		// MIGRATION: a companion from the pre-swap (windows-based) design has
+		// no 'lot' window, and every swap-era operation targets comp:lot —
+		// without this retrofit an upgraded binary hard-wedges on old fleet
+		// sessions ("can't find window: lot"). Old agent windows are left
+		// as-is (invisible to the roster; they predate pane identity).
+		if out, lerr := run("list-windows", "-t", comp, "-F", "#{window_name}"); lerr == nil {
+			hasLot := false
+			for _, w := range strings.Split(strings.TrimSpace(out), "\n") {
+				if w == "lot" {
+					hasLot = true
+				}
+			}
+			if !hasLot {
+				if pid, cerr := run("new-window", "-d", "-t", comp+":", "-n", "lot", "-P", "-F", "#{pane_id}", anchorCmd); cerr == nil {
+					_, _ = run("set-option", "-p", "-t", strings.TrimSpace(pid), anchorOption, "1")
+				}
+			}
+		}
 		return comp, nil
 	}
 	pid, err := run("new-session", "-d", "-s", comp, "-c", dir, "-n", "lot", "-P", "-F", "#{pane_id}", anchorCmd)
@@ -465,15 +483,17 @@ func EnsureSlot(run Runner, outer string) {
 	if err != nil || roles["viewport"] != "" {
 		return
 	}
-	target := outer + ":"
+	var holder string
 	if roles["list"] != "" {
 		// Split ABOVE the roster so the healed slot lands in the sidebar
-		// column, not across the full window.
-		target = roles["list"]
-	}
-	holder, err := run("split-window", "-h", "-f", "-d", "-l", "34%", "-t", target, "-P", "-F", "#{pane_id}", anchorCmd)
-	if roles["list"] != "" {
+		// column (the roster absorbed the dead viewport's space), then give
+		// the roster its 10 rows back.
 		holder, err = run("split-window", "-v", "-b", "-d", "-t", roles["list"], "-P", "-F", "#{pane_id}", anchorCmd)
+		if err == nil {
+			_, _ = run("resize-pane", "-t", roles["list"], "-y", "10")
+		}
+	} else {
+		holder, err = run("split-window", "-h", "-f", "-d", "-l", "34%", "-t", outer+":", "-P", "-F", "#{pane_id}", anchorCmd)
 	}
 	if err != nil {
 		return

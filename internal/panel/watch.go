@@ -219,8 +219,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if row >= 0 && row < len(idx) {
 				m.cursor = row
 				wid := m.agents[idx[row]].PaneID
-				RefreshIfStale(m.run, wid, FileMtime)
+				// Swap FIRST so a stale preview respawns at slot geometry, not
+				// at the parked pane's tiny tiled size.
 				_ = Select(m.run, m.outer, wid)
+				RefreshIfStale(m.run, wid, FileMtime)
 				return m, m.load
 			}
 		}
@@ -249,8 +251,8 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", " ":
 			if idx := m.filtered(); m.cursor < len(idx) {
 				wid := m.agents[idx[m.cursor]].PaneID
-				RefreshIfStale(m.run, wid, FileMtime)
 				_ = Select(m.run, m.outer, wid)
+				RefreshIfStale(m.run, wid, FileMtime)
 				return m, m.load
 			}
 		case "x":

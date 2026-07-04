@@ -170,3 +170,29 @@ func TestCloseParksOccupantNeverKillsIt(t *testing.T) {
 		t.Error("roster pane should be killed")
 	}
 }
+
+// TestEnsureCompanionMigratesOldDesign pins the upgrade path: a pre-swap
+// companion (no 'lot' window) gets one retrofitted instead of wedging every
+// comp:lot operation with "can't find window".
+func TestEnsureCompanionMigratesOldDesign(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{
+		"list-windows -t work-agents -F #{window_name}":                      "codex\npreview\nterminal\n", // old windows design
+		"new-window -d -t work-agents: -n lot -P -F #{pane_id} " + anchorCmd: "%9\n",
+	}}
+	if _, err := EnsureCompanion(f.run, "work", "/d"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.called("new-window -d -t work-agents: -n lot") {
+		t.Fatalf("old companion must get a lot window: %v", f.calls)
+	}
+	if !f.called("set-option -p -t %9 @duck_anchor 1") {
+		t.Error("retrofitted lot must have a stamped anchor")
+	}
+	// Modern companion (lot present) → untouched.
+	f2 := &fakeRunner{out: map[string]string{
+		"list-windows -t work-agents -F #{window_name}": "lot\n",
+	}}
+	if _, err := EnsureCompanion(f2.run, "work", "/d"); err != nil || f2.called("new-window") {
+		t.Fatal("modern companion must not be modified")
+	}
+}
