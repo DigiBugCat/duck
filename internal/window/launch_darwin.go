@@ -21,7 +21,7 @@ import (
 // port for /json/version and hands chromedp the resulting
 // webSocketDebuggerUrl via NewRemoteAllocator — same driving surface as the
 // direct ExecAllocator path, just fronted by an app bundle.
-func launchDarwinTab(parent context.Context, chrome string) (context.Context, []context.CancelFunc, error) {
+func launchDarwinCDPTab(parent context.Context, chrome string) (context.Context, []context.CancelFunc, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, nil, err

@@ -1,6 +1,7 @@
 // Package window is the duck window host: a client-side process that owns a
-// chromium (app-mode when headful) via CDP, injects an annotation runtime
-// into every page, and stores the human's marks so agents can query them.
+// browser surface (native WKWebView on macOS headful, chromium/CDP elsewhere),
+// injects an annotation runtime into every page, and stores the human's marks
+// so agents can query them.
 // See docs/WINDOW.md — this is the spike: host + CDP window + navigate +
 // highlight round-trip. Fetch interception, drawing, and screenshot crops
 // come later.
@@ -14,15 +15,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/chromedp/cdproto/page"
-	cdpruntime "github.com/chromedp/cdproto/runtime"
-	"github.com/chromedp/chromedp"
 )
 
 // DefaultPort is the window host's HTTP port on the client machine
@@ -93,118 +89,53 @@ type Host struct {
 	Store    *Store
 	Headless bool // headless chrome (tests / no display); headful app-mode otherwise
 
-	mu     sync.Mutex
-	cancel []context.CancelFunc
-	tab    context.Context
-	curURL string
+	mu      sync.Mutex
+	backend browserBackend
+	curURL  string
 }
 
-// findChrome resolves a chromium binary: $DUCK_WINDOW_CHROME, the well-known
-// system paths, then the puppeteer cache (present wherever gosling ran).
-func findChrome() string {
-	if p := os.Getenv("DUCK_WINDOW_CHROME"); p != "" {
-		return p
-	}
-	for _, p := range []string{
-		"/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome",
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-	} {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	home, _ := os.UserHomeDir()
-	hits, _ := filepath.Glob(filepath.Join(home, ".cache/puppeteer/chrome/*/chrome-linux64/chrome"))
-	if len(hits) > 0 {
-		sort.Strings(hits)
-		return hits[len(hits)-1]
-	}
-	return ""
+type browserBackend interface {
+	Navigate(url string) error
+	Eval(js string) error
+	Close()
 }
 
-// launchTab is the seam between "get me a driveable CDP tab" and how the
-// browser actually got started. Linux headful/headless use a direct
-// ExecAllocator; darwin headful launches the DuckWindow.app wrapper bundle
-// via LaunchServices (for dock identity) and connects with a remote
-// allocator instead (see bundle_darwin.go / launch_darwin.go). This is also
-// the seam a future native WKWebView backend would slot in behind
-// (docs/WINDOW.md).
-func launchTab(parent context.Context, chrome string, headless bool) (context.Context, []context.CancelFunc, error) {
-	if runtime.GOOS == "darwin" && !headless {
-		return launchDarwinTab(parent, chrome)
-	}
-	home, _ := os.UserHomeDir()
-	opts := []chromedp.ExecAllocatorOption{
-		chromedp.ExecPath(chrome),
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.UserDataDir(filepath.Join(home, ".duck", "window-profile")),
-	}
-	if headless {
-		opts = append(opts, chromedp.Headless, chromedp.DisableGPU,
-			chromedp.NoSandbox) // hub containers lack userns; headless is test-only
-	} else {
-		// Headful: chromeless app window — a duck surface, not a browser.
-		opts = append(opts, chromedp.Flag("app", "about:blank"))
-	}
-	actx, acancel := chromedp.NewExecAllocator(parent, opts...)
-	tab, tcancel := chromedp.NewContext(actx)
-	return tab, []context.CancelFunc{tcancel, acancel}, nil
-}
-
-// startBrowser launches chrome and prepares the annotation machinery on a
-// fresh tab: the duckMark binding (page→host, native CDP callback) and the
-// runtime injected into every future document.
+// startBrowser launches the selected backend and prepares the annotation
+// machinery. Backend selection lives behind launchBackend so the HTTP host and
+// store do not care whether the surface is native WKWebView or CDP.
 func (h *Host) startBrowser(parent context.Context) error {
-	chrome := findChrome()
-	if chrome == "" {
-		return fmt.Errorf("no chromium found (set DUCK_WINDOW_CHROME)")
-	}
-	tab, cancels, err := launchTab(parent, chrome, h.Headless)
+	backend, err := launchBackend(parent, h.Headless, h.addMark)
 	if err != nil {
 		return err
 	}
 	h.mu.Lock()
-	h.cancel = append(h.cancel, cancels...)
-	h.tab = tab
+	h.backend = backend
 	h.mu.Unlock()
-
-	// Marks arrive here: the page calls duckMark(json) and CDP delivers it.
-	chromedp.ListenTarget(tab, func(ev interface{}) {
-		if e, ok := ev.(*cdpruntime.EventBindingCalled); ok && e.Name == "duckMark" {
-			var m Mark
-			if err := json.Unmarshal([]byte(e.Payload), &m); err == nil && m.Text != "" {
-				h.mu.Lock()
-				if m.URL == "" {
-					m.URL = h.curURL
-				}
-				h.mu.Unlock()
-				h.Store.Add(m)
-			}
-		}
-	})
-	return chromedp.Run(tab,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := cdpruntime.AddBinding("duckMark").Do(ctx); err != nil {
-				return err
-			}
-			_, err := page.AddScriptToEvaluateOnNewDocument(AnnotationJS).Do(ctx)
-			return err
-		}),
-	)
+	return nil
 }
 
-// Show navigates the window to url (custody: CDP Page.navigate, same tab)
-// and re-applies any stored marks for it.
+func (h *Host) addMark(m Mark) {
+	if m.Text == "" {
+		return
+	}
+	h.mu.Lock()
+	if m.URL == "" {
+		m.URL = h.curURL
+	}
+	h.mu.Unlock()
+	h.Store.Add(m)
+}
+
+// Show navigates the window to url and re-applies any stored marks for it.
 func (h *Host) Show(url string) error {
 	h.mu.Lock()
-	tab := h.tab
+	backend := h.backend
 	h.curURL = url
 	h.mu.Unlock()
-	if tab == nil {
+	if backend == nil {
 		return fmt.Errorf("browser not started")
 	}
-	if err := chromedp.Run(tab, chromedp.Navigate(url), chromedp.WaitReady("body")); err != nil {
+	if err := backend.Navigate(url); err != nil {
 		return err
 	}
 	marks := h.Store.Marks(url)
@@ -212,8 +143,7 @@ func (h *Host) Show(url string) error {
 		return nil
 	}
 	b, _ := json.Marshal(marks)
-	return chromedp.Run(tab,
-		chromedp.Evaluate("window.__duckApplyMarks && window.__duckApplyMarks("+string(b)+")", nil))
+	return backend.Eval("window.__duckApplyMarks && window.__duckApplyMarks(" + string(b) + ")")
 }
 
 // Eval runs js in the current tab and discards the result. Exported for
@@ -222,12 +152,12 @@ func (h *Host) Show(url string) error {
 // select-and-click.
 func (h *Host) Eval(js string) error {
 	h.mu.Lock()
-	tab := h.tab
+	backend := h.backend
 	h.mu.Unlock()
-	if tab == nil {
+	if backend == nil {
 		return fmt.Errorf("browser not started")
 	}
-	return chromedp.Run(tab, chromedp.Evaluate(js, nil))
+	return backend.Eval(js)
 }
 
 // Serve runs the control API until ctx ends. ln lets tests bind :0.
@@ -264,10 +194,12 @@ func (h *Host) Serve(ctx context.Context, ln net.Listener) error {
 		<-ctx.Done()
 		_ = srv.Close()
 		h.mu.Lock()
-		for i := len(h.cancel) - 1; i >= 0; i-- {
-			h.cancel[i]()
-		}
+		backend := h.backend
+		h.backend = nil
 		h.mu.Unlock()
+		if backend != nil {
+			backend.Close()
+		}
 	}()
 	err := srv.Serve(ln)
 	if err == http.ErrServerClosed {
