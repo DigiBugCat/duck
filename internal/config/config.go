@@ -49,6 +49,12 @@ type Config struct {
 	// anchor-shared: each machine's dial-back address is its own.
 	MachineAddr string `toml:"machine_addr,omitempty"`
 
+	// WindowHost is how the HUB reaches THIS machine's duck window host
+	// (host:port, usually a tailnet name like studio:7334). Empty means local
+	// loopback on the built-in default port, which is right when `duck window`
+	// is run on the client itself.
+	WindowHost string `toml:"window_host,omitempty"`
+
 	// CodexModel selects the laptop-side codex model used for auto-naming
 	// (DESIGN §5). Empty falls back to the built-in default in command/wiring.go.
 	CodexModel string `toml:"codex_model,omitempty"`

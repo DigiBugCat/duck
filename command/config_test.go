@@ -55,6 +55,34 @@ func TestConfigCmdShowsAttachTransport(t *testing.T) {
 	}
 }
 
+func TestConfigWindowHostSetter(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var buf bytes.Buffer
+	configWindowHostCmd.SetOut(&buf)
+
+	if err := configWindowHostCmd.RunE(configWindowHostCmd, []string{"studio:7334"}); err != nil {
+		t.Fatalf("set window host: %v", err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.WindowHost != "studio:7334" {
+		t.Fatalf("WindowHost = %q, want studio:7334", cfg.WindowHost)
+	}
+
+	if err := configWindowHostCmd.RunE(configWindowHostCmd, []string{"off"}); err != nil {
+		t.Fatalf("clear window host: %v", err)
+	}
+	cfg, _ = config.Load()
+	if cfg.WindowHost != "" {
+		t.Fatalf("WindowHost after off = %q, want empty", cfg.WindowHost)
+	}
+	if err := configWindowHostCmd.RunE(configWindowHostCmd, []string{"studio"}); err == nil {
+		t.Fatalf("host without port must error")
+	}
+}
+
 // TestConfigAttachTransportSetter pins the setter: tssh and ssh persist their
 // explicit value, auto clears the stored value (empty == auto default, keeping
 // config.toml clean), and an unknown value errors (ValidArgs alone does not

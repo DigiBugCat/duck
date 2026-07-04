@@ -15,11 +15,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/DigiBugCat/duck/internal/config"
 	"github.com/DigiBugCat/duck/internal/window"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +30,7 @@ import (
 var windowHostFlag string
 
 // windowHost resolves the window host's address: --host flag,
-// $DUCK_WINDOW_HOST, then the default loopback port.
+// $DUCK_WINDOW_HOST, config window_host, then the default loopback port.
 func windowHost() string {
 	if windowHostFlag != "" {
 		return windowHostFlag
@@ -35,7 +38,87 @@ func windowHost() string {
 	if h := os.Getenv("DUCK_WINDOW_HOST"); h != "" {
 		return h
 	}
+	if cfg, err := config.Load(); err == nil && cfg.WindowHost != "" {
+		return cfg.WindowHost
+	}
 	return fmt.Sprintf("127.0.0.1:%d", window.DefaultPort)
+}
+
+var (
+	windowHostHealthy = defaultWindowHostHealthy
+	startWindowHost   = defaultStartWindowHost
+	windowEnsureSleep = time.Sleep
+)
+
+// ensureWindowHost starts the local window host as a detached singleton when
+// the selected host is loopback and does not answer /health yet. Remote
+// configured hosts are hub-side discovery targets; they must not cause a local
+// spawn on the hub.
+func ensureWindowHost(host string) error {
+	if !isLocalWindowHost(host) || windowHostHealthy(host) {
+		return nil
+	}
+	if err := startWindowHost(); err != nil {
+		return err
+	}
+	for i := 0; i < 50; i++ {
+		if windowHostHealthy(host) {
+			return nil
+		}
+		windowEnsureSleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("window host did not come up at %s (see ~/.duck/window.log)", host)
+}
+
+func isLocalWindowHost(host string) bool {
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		return false
+	}
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+func defaultWindowHostHealthy(host string) bool {
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	resp, err := client.Get("http://" + host + "/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+func defaultStartWindowHost() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	duckDir := filepath.Join(home, ".duck")
+	if err := os.MkdirAll(duckDir, 0o755); err != nil {
+		return err
+	}
+	logf, err := os.OpenFile(filepath.Join(duckDir, "window.log"),
+		os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer logf.Close()
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(self, "window", "serve")
+	cmd.Stdout, cmd.Stderr = logf, logf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 var windowCmd = &cobra.Command{
@@ -55,6 +138,9 @@ terminal cells.`,
 			return err
 		}
 		host := windowHost()
+		if err := ensureWindowHost(host); err != nil {
+			return err
+		}
 		form := url.Values{"url": {u}}
 		resp, err := http.PostForm("http://"+host+"/open", form)
 		if err != nil {
@@ -113,6 +199,9 @@ var windowMarksCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
 		host := windowHost()
+		if err := ensureWindowHost(host); err != nil {
+			return err
+		}
 		q := ""
 		if len(args) == 1 {
 			q = "?url=" + url.QueryEscape(args[0])

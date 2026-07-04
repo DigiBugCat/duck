@@ -24,6 +24,31 @@ func TestCodexModelRoundTrips(t *testing.T) {
 	}
 }
 
+// TestWindowHostRoundTrips pins the hub-side duck-window discovery field:
+// config TOML uses window_host and Save/Load preserves it.
+func TestWindowHostRoundTrips(t *testing.T) {
+	c := &Config{}
+	if _, err := toml.Decode("hub = \"me@host\"\nwindow_host = \"studio:7334\"\n", c); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if c.WindowHost != "studio:7334" {
+		t.Fatalf("WindowHost = %q, want studio:7334", c.WindowHost)
+	}
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if err := Save(c); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if out.WindowHost != "studio:7334" {
+		t.Fatalf("loaded WindowHost = %q, want studio:7334", out.WindowHost)
+	}
+}
+
 // TestAutoUpdateEnabledDefaultsOn pins that the background self-updater is opt-
 // out: a nil pointer (absent key), a nil receiver, and an explicit true all read
 // as ON; only an explicit false turns it off.
