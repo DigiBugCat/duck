@@ -18,10 +18,11 @@ chart; the human (or one day a chief-of-staff workspace consuming
 `duck channel serve`) sits at the top. This was implicit in the original
 main-pane-is-claude design — routines just make it official.
 
-Consequence: **beats address the MANAGER by default.** A heartbeat sends the
-claude pane a turn ("check your flock, advance the mission, report") and
-claude directs executors via channels. Spawning a bare codex executor is the
-special case (`target = "run"`), not the default.
+Consequence (v3, Andrew's correction): **schedules drive EXECUTORS; events
+drive the MANAGER.** Routines launch/continue codex runs on the clock; the
+manager claude is woken only by their REPORTS — completion events delivered
+up the channel — never polled by a timer. A scheduled manager beat remains
+possible (`target = "manager"`, e.g. a daily digest) but is the exception.
 
 ## The duckisms this is built from
 
@@ -42,23 +43,35 @@ special case (`target = "run"`), not the default.
 ```
 
 Fields (v1): `trigger = "cron" | "heartbeat" | "manual"`,
-`schedule`/`interval`, `target = "manager" (default) | "run"` (manager =
-send the prompt as a turn to the workspace's claude pane; run = fresh codex
-exec executor pane). The flock repo (~/Obsidian/aviary/flock) is reference
-reading for scheduler edge cases only — archive it with a pointer here.
+`schedule`/`interval`, `target = "run" (default) | "manager"` (run = codex
+executor; manager = the rare scheduled turn to claude, e.g. daily digest),
+`report = "digest" (default) | "none"`. The flock repo
+(~/Obsidian/aviary/flock; never deployed) is reference reading only.
 
 ## Semantics per trigger
 
-- **target=manager** (default) → the beat is a turn sent to the workspace's
-  MAIN claude pane (send-keys; claude is ensured running — `cass claude`
-  respawn/resume if the pane sits at a shell). Claude manages: reads its
-  flock via channels, spawns/directs executors, writes to pads, reports.
-- **target=run, cron/manual** → a FRESH `codex exec --dangerously-bypass-
-  approvals-and-sandbox "$(prompt)"` executor pane per fire, cwd = project
-  root, name `<routine>`, kind `runs`. Exit-hold keeps failures visible.
+- **target=run, cron/manual** (default) → a FRESH `codex exec
+  --dangerously-bypass-approvals-and-sandbox "$(prompt)"` executor pane per
+  fire, cwd = project root, name `<routine>`, kind `runs`. Exit-hold keeps
+  failures visible.
 - **target=run, heartbeat** → ONE persistent codex TUI pane per routine;
   each beat = `duck channel send` of the prompt — recurring turns in one
   thread, watchable in the viewport.
+- **target=manager** (rare) → a scheduled turn sent to the workspace's main
+  claude pane (send-keys; ensure claude is running first).
+
+## Reporting upward (the manager's inbox — event-driven, never polled)
+
+The tick doubles as the report courier: per workspace it tracks rollout
+offsets (like channel serve) and, when NEW task_completes exist for the
+workspace's runs, delivers ONE batched digest turn to the main claude pane
+via send-keys: "routine X completed: <last_agent_message firstline> —
+`duck channel tail X` for detail." Claude manages from there: reads detail,
+redirects executors, writes pads, updates its own pane title (its report to
+the org). `report = "none"` opts a routine out. When the main pane runs
+`claude --channels server:duck-agents`, the serve path replaces send-keys
+delivery — same events, structured; the digest is the dependency-free
+default.
 - **Concurrency guard**: if the routine's pane exists and channel status is
   `working`, the tick SKIPS (logs, no queue). Missed beats are dropped, not
   replayed — heartbeats are idempotent by design.
