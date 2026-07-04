@@ -28,10 +28,16 @@ import (
 var previewWatch bool
 
 var previewCmd = &cobra.Command{
-	Use:   "preview <file|url>",
+	Use:   "preview <file|url> <name>",
 	Short: "Render a page/doc/image in the sidebar (terminal graphics)",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.ExactArgs(2),
 	RunE: func(c *cobra.Command, args []string) error {
+		// A name is REQUIRED: every artifact row must be tellable apart in
+		// the roster — a tab of panes all called "preview" was the failure.
+		name := strings.TrimSpace(args[1])
+		if name == "" {
+			return fmt.Errorf("artifact name must be non-empty")
+		}
 		run := panel.ExecRunner
 		outer, dir, err := panelContext(run)
 		if err != nil {
@@ -42,8 +48,18 @@ var previewCmd = &cobra.Command{
 			return err
 		}
 		line := render
+		isURL := strings.HasPrefix(args[0], "http://") || strings.HasPrefix(args[0], "https://")
+		// Local html always live-rerenders: carbonyl caches file:// pages so
+		// hard that even its reload button misses edits, and artifacts are a
+		// live agent⇄human surface (agents rewrite them in place). The watch
+		// wrapper repaints only on real change, so an idle page costs nothing.
+		if !isURL {
+			if ext := strings.ToLower(filepath.Ext(args[0])); ext == ".html" || ext == ".htm" {
+				previewWatch = true
+			}
+		}
 		if previewWatch {
-			if strings.HasPrefix(args[0], "http://") || strings.HasPrefix(args[0], "https://") {
+			if isURL {
 				return fmt.Errorf("--watch needs a local file (URLs have no mtime to watch)")
 			}
 			abs, _ := filepath.Abs(args[0])
@@ -84,7 +100,7 @@ var previewCmd = &cobra.Command{
 		if err := panel.Open(run, outer, comp, bin); err != nil {
 			return err
 		}
-		wid, err := panel.Spawn(run, outer, "preview", dir, line, panel.KindArtifact)
+		wid, err := panel.Spawn(run, outer, name, dir, line, panel.KindArtifact)
 		if err != nil {
 			return err
 		}

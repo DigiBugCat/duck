@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -460,7 +461,22 @@ func parseAgents(out, slotID string) []Agent {
 			Title:   f[6],
 		})
 	}
+	// Creation order (numeric pane id), not list-panes order: swap-pane
+	// physically relocates panes between lot slots, so raw order reshuffles
+	// every time something is viewed. Pane ids follow the pane forever.
+	sort.SliceStable(agents, func(i, j int) bool {
+		return paneNum(agents[i].PaneID) < paneNum(agents[j].PaneID)
+	})
 	return agents
+}
+
+// paneNum extracts the numeric part of a "%42" pane id (fallback: keep order).
+func paneNum(id string) int {
+	n, err := strconv.Atoi(strings.TrimPrefix(id, "%"))
+	if err != nil {
+		return int(^uint(0) >> 1)
+	}
+	return n
 }
 
 // Agents lists every stamped pane belonging to outer's sidebar: parked in
