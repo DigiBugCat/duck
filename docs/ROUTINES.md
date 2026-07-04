@@ -22,7 +22,9 @@ Consequence (v3, Andrew's correction): **schedules drive EXECUTORS; events
 drive the MANAGER.** Routines launch/continue codex runs on the clock; the
 manager claude is woken only by their REPORTS — completion events delivered
 up the channel — never polled by a timer. A scheduled manager beat remains
-possible (`target = "manager"`, e.g. a daily digest) but is the exception.
+possible (`target = "manager"`) but is the exception: event-driven is a
+trusting manager, scheduled check-ins are a micromanaging one — both are
+valid management styles, so both exist, but trust is the default.
 
 ## The duckisms this is built from
 
