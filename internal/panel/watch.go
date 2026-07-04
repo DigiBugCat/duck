@@ -530,6 +530,22 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 	case tea.MouseMsg:
+		// Wheel scrolls the selection (the row window follows the cursor).
+		// Without this, wheel events fall through undefined — in a
+		// mouse-tracking pane tmux hands the wheel to US, not to copy-mode.
+		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
+			if msg.Action != tea.MouseActionPress {
+				return m, nil
+			}
+			delta := 1
+			if msg.Button == tea.MouseButtonWheelUp {
+				delta = -1
+			}
+			if n := len(m.visible()); n > 0 {
+				m.cursor = max(0, min(n-1, m.cursor+delta))
+			}
+			return m, nil
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if !m.focused || m.swallowNext {
 				m.focused, m.swallowNext = true, false

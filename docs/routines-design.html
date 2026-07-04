@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ROUTINES — the flock of ducks</title>
+<style>
+  :root {
+    --bg: #0e1310; --panel: #131a15; --ink: #e8ede9; --dim: #8a949c;
+    --line: #242c26; --amber: #f5b83d; --ok: #7fb069; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--ink); font: 15px/1.65 var(--sans); padding: 3rem 1.25rem 6rem; }
+  main { max-width: 72ch; margin: 0 auto; }
+  .wide { max-width: 100ch; margin-left: auto; margin-right: auto; }
+  h1, h2, h3, .label { font-family: var(--mono); }
+  h1 { font-size: 28px; line-height: 1.2; text-wrap: balance; margin-bottom: .35rem; }
+  h1 .amber { color: var(--amber); }
+  .sub { color: var(--dim); font-family: var(--mono); font-size: 13px; margin-bottom: 3rem; }
+  h2 { font-size: 18px; margin: 3.2rem 0 1rem; padding-top: 1.2rem; border-top: 1px solid var(--line); }
+  h2::before { content: "§ "; color: var(--amber); }
+  p { margin-bottom: 1rem; }
+  p + p { margin-top: -0.25rem; }
+  strong { color: var(--ink); }
+  em { color: var(--amber); font-style: normal; }
+  code { font-family: var(--mono); font-size: .88em; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; padding: .08em .35em; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1rem 1.2rem; overflow-x: auto; font: 13px/1.55 var(--mono); margin: 1.2rem 0; }
+  pre code { background: none; border: 0; padding: 0; }
+  .c { color: var(--dim); } .k { color: var(--amber); } .g { color: var(--ok); }
+  ul { padding-left: 1.2rem; margin-bottom: 1rem; }
+  li { margin-bottom: .45rem; }
+  li::marker { color: var(--amber); }
+  table { border-collapse: collapse; width: 100%; margin: 1.2rem 0; font-size: 14px; }
+  th { font-family: var(--mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); text-align: left; padding: .5rem .8rem; border-bottom: 1px solid var(--line); }
+  td { padding: .55rem .8rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { font-family: var(--mono); white-space: nowrap; color: var(--amber); font-size: 13px; }
+  .tablewrap { overflow-x: auto; }
+
+  /* ---- the org chart ---- */
+  .org { margin: 2.5rem 0; display: flex; flex-direction: column; align-items: center; gap: 0; }
+  .node { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .6rem .9rem; font-family: var(--mono); font-size: 13px; text-align: left; min-width: 13ch; }
+  .node .t { color: var(--amber); }
+  .node .d { color: var(--dim); font-size: 11.5px; }
+  .node.root { border-color: var(--amber); }
+  .node.you { border-style: dashed; background: none; }
+  .drop { width: 1px; height: 1.4rem; background: var(--line); }
+  .rail { display: flex; gap: 2.5rem; position: relative; padding-top: 1.4rem; }
+  .rail::before { content: ""; position: absolute; top: 0; left: 12%; right: 12%; height: 1px; background: var(--line); }
+  .rail > .col { display: flex; flex-direction: column; align-items: center; }
+  .rail > .col::before { content: ""; width: 1px; height: 1.4rem; background: var(--line); margin-top: -1.4rem; }
+  .flock { margin-top: .6rem; display: flex; flex-direction: column; gap: .25rem; }
+  .duckling { font-family: var(--mono); font-size: 11.5px; color: var(--dim); border-left: 2px solid var(--line); padding-left: .6rem; }
+  .duckling b { color: var(--ok); font-weight: normal; }
+  .edges { display: flex; gap: 1.5rem; justify-content: center; flex-wrap: wrap; margin-top: 1.8rem; font-family: var(--mono); font-size: 12px; color: var(--dim); }
+  .edges span b { color: var(--amber); font-weight: normal; }
+
+  /* ---- the loop ---- */
+  .loop { font-family: var(--mono); font-size: 13px; line-height: 1.9; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1.2rem 1.4rem; overflow-x: auto; margin: 1.2rem 0; white-space: pre; }
+
+  .phases { counter-reset: ph; padding: 0; margin: 1.2rem 0; list-style: none; }
+  .phases li { counter-increment: ph; padding-left: 3.2ch; position: relative; margin-bottom: .8rem; }
+  .phases li::before { content: counter(ph); position: absolute; left: 0; top: .05rem; font-family: var(--mono); color: var(--amber); border: 1px solid var(--line); border-radius: 3px; width: 2ch; text-align: center; font-size: 12px; }
+  .no { color: var(--dim); }
+  .no b { color: var(--ink); font-weight: 600; }
+  footer { margin-top: 4rem; padding-top: 1.2rem; border-top: 1px solid var(--line); color: var(--dim); font-family: var(--mono); font-size: 12px; }
+  a { color: var(--amber); }
+  @media (prefers-reduced-motion: no-preference) { .node.root { transition: border-color .2s; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>ROUTINES<br><span class="amber">the flock of ducks</span></h1>
+  <p class="sub">design record · settled 2026-07-04 · duck ≥ v0.18 · supersedes flock (never deployed)</p>
+
+  <p><strong>A workspace is an employee, not furniture.</strong> Claude in the main pane is the
+  <em>manager</em>; the sidebar is its flock of <em>executors</em> — codex runs, shells, artifacts.
+  Pads are team memory. Channels are how the manager tasks and reads its people. A routine is the
+  workspace's <em>job description</em>. This was implicit in the original main-pane-is-claude
+  design — routines make it official.</p>
+
+  <div class="wide">
+  <div class="org">
+    <div class="node you">you <span class="d">· walks the floor (⌂ / attach anywhere)</span></div>
+    <div class="drop"></div>
+    <div class="node root"><span class="t">motherduck</span> <span class="d">· invariant global root</span>
+      <div class="flock"><div class="duckling">secretary <b>heartbeat</b> · diffs the org, keeps the books</div></div>
+    </div>
+    <div class="rail">
+      <div class="col">
+        <div class="node"><span class="t">manager</span> <span class="d">claude · finance</span>
+          <div class="flock">
+            <div class="duckling">arm-watch <b>heartbeat</b></div>
+            <div class="duckling">daily-brief <b>cron</b></div>
+            <div class="duckling">scratch pad · shell</div>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="node"><span class="t">manager</span> <span class="d">claude · duck-8</span>
+          <div class="flock">
+            <div class="duckling">fixer <b>manual</b></div>
+            <div class="duckling">preview · artifacts</div>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="node"><span class="t">manager</span> <span class="d">· middle managers = workspaces<br>whose children are workspaces</span></div>
+      </div>
+    </div>
+    <div class="edges">
+      <span><b>↓ down</b> manager → its lot</span>
+      <span><b>↑ up</b> manager → @duck_parent</span>
+      <span><b>↔ lateral</b> manager ↔ manager</span>
+    </div>
+  </div>
+  </div>
+
+  <h2>The one correction that shaped everything</h2>
+  <p><strong>Schedules drive executors; events drive the manager.</strong> Routines launch and
+  continue codex runs on the clock. The manager claude is woken only by their <em>reports</em> —
+  completion events delivered up the channel — never polled by a timer. A scheduled manager beat
+  remains possible (<code>target = "manager"</code>): event-driven is a trusting manager, scheduled
+  check-ins are rigor. Real management mixes both; trust is merely the default.</p>
+
+  <div class="loop">timer tick ──schedules──▶ <span class="k">codex executors</span>  (runs tab, cwd = project)
+                        │  work; rollouts record everything
+                        ▼
+tick notices new task_completes ──batched digest──▶ <span class="k">claude (manager)</span>
+                        │  <span class="c">"arm-watch done: '2% move, earnings-driven'"</span>
+                        ▼
+claude manages: tail detail · redirect executors · write pads
+update pane title ──▶ <span class="g">visible in ⌂ workspaces</span> to you / motherduck</div>
+
+  <h2>One channel fabric, three edges</h2>
+  <p>An endpoint is <strong>any pane you can send-keys into plus a transcript you can tail</strong>.
+  Codex executors have rollouts; claude managers have their own session transcripts
+  (<code>~/.claude/projects/…jsonl</code>) — structural twins. So there are three <em>edges</em>,
+  not three systems: down, up, lateral. Addressing is
+  <code>duck channel send --workspace &lt;ws&gt; &lt;pane&gt;</code>, with <code>manager</code>
+  reserved for the workspace's main claude pane. <code>@duck_parent</code> (a session option) forms
+  the tree — flexible: any workspace may parent others. <strong>motherduck is the invariant
+  root</strong>: one workspace, always exists, default parent; its roster flips scope so child
+  workspaces render as its agents. Its standing routine #1 is the <em>secretary</em> — a heartbeat
+  executor that diffs the org and reports notable changes as ordinary digests. The org's
+  bookkeeping is expressed entirely in the system's own primitives.</p>
+
+  <h2>Routine format — duck-native</h2>
+<pre><code><span class="c">&lt;project&gt;/</span>.duck/routines/<span class="k">&lt;name&gt;</span>.toml   <span class="c">← trigger + target + overrides</span>
+<span class="c">&lt;project&gt;/</span>.duck/routines/<span class="k">&lt;name&gt;</span>.md     <span class="c">← the prompt (the job description)</span></code></pre>
+
+  <div class="tablewrap"><table>
+    <tr><th>field</th><th>values</th><th>meaning</th></tr>
+    <tr><td>trigger</td><td><code>cron</code> · <code>heartbeat</code> · <code>manual</code></td><td>when the tick fires it (<code>schedule</code> / <code>interval</code> alongside)</td></tr>
+    <tr><td>target</td><td><code>run</code> (default) · <code>manager</code></td><td>run = codex executor pane; manager = a scheduled turn to claude (the rare check-in)</td></tr>
+    <tr><td>report</td><td><code>digest</code> (default) · <code>none</code></td><td>whether completions are couriered to the manager</td></tr>
+  </table></div>
+
+  <div class="tablewrap"><table>
+    <tr><th>trigger × target</th><th>what happens</th></tr>
+    <tr><td>run + cron/manual</td><td>a <strong>fresh</strong> <code>codex exec</code> pane per fire, cwd = project root, kind <code>runs</code>; exit-hold keeps failures visible</td></tr>
+    <tr><td>run + heartbeat</td><td><strong>one persistent</strong> codex TUI pane; each beat = <code>duck channel send</code> of the prompt — recurring turns in one thread, watchable in the viewport</td></tr>
+    <tr><td>manager</td><td>a scheduled turn sent to the main claude pane (claude ensured running first)</td></tr>
+  </table></div>
+
+  <p>Concurrency guard: a routine whose pane is still <code>working</code> is <em>skipped</em>, not
+  queued — missed beats drop; heartbeats are idempotent by design.</p>
+
+  <h2>The tick (every minute, systemd timer — the evict-sweep pattern)</h2>
+  <ul>
+    <li><strong>Projects</strong> = live workspaces' <code>@duck_dir</code> ∪ <code>~/.duck/routines-projects</code> (registered by <code>duck routines enable</code>, so automation survives every workspace being closed).</li>
+    <li><strong>Due-ness</strong> from last-fire state in <code>~/.duck/routines-state.json</code> (one small JSON, like names.json).</li>
+    <li><strong>Fire</strong> per the table; a missing workspace is created headless so runs are always inspectable.</li>
+    <li><strong>Courier</strong>: same pass tracks rollout offsets and delivers <em>one batched digest turn</em> to the manager when new <code>task_complete</code>s exist — send-keys, dependency-free; <code>claude --channels</code> upgrades delivery to structured events when present.</li>
+  </ul>
+
+  <h2>Phases</h2>
+  <ol class="phases">
+    <li>Format parsing + tick + cron/manual runs + <code>runs</code> tab. <em>The meat.</em></li>
+    <li>Heartbeats + the report courier + roster affordances (ran-history over rollouts, last message one Enter away).</li>
+    <li>motherduck + <code>@duck_parent</code> + the secretary + org-scoped roster view.</li>
+  </ol>
+
+  <h2>Non-goals</h2>
+  <p class="no"><b>No HTTP/WS API or MCP remote surface</b> — the hub runs everything; claude-on-hub is
+  the control plane. <b>No app-server thread pooling</b> — pane-per-run until scale forces otherwise.
+  <b>No second run-ledger</b> — rollouts are the history. <b>No daemon</b> — a timer, tmux, and files.</p>
+
+  <footer>duck/docs/ROUTINES.md is the normative text · this page is its diagram ·
+  view via <code>duck preview docs/routines-design.html</code> or <code>duck render</code></footer>
+</main>
+</body>
+</html>
