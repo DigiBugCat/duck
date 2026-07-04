@@ -155,7 +155,7 @@ func PadPath(name string) (string, error) {
 func PadCmd(path string) string {
 	q := paths.Quote(path)
 	script := `while :; do if [ -n "$DUCK_PAD_EDITOR" ]; then $DUCK_PAD_EDITOR ` + q +
-		`; elif command -v micro >/dev/null 2>&1; then micro -autosave 1 -reload auto -savecursor true ` + q +
+		`; elif command -v micro >/dev/null 2>&1; then micro -autosave 1 -reload auto -savecursor true -softwrap true -wordwrap true ` + q +
 		`; else "${EDITOR:-vim}" ` + q + `; fi; sleep 0.3; done`
 	return "sh -c " + paths.Quote(script)
 }
