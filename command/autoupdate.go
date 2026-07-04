@@ -144,5 +144,8 @@ func init() {
 	// don't define their own PersistentPreRun, so this root hook covers them all.
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
 		maybeStartBackgroundUpdate(cmd)
+		if home, err := os.UserHomeDir(); err == nil {
+			ensureAgentNotes(home)
+		}
 	}
 }
