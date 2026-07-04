@@ -43,8 +43,9 @@ type watchModel struct {
 	cursor      int               // index into filtered() — the active tab's items
 	width       int
 	height      int
-	focused     bool // pane focus (tmux focus-events): the click that focuses us must not also select
-	swallowNext bool // the next click is the one that focused the pane — ignore exactly one
+	focused     bool   // pane focus (tmux focus-events): the click that focuses us must not also select
+	swallowNext bool   // the next click is the one that focused the pane — ignore exactly one
+	armedKill   string // windowID armed for kill: x arms, second x confirms (accidental-kill guard)
 }
 
 // Watch runs the list TUI until the user quits (q / ^c). It is the body of
@@ -232,15 +233,17 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = Close(m.run, m.outer)
 			return m, tea.Quit
 		case "tab", "right", "l":
-			m.tab, m.cursor = (m.tab+1)%len(m.tabs()), 0
+			m.tab, m.cursor, m.armedKill = (m.tab+1)%len(m.tabs()), 0, ""
 		case "shift+tab", "left", "h":
 			n := len(m.tabs())
-			m.tab, m.cursor = (m.tab+n-1)%n, 0
+			m.tab, m.cursor, m.armedKill = (m.tab+n-1)%n, 0, ""
 		case "up", "k":
+			m.armedKill = ""
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
+			m.armedKill = ""
 			if m.cursor < len(m.filtered())-1 {
 				m.cursor++
 			}
@@ -252,9 +255,17 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.load
 			}
 		case "x":
+			// Two-press guard: killing an agent kills its process — too easy to
+			// fat-finger. First x arms (footer shows it), second x on the same
+			// item confirms; moving the cursor or switching tabs disarms.
 			if idx := m.filtered(); m.cursor < len(idx) {
-				_ = Kill(m.run, m.agents[idx[m.cursor]].WindowID)
-				return m, m.load
+				wid := m.agents[idx[m.cursor]].WindowID
+				if m.armedKill == wid {
+					m.armedKill = ""
+					_ = Kill(m.run, wid)
+					return m, m.load
+				}
+				m.armedKill = wid
 			}
 		case "s":
 			// Quick shell agent in the outer session's dir.
@@ -346,6 +357,13 @@ func (m watchModel) View() string {
 	help := dimStyle.Render(" ⇥ tab · ↵ view · x kill · s shell · q close")
 	if viewing != "" {
 		help = activeStyle.Render(" ▶ viewing "+viewing) + dimStyle.Render(" · ⇥ tab · ↵ view · x kill · q close")
+	}
+	if m.armedKill != "" {
+		for _, a := range m.agents {
+			if a.WindowID == m.armedKill {
+				help = workingStyle.Render(" x again to kill " + a.Name + " ")
+			}
+		}
 	}
 	// Pin help to the bottom when we know the height.
 	body := b.String()

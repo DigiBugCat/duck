@@ -358,10 +358,22 @@ func Spawn(run Runner, comp, name, dir, cmdline, kind string) (windowID string, 
 }
 
 // Select makes the viewport show the given agent (`select-window` on the
-// companion; the nested client follows).
+// companion; the nested client follows). Full-screen TUIs (tickrs, carbonyl,
+// plotext loops) can leave stale cells behind when the nested client swaps
+// windows, so force a hard redraw of every client attached to the window's
+// session — without it consecutive charts visually overlap.
 func Select(run Runner, windowID string) error {
-	_, err := run("select-window", "-t", windowID)
-	return err
+	if _, err := run("select-window", "-t", windowID); err != nil {
+		return err
+	}
+	if out, err := run("list-clients", "-t", windowID, "-F", "#{client_name}"); err == nil {
+		for _, c := range strings.Split(strings.TrimSpace(out), "\n") {
+			if c != "" {
+				_, _ = run("refresh-client", "-t", c)
+			}
+		}
+	}
+	return nil
 }
 
 // Kill terminates an agent (kills its window; the process gets SIGHUP).
