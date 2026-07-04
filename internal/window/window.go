@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -121,13 +122,16 @@ func findChrome() string {
 	return ""
 }
 
-// startBrowser launches chrome and prepares the annotation machinery on a
-// fresh tab: the duckMark binding (page→host, native CDP callback) and the
-// runtime injected into every future document.
-func (h *Host) startBrowser(parent context.Context) error {
-	chrome := findChrome()
-	if chrome == "" {
-		return fmt.Errorf("no chromium found (set DUCK_WINDOW_CHROME)")
+// launchTab is the seam between "get me a driveable CDP tab" and how the
+// browser actually got started. Linux headful/headless use a direct
+// ExecAllocator; darwin headful launches the DuckWindow.app wrapper bundle
+// via LaunchServices (for dock identity) and connects with a remote
+// allocator instead (see bundle_darwin.go / launch_darwin.go). This is also
+// the seam a future native WKWebView backend would slot in behind
+// (docs/WINDOW.md).
+func launchTab(parent context.Context, chrome string, headless bool) (context.Context, []context.CancelFunc, error) {
+	if runtime.GOOS == "darwin" && !headless {
+		return launchDarwinTab(parent, chrome)
 	}
 	home, _ := os.UserHomeDir()
 	opts := []chromedp.ExecAllocatorOption{
@@ -136,7 +140,7 @@ func (h *Host) startBrowser(parent context.Context) error {
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(filepath.Join(home, ".duck", "window-profile")),
 	}
-	if h.Headless {
+	if headless {
 		opts = append(opts, chromedp.Headless, chromedp.DisableGPU,
 			chromedp.NoSandbox) // hub containers lack userns; headless is test-only
 	} else {
@@ -145,8 +149,23 @@ func (h *Host) startBrowser(parent context.Context) error {
 	}
 	actx, acancel := chromedp.NewExecAllocator(parent, opts...)
 	tab, tcancel := chromedp.NewContext(actx)
+	return tab, []context.CancelFunc{tcancel, acancel}, nil
+}
+
+// startBrowser launches chrome and prepares the annotation machinery on a
+// fresh tab: the duckMark binding (page→host, native CDP callback) and the
+// runtime injected into every future document.
+func (h *Host) startBrowser(parent context.Context) error {
+	chrome := findChrome()
+	if chrome == "" {
+		return fmt.Errorf("no chromium found (set DUCK_WINDOW_CHROME)")
+	}
+	tab, cancels, err := launchTab(parent, chrome, h.Headless)
+	if err != nil {
+		return err
+	}
 	h.mu.Lock()
-	h.cancel = append(h.cancel, tcancel, acancel)
+	h.cancel = append(h.cancel, cancels...)
 	h.tab = tab
 	h.mu.Unlock()
 

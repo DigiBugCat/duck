@@ -88,6 +88,24 @@ targets to the host                         (~/.duck/render/ trick, for the
   port poll, log to `~/.duck/window.log`) — third instance of the proven
   render-server / auto-updater pattern.
 
+**Backend note (2026-07-04).** Today, headful chromium driven via chromedp
+is the whole backend, but its dock identity on macOS is a problem: launched
+via a raw `ExecAllocator`, it shows up as "Google Chrome" in the
+dock/app-switcher — not a duck surface. Fix in place: on darwin, duck
+generates a tiny wrapper app bundle at `~/.duck/DuckWindow.app`
+(`internal/window/bundle_darwin.go`, regenerated on content diff like the
+agent-notes pattern) whose `Contents/MacOS/duck-window` script execs the
+resolved chromium in app mode with a fixed `--remote-debugging-port`.
+Launching the bundle via `open -na` (LaunchServices) gives it its own dock
+identity ("Duck Window"); duck then connects with `chromedp.NewRemoteAllocator`
+against the polled `webSocketDebuggerUrl`, so CDP custody is unchanged. Linux
+headful/headless keeps the direct `ExecAllocator` path — no bundle needed
+there. The intended long-term backend is a **native WKWebView
+`duck-window.app`** (real dock identity for free, `decidePolicyFor` as the
+traffic-interception point instead of CDP `Fetch.enable`); the CDP path is
+structured behind a small launch seam (`launchTab` in `internal/window/window.go`)
+so swapping backends later doesn't touch the rest of the host.
+
 ### All traffic flows through duck — but not via a proxy
 
 An OS-level proxy was considered and rejected: MITM'ing HTTPS needs a duck CA
