@@ -1,15 +1,19 @@
 // Package panel implements duck's agent sidebar: a right-hand column in the
-// CURRENT tmux session showing (top) a live, fully-interactive view of the
-// selected agent and (bottom) a list of every launched agent.
+// CURRENT tmux session showing (top) the selected agent ITSELF and (bottom) a
+// clickable roster of everything launched.
 //
-// Mechanically it stays pure tmux ("don't change what works — containerize
-// it"): agents run as windows of a hidden COMPANION tmux session named
-// "<outer>-agents", and the viewport pane simply runs a NESTED tmux client
-// attached to that companion (TMUX unset so tmux allows the nesting, status
-// off so it looks like a bare pane). Selecting an agent in the list is just
-// `tmux select-window` on the companion — the nested client follows, and
-// because it is a real client the user can click into the viewport pane and
-// type at the agent directly.
+// The design is swap-based ("one flat layer"): agents are PANES parked in a
+// hidden companion session (the lot). The viewport is a real pane of YOUR
+// session, and selecting an agent atomically `swap-pane`s it into that slot
+// (the previous occupant parks back in the lot). Nothing is ever *viewed
+// through* a nested client — the pane on screen IS the agent, one tmux layer
+// from the terminal, so kitty-graphics pixels (casty, future renderers)
+// survive. The lot never changes pane count (swap exchanges), and an
+// immortal anchor pane keeps the companion session alive regardless.
+//
+// All identity lives in PANE user options (@duck_name/@duck_kind/…): pane
+// options travel with the pane through swaps, so an agent keeps its name,
+// tab, and rollout pairing wherever it currently sits. tmux is the database.
 //
 // Everything here drives the LOCAL tmux server via exec (the panel only makes
 // sense from inside a tmux pane, i.e. on the machine where the session lives —
@@ -45,9 +49,8 @@ func ExecRunner(args ...string) (string, error) {
 func InsideTmux() bool { return os.Getenv("TMUX") != "" }
 
 // SocketPath returns the tmux server socket this process's pane belongs to
-// ($TMUX is "socket-path,pid,pane-index"). The nested viewport client must
-// attach through the SAME socket — clearing TMUX alone would send it to the
-// default server, where the companion doesn't exist. Empty when not in tmux.
+// ($TMUX is "socket-path,pid,pane-index"). Kept exported for callers that
+// need to address this exact server. Empty when not in tmux.
 func SocketPath() string {
 	env := os.Getenv("TMUX")
 	if i := strings.IndexByte(env, ','); i >= 0 {
@@ -57,37 +60,29 @@ func SocketPath() string {
 }
 
 // panelOfOption marks a companion session with the outer session it belongs
-// to. session.Manager reads it (via list-sessions) so the picker and `duck ls`
-// hide companions — they are plumbing, not resumable duck sessions.
+// to. session.Manager reads it (via list-sessions) so the picker, `duck ls`,
+// `duck clean`, and the evict sweep all treat companions as plumbing.
 const panelOfOption = "@duck_panel_of"
 
 // roleOption is the PANE user option stamping the two panel panes so Open is
-// idempotent and Close knows what to kill. Values: "viewport", "list".
+// idempotent and Close knows what to kill. Values: "viewport", "list". After
+// every swap, Select re-stamps so the role stays on the SLOT (positional),
+// not on whichever pane happens to travel.
 const roleOption = "@duck_panel_role"
 
-// SpawnedAtOption is the WINDOW user option carrying the unix epoch of the
-// agent's spawn; the channel layer matches it against codex rollout-file
-// timestamps to pair a window with its structured event stream.
-const SpawnedAtOption = "@duck_spawned_at"
+// Pane user options carrying each agent's identity (they travel with the
+// pane through swaps):
+const (
+	NameOption      = "@duck_name"       // roster label
+	kindOption      = "@duck_kind"       // roster tab (see Kinds)
+	SpawnedAtOption = "@duck_spawned_at" // unix epoch of spawn (channel pairing)
+	RolloutOption   = "@duck_rollout"    // cached codex rollout path
+	anchorOption    = "@duck_anchor"     // the lot's immortal keep-alive pane
+)
 
-// RolloutOption is the WINDOW user option caching the resolved codex rollout
-// path, so the (heuristic) pairing runs once and then sticks.
-const RolloutOption = "@duck_rollout"
-
-// placeholderWindow is the companion's always-present window: it keeps the
-// companion alive (a tmux session dies with its last window) and doubles as a
-// real TERMINAL in the viewport whenever no agent is selected — an empty
-// sidebar is still a usable shell. It is never retired and never listed in
-// the roster; identified by placeholderOption, not by this name.
-const placeholderWindow = "terminal"
-
-// placeholderOption is the WINDOW user option marking the placeholder, so
-// Agents/Spawn identify it structurally rather than by its display name.
-const placeholderOption = "@duck_placeholder"
-
-// Kinds are ROSTER TAB NAMES, stored per window in kindOption. The base set
+// Kinds are ROSTER TAB NAMES, stored per pane in kindOption. The base set
 // below always shows in the tab bar; any other value creates its own tab for
-// as long as a window carries it (`duck spawn --tab <name>`), so duck — or an
+// as long as a pane carries it (`duck spawn --tab <name>`), so duck — or an
 // agent driving duck — can grow the tab set at runtime with zero declaration.
 const (
 	KindAgent    = "agents"    // runners you supervise (default)
@@ -98,11 +93,8 @@ const (
 // BaseKinds is the always-visible tab order; dynamic kinds append after.
 var BaseKinds = []string{KindAgent, KindShell, KindArtifact}
 
-// kindOption is the WINDOW user option carrying the kind (= tab name).
-const kindOption = "@duck_kind"
-
-// normalizeKind maps stamps to tab names: empty → agents, and the pre-tab
-// singular stamps ("agent"/"artifact") read as their tabs.
+// normalizeKind maps stamps to tab names: empty → agents, singular legacy
+// stamps → their tabs.
 func normalizeKind(k string) string {
 	switch k {
 	case "", "agent":
@@ -115,12 +107,15 @@ func normalizeKind(k string) string {
 	return k
 }
 
-// placeholderCmd runs a real interactive shell in a respawn loop: typing
-// `exit` just gives a fresh shell instead of killing the companion (and the
-// viewport with it). $SHELL falls back to sh for exotic setups.
-const placeholderCmd = `sh -c 'while :; do "${SHELL:-sh}" -l || true; sleep 0.5; done'`
+// terminalCmd is the viewport's default occupant: a real interactive shell
+// in a respawn loop (exit → fresh shell, never a dead pane). It is stamped
+// name=terminal, kind=shells, so it lives in the roster like anything else.
+const terminalCmd = `sh -c 'while :; do "${SHELL:-sh}" -l || true; sleep 0.5; done'`
 
-// Companion returns the companion session name for an outer session.
+// anchorCmd keeps the lot window alive forever; hidden from the roster.
+const anchorCmd = `sh -c 'while :; do sleep 3600; done'`
+
+// Companion returns the companion (lot) session name for an outer session.
 func Companion(outer string) string { return outer + "-agents" }
 
 // CurrentSession returns the name of the tmux session this process's pane
@@ -142,21 +137,19 @@ func CurrentPanePath(run Runner) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// EnsureCompanion creates the companion session for outer if it doesn't exist
-// (detached, cwd dir, holding only the placeholder window), and stamps its
-// options: hidden-from-picker marker, status off (it renders inside the
-// viewport pane — an inner status bar would be visual noise), and
-// detach-on-destroy off so the nested client survives window churn.
+// EnsureCompanion creates the lot session for outer if it doesn't exist:
+// one window holding the immortal anchor pane, stamped as plumbing
+// (hidden from picker, skipped by clean/evict). Idempotent.
 func EnsureCompanion(run Runner, outer, dir string) (string, error) {
 	comp := Companion(outer)
 	if _, err := run("has-session", "-t", "="+comp); err == nil {
 		return comp, nil
 	}
-	wid, err := run("new-session", "-d", "-s", comp, "-c", dir, "-n", placeholderWindow, "-P", "-F", "#{window_id}", placeholderCmd)
+	pid, err := run("new-session", "-d", "-s", comp, "-c", dir, "-n", "lot", "-P", "-F", "#{pane_id}", anchorCmd)
 	if err != nil {
 		return "", err
 	}
-	if _, err := run("set-option", "-w", "-t", strings.TrimSpace(wid), placeholderOption, "1"); err != nil {
+	if _, err := run("set-option", "-p", "-t", strings.TrimSpace(pid), anchorOption, "1"); err != nil {
 		return "", err
 	}
 	for _, opt := range [][2]string{
@@ -171,8 +164,8 @@ func EnsureCompanion(run Runner, outer, dir string) (string, error) {
 	return comp, nil
 }
 
-// Panes returns the panel panes of the outer session as role → pane id
-// ("%12"), by scanning every pane for the role option.
+// Panes returns the panel panes of the outer session as role → pane id, by
+// scanning every pane for the role option.
 func Panes(run Runner, outer string) (map[string]string, error) {
 	out, err := run("list-panes", "-s", "-t", outer, "-F", "#{pane_id}\t#{"+roleOption+"}")
 	if err != nil {
@@ -189,52 +182,47 @@ func Panes(run Runner, outer string) (map[string]string, error) {
 }
 
 // Open lays out the sidebar in the outer session's current window: a full-
-// height right column (~34%) holding the nested-client viewport on top and the
-// agent list below. Idempotent: existing panel panes are left alone. duckBin
-// is the path of the duck binary to run the list TUI with (os.Executable of
-// the calling process).
+// height right column (~34%) holding the viewport SLOT on top (starting as
+// the terminal occupant) and the roster below. Idempotent: existing panel
+// panes are left alone. duckBin is the path of the duck binary to run the
+// roster TUI with.
 func Open(run Runner, outer, comp, duckBin string) error {
 	roles, err := Panes(run, outer)
 	if err != nil {
 		return err
 	}
-	// Mouse on: clicking between main pane / viewport / list rows is the whole
-	// point of the sidebar.
-	if _, err := run("set-option", "-t", outer, "mouse", "on"); err != nil {
-		return err
-	}
-	// Focus reporting lets the list TUI tell "click to focus me" apart from
-	// "click a row": a click landing while the pane is unfocused only focuses.
-	if _, err := run("set-option", "-t", outer, "focus-events", "on"); err != nil {
-		return err
-	}
-	// Unlock pixel graphics: kitty graphics protocol with Unicode placeholders
-	// passed through tmux is the ONE pixel path that reaches Ghostty (sixel is
-	// rejected there). chafa/timg auto-negotiate it; everything else ignores it.
-	if _, err := run("set-option", "-t", outer, "allow-passthrough", "on"); err != nil {
-		return err
+	for _, opt := range [][2]string{
+		// Clicking between panes and roster rows is the whole point.
+		{"mouse", "on"},
+		// Focus reporting lets the roster tell "click to focus" from "click a row".
+		{"focus-events", "on"},
+		// The one pixel path to the terminal (kitty graphics wrapped once) —
+		// and with the swap design the viewport IS one layer from the client.
+		{"allow-passthrough", "on"},
+	} {
+		if _, err := run("set-option", "-t", outer, opt[0], opt[1]); err != nil {
+			return err
+		}
 	}
 	if roles["viewport"] == "" {
 		// -f: span the window's full height; -d: keep focus in the main pane.
-		// TMUX= lets the nested client attach from inside a pane; -S pins it to
-		// this server's socket (see SocketPath).
-		cmd := "TMUX= exec tmux "
-		if sock := SocketPath(); sock != "" {
-			cmd += "-S " + paths.Quote(sock) + " "
-		}
-		cmd += "attach-session -t " + paths.Quote(comp)
-		id, err := run("split-window", "-h", "-f", "-d", "-l", "34%", "-t", outer+":", "-P", "-F", "#{pane_id}", cmd)
+		id, err := run("split-window", "-h", "-f", "-d", "-l", "34%", "-t", outer+":", "-P", "-F", "#{pane_id}", terminalCmd)
 		if err != nil {
 			return err
 		}
-		roles["viewport"] = strings.TrimSpace(id)
-		if _, err := run("set-option", "-p", "-t", roles["viewport"], roleOption, "viewport"); err != nil {
-			return err
+		vp := strings.TrimSpace(id)
+		roles["viewport"] = vp
+		for _, opt := range [][2]string{
+			{roleOption, "viewport"},
+			{NameOption, "terminal"},
+			{kindOption, KindShell},
+		} {
+			if _, err := run("set-option", "-p", "-t", vp, opt[0], opt[1]); err != nil {
+				return err
+			}
 		}
 	}
 	if roles["list"] == "" {
-		// Fixed rows, not a percentage: the roster only needs a handful of lines,
-		// and a % split eats half a tall terminal. The viewport gets the rest.
 		cmd := paths.Quote(duckBin) + " panel watch " + paths.Quote(outer)
 		id, err := run("split-window", "-v", "-d", "-l", "10", "-t", roles["viewport"], "-P", "-F", "#{pane_id}", cmd)
 		if err != nil {
@@ -247,80 +235,105 @@ func Open(run Runner, outer, comp, duckBin string) error {
 	return nil
 }
 
-// Close kills the panel panes of outer (viewport + list). The companion
-// session — and the agents in it — keep running; the panel is just a view.
+// Close kills the roster pane and parks the viewport occupant back in the
+// lot before killing the slot — closing the panel must never kill an agent.
 func Close(run Runner, outer string) error {
 	roles, err := Panes(run, outer)
 	if err != nil {
 		return err
 	}
-	for _, id := range roles {
+	if vp := roles["viewport"]; vp != "" {
+		// Park the occupant: move it to the lot window (break-pane into comp).
+		// The terminal occupant parks too — it's a roster citizen like any other.
+		comp := Companion(outer)
+		if _, err := run("has-session", "-t", "="+comp); err == nil {
+			_, _ = run("break-pane", "-d", "-s", vp, "-t", comp+":lot")
+		} else {
+			_, _ = run("kill-pane", "-t", vp)
+		}
+		_, _ = run("set-option", "-p", "-t", vp, "-u", roleOption)
+	}
+	if id := roles["list"]; id != "" {
 		_, _ = run("kill-pane", "-t", id)
 	}
 	return nil
 }
 
-// Agent is one launched runner: a window of the companion session.
+// Agent is one launched runner or artifact: a stamped pane, wherever it
+// currently sits (parked in the lot, or on display in the viewport slot).
 type Agent struct {
-	WindowID string // tmux global window id, e.g. "@7" — the dispatch key
-	Index    int
-	Name     string // window name (agent label)
-	Active   bool   // currently shown in the viewport
-	Command  string // pane_current_command, e.g. "codex", "node", "zsh"
-	Kind     string // KindAgent (default) or KindArtifact — roster section
-	Title    string // pane_title — agents like Claude Code write status here
+	PaneID  string // tmux pane id, e.g. "%42" — the dispatch key
+	Name    string // roster label (@duck_name)
+	Active  bool   // currently in the viewport slot
+	Command string // pane_current_command, e.g. "codex", "node", "zsh"
+	Kind    string // roster tab (@duck_kind)
+	Title   string // pane_title — agents like Claude Code write status here
 }
 
-// agentsFormat is the list-windows template Agents and placeholders parse.
-// pane_title is free text, so it is the LAST field and the split is bounded
-// (SplitN) — a tab inside a title cannot shift the controlled fields.
-const agentsFormat = "#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}"
+// agentsFormat lists panes with their identity options. pane_title is free
+// text, so it is LAST and the split is bounded.
+const agentsFormat = "#{pane_id}\t#{" + NameOption + "}\t#{" + kindOption + "}\t#{" + anchorOption + "}\t#{" + roleOption + "}\t#{pane_current_command}\t#{pane_title}"
 
-// Agents lists the companion's windows, excluding the placeholder (identified
-// by its @duck_placeholder marker, never by name).
-func Agents(run Runner, comp string) ([]Agent, error) {
-	out, err := run("list-windows", "-t", comp, "-F", agentsFormat)
+// parseAgents turns list-panes output into Agents, skipping unstamped panes
+// (whatever else lives in the sessions) and the lot anchor. slotID marks
+// which pane is on display.
+func parseAgents(out, slotID string) []Agent {
+	var agents []Agent
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		f := strings.SplitN(line, "\t", 7)
+		if len(f) < 7 || strings.TrimSpace(f[1]) == "" || strings.TrimSpace(f[3]) != "" {
+			continue
+		}
+		agents = append(agents, Agent{
+			PaneID:  f[0],
+			Name:    strings.TrimSpace(f[1]),
+			Kind:    normalizeKind(strings.TrimSpace(f[2])),
+			Active:  f[0] == slotID,
+			Command: f[5],
+			Title:   f[6],
+		})
+	}
+	return agents
+}
+
+// Agents lists every stamped pane belonging to outer's sidebar: parked in
+// the lot plus the current viewport occupant.
+func Agents(run Runner, outer string) ([]Agent, error) {
+	roles, err := Panes(run, outer)
 	if err != nil {
 		return nil, err
 	}
-	var agents []Agent
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 8)
-		if len(f) < 8 || strings.TrimSpace(f[5]) != "" {
-			continue
+	slot := roles["viewport"]
+	var all []Agent
+	if slot != "" {
+		if out, err := run("list-panes", "-s", "-t", outer, "-F", agentsFormat); err == nil {
+			for _, a := range parseAgents(out, slot) {
+				if a.PaneID == slot {
+					all = append(all, a) // only the occupant; other outer panes aren't ours
+				}
+			}
 		}
-		a := Agent{WindowID: f[0], Name: f[2], Active: f[3] == "1", Command: f[4], Kind: normalizeKind(strings.TrimSpace(f[6])), Title: f[7]}
-		fmt.Sscanf(f[1], "%d", &a.Index)
-		agents = append(agents, a)
 	}
-	return agents, nil
-}
-
-// placeholders returns the window ids of the companion's placeholder windows.
-func placeholders(run Runner, comp string) []string {
-	out, err := run("list-windows", "-t", comp, "-F", agentsFormat)
+	comp := Companion(outer)
+	out, err := run("list-panes", "-s", "-t", comp, "-F", agentsFormat)
 	if err != nil {
-		return nil
+		// No lot yet (panel never opened / all parked panes elsewhere) — the
+		// occupant alone is a valid roster.
+		return all, nil
 	}
-	var ids []string
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 8)
-		if len(f) >= 8 && strings.TrimSpace(f[5]) != "" {
-			ids = append(ids, f[0])
-		}
-	}
-	return ids
+	all = append(all, parseAgents(out, slot)...)
+	return all, nil
 }
 
-// Spawn launches cmdline (or an interactive shell when empty) as a new named
-// window of the companion, selects it (so the viewport shows the newcomer),
-// stamps its kind (roster section), and ensures the keep-alive placeholder
-// exists. kind is KindAgent or KindArtifact; empty means KindAgent.
-func Spawn(run Runner, comp, name, dir, cmdline, kind string) (windowID string, err error) {
-	args := []string{"new-window", "-t", comp + ":", "-P", "-F", "#{window_id}"}
-	if name != "" {
-		args = append(args, "-n", name)
+// Spawn launches cmdline (or an interactive shell when empty) as a new
+// stamped pane PARKED in the lot, then swaps it on display. kind is the
+// roster tab; empty means agents.
+func Spawn(run Runner, outer, name, dir, cmdline, kind string) (paneID string, err error) {
+	comp, err := EnsureCompanion(run, outer, dir)
+	if err != nil {
+		return "", err
 	}
+	args := []string{"split-window", "-d", "-t", comp + ":lot", "-P", "-F", "#{pane_id}"}
 	if dir != "" {
 		args = append(args, "-c", dir)
 	}
@@ -331,81 +344,90 @@ func Spawn(run Runner, comp, name, dir, cmdline, kind string) (windowID string, 
 	if err != nil {
 		return "", err
 	}
-	windowID = strings.TrimSpace(id)
-	// Stamp the spawn instant: the channel layer uses it to map this window to
-	// the codex rollout file that appears right after (internal/channel).
-	_, _ = run("set-option", "-w", "-t", windowID, SpawnedAtOption, strconv.FormatInt(time.Now().Unix(), 10))
+	paneID = strings.TrimSpace(id)
 	if kind == "" {
 		kind = KindAgent
 	}
-	_, _ = run("set-option", "-w", "-t", windowID, kindOption, kind)
-	if name != "" {
-		// Keep the user/derived label; don't let tmux rename it to the running cmd.
-		_, _ = run("set-option", "-w", "-t", windowID, "automatic-rename", "off")
+	for _, opt := range [][2]string{
+		{NameOption, name},
+		{kindOption, kind},
+		{SpawnedAtOption, strconv.FormatInt(time.Now().Unix(), 10)},
+	} {
+		_, _ = run("set-option", "-p", "-t", paneID, opt[0], opt[1])
 	}
-	// Make sure the placeholder EXISTS (it is never retired): a tmux session
-	// dies with its last window, so the placeholder is what keeps the
-	// companion — and the viewport's nested client — alive when the last
-	// agent exits, falling back to the "no agent selected" screen instead of
-	// tearing the pane out of the layout. It is hidden from the roster by its
-	// marker, so its only cost is one sleeping sh.
-	if len(placeholders(run, comp)) == 0 {
-		if wid, err := run("new-window", "-d", "-t", comp+":", "-n", placeholderWindow, "-P", "-F", "#{window_id}", placeholderCmd); err == nil {
-			_, _ = run("set-option", "-w", "-t", strings.TrimSpace(wid), placeholderOption, "1")
-		}
-	}
-	return windowID, nil
+	// Even out the lot so parked panes never shrink to zero-size (tmux
+	// refuses splits on tiny panes eventually).
+	_, _ = run("select-layout", "-t", comp+":lot", "tiled")
+	// Show the newcomer.
+	_ = Select(run, outer, paneID)
+	return paneID, nil
 }
 
-// Select makes the viewport show the given agent (`select-window` on the
-// companion; the nested client follows). Full-screen TUIs (tickrs, carbonyl,
-// plotext loops) can leave stale cells behind when the nested client swaps
-// windows, so force a hard redraw of every client attached to the window's
-// session — without it consecutive charts visually overlap.
-func Select(run Runner, windowID string) error {
-	if _, err := run("select-window", "-t", windowID); err != nil {
+// Select puts the given pane on display: an atomic swap-pane between it and
+// the current viewport occupant (which parks in the agent's old lot spot),
+// then re-stamps the role so "viewport" stays positional, and hard-refreshes
+// clients so full-screen TUIs can't leave stale cells behind.
+func Select(run Runner, outer, paneID string) error {
+	roles, err := Panes(run, outer)
+	if err != nil {
 		return err
 	}
-	if out, err := run("list-clients", "-t", windowID, "-F", "#{client_name}"); err == nil {
+	slot := roles["viewport"]
+	if slot == "" {
+		return fmt.Errorf("no viewport open (run: duck panel)")
+	}
+	if slot == paneID {
+		return nil // already on display
+	}
+	if _, err := run("swap-pane", "-d", "-s", paneID, "-t", slot); err != nil {
+		return err
+	}
+	// The role option traveled with the old occupant into the lot; move it to
+	// the pane now sitting in the slot (positional role).
+	_, _ = run("set-option", "-p", "-t", slot, "-u", roleOption)
+	_, _ = run("set-option", "-p", "-t", paneID, roleOption, "viewport")
+	if out, err := run("list-clients", "-t", outer, "-F", "#{client_name}"); err == nil {
 		for _, c := range strings.Split(strings.TrimSpace(out), "\n") {
 			if c != "" {
 				_, _ = run("refresh-client", "-t", c)
 			}
 		}
 	}
+	_, _ = run("select-layout", "-t", Companion(outer)+":lot", "tiled")
 	return nil
 }
 
-// Kill terminates an agent (kills its window; the process gets SIGHUP).
-func Kill(run Runner, windowID string) error {
-	_, err := run("kill-window", "-t", windowID)
+// Kill terminates an agent pane. If it is currently on display, the terminal
+// (or any parked pane) is NOT auto-promoted — the slot pane dies and Open
+// recreates it on the next panel/spawn; killing parked panes is invisible.
+func Kill(run Runner, paneID string) error {
+	_, err := run("kill-pane", "-t", paneID)
 	return err
 }
 
-// Preview windows carry their render recipe in window options so the roster
-// can re-render ON DEMAND: selecting an artifact whose source file changed
-// respawns the window with the same command — no background watch loop, no
-// restart flicker while you're looking at it. Unchanged file → plain select.
+// Preview panes carry their render recipe in pane options so the roster can
+// re-render ON DEMAND: selecting an artifact whose source file changed
+// respawns the pane with the same command. Unchanged file → plain select.
 const (
 	PreviewCmdOption   = "@duck_preview_cmd"
 	PreviewPathOption  = "@duck_preview_path"
 	PreviewMtimeOption = "@duck_preview_mtime"
 )
 
-// StampPreview records the recipe on a freshly spawned preview window.
-func StampPreview(run Runner, windowID, cmd, path string, mtime int64) {
-	_, _ = run("set-option", "-w", "-t", windowID, PreviewCmdOption, cmd)
-	_, _ = run("set-option", "-w", "-t", windowID, PreviewPathOption, path)
-	_, _ = run("set-option", "-w", "-t", windowID, PreviewMtimeOption, strconv.FormatInt(mtime, 10))
+// StampPreview records the recipe on a freshly spawned preview pane.
+func StampPreview(run Runner, paneID, cmd, path string, mtime int64) {
+	_, _ = run("set-option", "-p", "-t", paneID, PreviewCmdOption, cmd)
+	_, _ = run("set-option", "-p", "-t", paneID, PreviewPathOption, path)
+	_, _ = run("set-option", "-p", "-t", paneID, PreviewMtimeOption, strconv.FormatInt(mtime, 10))
 }
 
-// RefreshIfStale re-renders a preview window whose source file changed since
-// the last render (respawn-window with the stamped command), restamping the
-// new mtime. Windows without a preview stamp — agents, shells — are a no-op,
-// so callers can invoke it on every selection unconditionally.
-func RefreshIfStale(run Runner, windowID string, stat func(string) (int64, bool)) {
+// RefreshIfStale re-renders a preview pane whose source file changed since
+// the last render (respawn-pane with the stamped command), restamping the
+// new mtime. Panes without a preview stamp are a no-op, so callers invoke it
+// on every selection unconditionally.
+func RefreshIfStale(run Runner, paneID string, stat func(string) (int64, bool)) {
 	read := func(name string) string {
-		out, err := run("show-options", "-w", "-t", windowID, "-v", name)
+		out, err := run("show-options", "-p", "-t", paneID, "-v", name)
 		if err != nil {
 			return ""
 		}
@@ -420,10 +442,10 @@ func RefreshIfStale(run Runner, windowID string, stat func(string) (int64, bool)
 	if !ok || strconv.FormatInt(mtime, 10) == read(PreviewMtimeOption) {
 		return
 	}
-	if _, err := run("respawn-window", "-k", "-t", windowID, cmd); err != nil {
+	if _, err := run("respawn-pane", "-k", "-t", paneID, cmd); err != nil {
 		return
 	}
-	_, _ = run("set-option", "-w", "-t", windowID, PreviewMtimeOption, strconv.FormatInt(mtime, 10))
+	_, _ = run("set-option", "-p", "-t", paneID, PreviewMtimeOption, strconv.FormatInt(mtime, 10))
 }
 
 // FileMtime is the production stat for RefreshIfStale.
@@ -433,4 +455,46 @@ func FileMtime(path string) (int64, bool) {
 		return 0, false
 	}
 	return info.ModTime().Unix(), true
+}
+
+// EnsureSlot heals a missing viewport (its occupant was killed on display):
+// recreate the slot with a transient holder, swap the parked terminal back
+// in when one exists, and retire the holder. No-op when the slot is alive.
+func EnsureSlot(run Runner, outer string) {
+	roles, err := Panes(run, outer)
+	if err != nil || roles["viewport"] != "" {
+		return
+	}
+	target := outer + ":"
+	if roles["list"] != "" {
+		// Split ABOVE the roster so the healed slot lands in the sidebar
+		// column, not across the full window.
+		target = roles["list"]
+	}
+	holder, err := run("split-window", "-h", "-f", "-d", "-l", "34%", "-t", target, "-P", "-F", "#{pane_id}", anchorCmd)
+	if roles["list"] != "" {
+		holder, err = run("split-window", "-v", "-b", "-d", "-t", roles["list"], "-P", "-F", "#{pane_id}", anchorCmd)
+	}
+	if err != nil {
+		return
+	}
+	hid := strings.TrimSpace(holder)
+	_, _ = run("set-option", "-p", "-t", hid, roleOption, "viewport")
+	// Promote the parked terminal (or leave a fresh one) as the occupant.
+	comp := Companion(outer)
+	if out, lerr := run("list-panes", "-s", "-t", comp, "-F", "#{pane_id}\t#{"+NameOption+"}"); lerr == nil {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			f := strings.SplitN(line, "\t", 2)
+			if len(f) == 2 && strings.TrimSpace(f[1]) == "terminal" {
+				if Select(run, outer, f[0]) == nil {
+					_, _ = run("kill-pane", "-t", hid) // holder is parked now — retire it
+				}
+				return
+			}
+		}
+	}
+	// No parked terminal: make the holder BE the terminal.
+	_, _ = run("respawn-pane", "-k", "-t", hid, terminalCmd)
+	_, _ = run("set-option", "-p", "-t", hid, NameOption, "terminal")
+	_, _ = run("set-option", "-p", "-t", hid, kindOption, KindShell)
 }

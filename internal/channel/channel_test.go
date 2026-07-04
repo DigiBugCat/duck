@@ -87,9 +87,9 @@ func TestMatchRolloutPairsByCwdAndTime(t *testing.T) {
 
 func TestResolveCachesInWindowOption(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
-		"show-options -w -t @5 -v @duck_rollout": "/cached/rollout.jsonl\n",
+		"show-options -p -t %5 -v @duck_rollout": "/cached/rollout.jsonl\n",
 	}}
-	ref := AgentRef{WindowID: "@5"}
+	ref := AgentRef{WindowID: "%5"}
 	if err := Resolve(f.run, &ref); err != nil {
 		t.Fatal(err)
 	}
@@ -136,10 +136,10 @@ func TestTailFiltersAndReturnsOffset(t *testing.T) {
 
 func TestSendTypesThenEnter(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{}}
-	if err := Send(f.run, AgentRef{WindowID: "@3"}, "fix the tests"); err != nil {
+	if err := Send(f.run, AgentRef{WindowID: "%3"}, "fix the tests"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 2 || f.calls[0] != "send-keys -t @3 -l -- fix the tests" || f.calls[1] != "send-keys -t @3 Enter" {
+	if len(f.calls) != 2 || f.calls[0] != "send-keys -t %3 -l -- fix the tests" || f.calls[1] != "send-keys -t %3 Enter" {
 		t.Fatalf("calls: %v", f.calls)
 	}
 }
@@ -158,7 +158,9 @@ func TestCompanionsNoServerIsQuietNoop(t *testing.T) {
 // initialize → tools/list → tools/call reply (routed to send-keys).
 func TestServeHandshakeAndReply(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
-		"list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}": "@7\t1\tcodex\t1\tcodex\t\tagents\t\n",
+		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}": "%5\tviewport\n",
+		"list-panes -s -t work -F #{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}":        "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
+		"list-panes -s -t work-agents -F #{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}": "%7\tcodex\tagents\t\t\tcodex\t\n",
 	}}
 	in := strings.NewReader(
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}` + "\n" +
@@ -188,7 +190,7 @@ func TestServeHandshakeAndReply(t *testing.T) {
 	}
 	sent := false
 	for _, c := range f.calls {
-		if c == "send-keys -t @7 -l -- go on" {
+		if c == "send-keys -t %7 -l -- go on" {
 			sent = true
 		}
 	}

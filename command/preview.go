@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -77,7 +78,14 @@ var previewCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		wid, err := panel.Spawn(run, comp, "preview", dir, line, panel.KindArtifact)
+		bin, err := os.Executable()
+		if err != nil {
+			bin = "duck"
+		}
+		if err := panel.Open(run, outer, comp, bin); err != nil {
+			return err
+		}
+		wid, err := panel.Spawn(run, outer, "preview", dir, line, panel.KindArtifact)
 		if err != nil {
 			return err
 		}
@@ -90,11 +98,7 @@ var previewCmd = &cobra.Command{
 				}
 			}
 		}
-		bin, err := os.Executable()
-		if err != nil {
-			bin = "duck"
-		}
-		return panel.Open(run, outer, comp, bin)
+		return nil
 	},
 }
 
@@ -102,9 +106,21 @@ var previewCmd = &cobra.Command{
 // it is one-shot (prints and exits → the caller adds a hold). Files are
 // resolved to absolute paths (the window's cwd is the pane dir, but absolute
 // is unambiguous); a missing file is an error here rather than a dead window.
+// htmlRenderer picks the page engine: casty (real pixels via kitty graphics —
+// the swap-based viewport is ONE tmux layer from the terminal, so bitmaps
+// survive) when installed, else carbonyl cells. Watched previews stay on
+// carbonyl: the change-detecting wrapper needs --allow-file-access-from-files,
+// which casty's managed Chrome doesn't expose.
+func htmlRenderer() string {
+	if _, err := exec.LookPath("casty"); err == nil {
+		return "casty"
+	}
+	return "carbonyl"
+}
+
 func previewRender(target string) (render string, hold bool, err error) {
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-		return "carbonyl " + paths.Quote(target), false, nil
+		return htmlRenderer() + " " + paths.Quote(target), false, nil
 	}
 	abs, err := filepath.Abs(target)
 	if err != nil {
@@ -116,17 +132,13 @@ func previewRender(target string) (render string, hold bool, err error) {
 	q := paths.Quote(abs)
 	switch strings.ToLower(filepath.Ext(abs)) {
 	case ".html", ".htm":
-		return "carbonyl file://" + q, false, nil
+		return htmlRenderer() + " file://" + q, false, nil
 	case ".md", ".markdown":
 		return "glow -p " + q, false, nil
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp":
-		// Cell mode (symbols), deliberately: the viewport is a NESTED tmux
-		// client, and kitty-pixel passthrough cannot cross two tmux layers (the
-		// inner tmux unwraps it, the outer drops the bare escape → blank pane).
-		// chafa's symbol mode at truecolor is the highest fidelity that
-		// actually renders here; zoom the pane (prefix+z) for more resolution,
-		// or `open <file>` for real pixels in the laptop browser.
-		return "chafa " + q, true, nil
+		// Pixels first (kitty via tmux passthrough — one layer in the swap
+		// design), cells as the universal fallback if the forced mode errors.
+		return fmt.Sprintf("chafa --passthrough tmux -f kitty %s || chafa %s", q, q), true, nil
 	default:
 		return "lynx " + q, false, nil
 	}

@@ -6,12 +6,11 @@ import (
 	"testing"
 )
 
-// fakeRunner scripts tmux responses by argv prefix (joined with spaces) and
-// records every call.
+// fakeRunner scripts tmux responses by exact joined argv and records calls.
 type fakeRunner struct {
 	calls []string
-	out   map[string]string // exact joined argv → stdout
-	errs  map[string]error  // exact joined argv → error
+	out   map[string]string
+	errs  map[string]error
 }
 
 func (f *fakeRunner) run(args ...string) (string, error) {
@@ -32,133 +31,142 @@ func (f *fakeRunner) called(prefix string) bool {
 	return false
 }
 
-func TestEnsureCompanionCreatesOnceAndStamps(t *testing.T) {
+const rolesKey = "list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}"
+
+func agentsKey(target string) string {
+	return "list-panes -s -t " + target + " -F " + agentsFormat
+}
+
+func TestEnsureCompanionCreatesLotWithAnchor(t *testing.T) {
 	f := &fakeRunner{
-		out:  map[string]string{},
+		out:  map[string]string{"new-session -d -s work-agents -c /d -n lot -P -F #{pane_id} " + anchorCmd: "%1\n"},
 		errs: map[string]error{"has-session -t =work-agents": errors.New("can't find session")},
 	}
-	comp, err := EnsureCompanion(f.run, "work", "/home/u/dev")
-	if err != nil {
-		t.Fatal(err)
+	comp, err := EnsureCompanion(f.run, "work", "/d")
+	if err != nil || comp != "work-agents" {
+		t.Fatalf("comp=%q err=%v", comp, err)
 	}
-	if comp != "work-agents" {
-		t.Fatalf("companion name = %q", comp)
-	}
-	if !f.called("new-session -d -s work-agents -c /home/u/dev -n terminal -P -F #{window_id}") {
-		t.Fatalf("companion not created: %v", f.calls)
-	}
-	for _, opt := range []string{
+	for _, want := range []string{
+		"set-option -p -t %1 @duck_anchor 1",
 		"set-option -t work-agents @duck_panel_of work",
 		"set-option -t work-agents status off",
-		"set-option -t work-agents detach-on-destroy off",
 	} {
-		if !f.called(opt) {
-			t.Errorf("missing %q", opt)
+		if !f.called(want) {
+			t.Errorf("missing %q in %v", want, f.calls)
 		}
 	}
-
-	// Already exists → no create.
+	// Idempotent: existing companion → no create.
 	f2 := &fakeRunner{out: map[string]string{}}
-	if _, err := EnsureCompanion(f2.run, "work", "/x"); err != nil {
-		t.Fatal(err)
-	}
-	if f2.called("new-session") {
-		t.Fatal("recreated an existing companion")
+	if _, err := EnsureCompanion(f2.run, "work", "/d"); err != nil || f2.called("new-session") {
+		t.Fatal("must not recreate an existing companion")
 	}
 }
 
-func TestAgentsParsesAndSkipsPlaceholder(t *testing.T) {
+func TestAgentsMergesSlotOccupantAndParkedPanes(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
-		"list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}": "@1\t0\tterminal\t0\tsh\t1\t\t\n" +
-			"@2\t1\tcodex\t1\tcodex\t\tagents\tfixing tests\n" +
-			"@3\t2\tbuild\t0\tcargo\t\t\t\n",
+		rolesKey: "%0\t\n%5\tviewport\n%6\tlist\n",
+		// outer: slot occupant is a stamped terminal; %0 (user's main pane) unstamped.
+		agentsKey("work"): "%0\t\t\t\t\tzsh\t\n%5\tterminal\tshells\t\tviewport\tzsh\t\n%6\t\t\t\tlist\tduck\t\n",
+		// lot: anchor (hidden) + parked codex.
+		agentsKey("work-agents"): "%1\t\t\t1\t\tsh\t\n%7\tfixer\tagents\t\t\tcodex\tworking away\n",
 	}}
-	agents, err := Agents(f.run, "work-agents")
+	agents, err := Agents(f.run, "work")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(agents) != 2 {
-		t.Fatalf("want 2 agents (placeholder skipped), got %d: %+v", len(agents), agents)
+		t.Fatalf("want terminal+fixer, got %+v", agents)
 	}
-	if agents[0].WindowID != "@2" || !agents[0].Active || agents[0].Title != "fixing tests" {
-		t.Errorf("agent[0] = %+v", agents[0])
+	if agents[0].Name != "terminal" || !agents[0].Active || agents[0].Kind != KindShell {
+		t.Errorf("slot occupant wrong: %+v", agents[0])
 	}
-	if agents[1].Name != "build" || agents[1].Index != 2 || agents[1].Active {
-		t.Errorf("agent[1] = %+v", agents[1])
+	if agents[1].PaneID != "%7" || agents[1].Active || agents[1].Title != "working away" {
+		t.Errorf("parked agent wrong: %+v", agents[1])
 	}
 }
 
-func TestSpawnRetiresPlaceholderAndPinsName(t *testing.T) {
-	listKey := "list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}"
+func TestSpawnParksStampsAndSelects(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
-		"new-window -t work-agents: -P -F #{window_id} -n codex -c /d codex": "@7\n",
-		listKey: "@1\t0\tterminal\t0\tsh\t1\t\t\n@7\t1\tcodex\t1\tcodex\t\tagents\t\n",
+		"split-window -d -t work-agents:lot -P -F #{pane_id} -c /d codex": "%9\n",
+		rolesKey: "%5\tviewport\n",
 	}}
-	id, err := Spawn(f.run, "work-agents", "codex", "/d", "codex", KindAgent)
-	if err != nil {
+	id, err := Spawn(f.run, "work", "fixer", "/d", "codex", KindAgent)
+	if err != nil || id != "%9" {
+		t.Fatalf("id=%q err=%v", id, err)
+	}
+	for _, want := range []string{
+		"set-option -p -t %9 @duck_name fixer",
+		"set-option -p -t %9 @duck_kind agents",
+		"set-option -p -t %9 @duck_spawned_at ",
+		"swap-pane -d -s %9 -t %5",                      // Select: newcomer goes on display
+		"set-option -p -t %9 @duck_panel_role viewport", // role re-stamped onto slot occupant
+	} {
+		if !f.called(want) {
+			t.Errorf("missing %q in %v", want, f.calls)
+		}
+	}
+}
+
+func TestSelectSwapsAndRestampsRole(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{rolesKey: "%5\tviewport\n"}}
+	if err := Select(f.run, "work", "%7"); err != nil {
 		t.Fatal(err)
 	}
-	if id != "@7" {
-		t.Fatalf("window id = %q", id)
+	for _, want := range []string{
+		"swap-pane -d -s %7 -t %5",
+		"set-option -p -t %5 -u @duck_panel_role", // old occupant (now parked) loses the role
+		"set-option -p -t %7 @duck_panel_role viewport",
+	} {
+		if !f.called(want) {
+			t.Errorf("missing %q in %v", want, f.calls)
+		}
 	}
-	if !f.called("set-option -w -t @7 automatic-rename off") {
-		t.Error("named window should pin automatic-rename off")
-	}
-	if f.called("kill-window") {
-		t.Errorf("placeholder must NOT be retired (it keeps the companion alive): %v", f.calls)
-	}
-	if f.called("new-window -d") {
-		t.Errorf("placeholder already exists; must not create another: %v", f.calls)
+	// Selecting the pane already on display is a no-op.
+	f2 := &fakeRunner{out: map[string]string{rolesKey: "%7\tviewport\n"}}
+	if err := Select(f2.run, "work", "%7"); err != nil || f2.called("swap-pane") {
+		t.Fatal("selecting the displayed pane must not swap")
 	}
 }
 
-func TestOpenIsIdempotentWhenPanesExist(t *testing.T) {
+func TestOpenCreatesTerminalSlotAndRoster(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
-		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}": "%1\t\n%2\tviewport\n%3\tlist\n",
+		rolesKey: "%0\t\n",
+		"split-window -h -f -d -l 34% -t work: -P -F #{pane_id} " + terminalCmd:          "%5\n",
+		"split-window -v -d -l 10 -t %5 -P -F #{pane_id} '/bin/duck' panel watch 'work'": "%6\n",
 	}}
 	if err := Open(f.run, "work", "work-agents", "/bin/duck"); err != nil {
 		t.Fatal(err)
 	}
-	if f.called("split-window") {
-		t.Fatalf("existing panel must not re-split: %v", f.calls)
+	for _, want := range []string{
+		"set-option -t work mouse on",
+		"set-option -t work allow-passthrough on",
+		"set-option -p -t %5 @duck_panel_role viewport",
+		"set-option -p -t %5 @duck_name terminal",
+		"set-option -p -t %6 @duck_panel_role list",
+	} {
+		if !f.called(want) {
+			t.Errorf("missing %q in %v", want, f.calls)
+		}
+	}
+	// Idempotent when both panes exist.
+	f2 := &fakeRunner{out: map[string]string{rolesKey: "%5\tviewport\n%6\tlist\n"}}
+	if err := Open(f2.run, "work", "work-agents", "/bin/duck"); err != nil || f2.called("split-window") {
+		t.Fatal("existing panel must not re-split")
 	}
 }
 
-func TestOpenCreatesViewportAndList(t *testing.T) {
-	t.Setenv("TMUX", "/tmp/tmux-500/default,1234,0")
-	f := &fakeRunner{out: map[string]string{
-		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}":                                                                          "%1\t\n",
-		"split-window -h -f -d -l 34% -t work: -P -F #{pane_id} TMUX= exec tmux -S '/tmp/tmux-500/default' attach-session -t 'work-agents'": "%8\n",
-		"split-window -v -d -l 10 -t %8 -P -F #{pane_id} '/bin/duck' panel watch 'work'":                                                    "%9\n",
-	}}
-	if err := Open(f.run, "work", "work-agents", "/bin/duck"); err != nil {
+func TestCloseParksOccupantNeverKillsIt(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{rolesKey: "%5\tviewport\n%6\tlist\n"}}
+	if err := Close(f.run, "work"); err != nil {
 		t.Fatal(err)
 	}
-	if !f.called("set-option -t work mouse on") {
-		t.Error("mouse should be enabled on the outer session")
+	if !f.called("break-pane -d -s %5 -t work-agents:lot") {
+		t.Errorf("occupant must be parked, not killed: %v", f.calls)
 	}
-	if !f.called("set-option -p -t %8 @duck_panel_role viewport") {
-		t.Errorf("viewport pane not stamped: %v", f.calls)
+	if f.called("kill-pane -t %5") {
+		t.Error("close must never kill the occupant")
 	}
-	if !f.called("set-option -p -t %9 @duck_panel_role list") {
-		t.Errorf("list pane not stamped: %v", f.calls)
-	}
-}
-
-// TestSpawnHealsMissingPlaceholder pins the keep-alive invariant: a companion
-// without a placeholder (legacy state) gets one back on the next spawn, so
-// the companion can never die with its last agent.
-func TestSpawnHealsMissingPlaceholder(t *testing.T) {
-	listKey := "list-windows -t work-agents -F " + agentsFormat
-	f := &fakeRunner{out: map[string]string{
-		"new-window -t work-agents: -P -F #{window_id} -n codex -c /d codex": "@7\n",
-		listKey: "@7\t1\tcodex\t1\tcodex\t\tagents\t\n", // no placeholder anywhere
-		"new-window -d -t work-agents: -n terminal -P -F #{window_id} " + placeholderCmd: "@9\n",
-	}}
-	if _, err := Spawn(f.run, "work-agents", "codex", "/d", "codex", KindAgent); err != nil {
-		t.Fatal(err)
-	}
-	if !f.called("set-option -w -t @9 @duck_placeholder 1") {
-		t.Errorf("healed placeholder must be marker-stamped: %v", f.calls)
+	if !f.called("kill-pane -t %6") {
+		t.Error("roster pane should be killed")
 	}
 }

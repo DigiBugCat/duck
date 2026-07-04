@@ -35,7 +35,6 @@ type StatusFn func(windowID string) string
 type watchModel struct {
 	run         Runner
 	outer       string
-	comp        string
 	statusFn    StatusFn
 	agents      []Agent
 	statuses    map[string]string // windowID → working|done|idle, refreshed with each poll
@@ -51,7 +50,7 @@ type watchModel struct {
 // Watch runs the list TUI until the user quits (q / ^c). It is the body of
 // the hidden `duck panel watch` command.
 func Watch(run Runner, outer string, status StatusFn) error {
-	m := watchModel{run: run, outer: outer, comp: Companion(outer), statusFn: status}
+	m := watchModel{run: run, outer: outer, statusFn: status}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus()).Run()
 	return err
 }
@@ -65,11 +64,11 @@ func tick() tea.Cmd {
 }
 
 func (m watchModel) load() tea.Msg {
-	agents, err := Agents(m.run, m.comp)
+	agents, err := Agents(m.run, m.outer)
 	statuses := map[string]string{}
 	if m.statusFn != nil {
 		for _, a := range agents {
-			statuses[a.WindowID] = m.statusFn(a.WindowID)
+			statuses[a.PaneID] = m.statusFn(a.PaneID)
 		}
 	}
 	return agentsMsg{agents: agents, statuses: statuses, err: err}
@@ -219,9 +218,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			row := msg.Y - headerLines
 			if row >= 0 && row < len(idx) {
 				m.cursor = row
-				wid := m.agents[idx[row]].WindowID
+				wid := m.agents[idx[row]].PaneID
 				RefreshIfStale(m.run, wid, FileMtime)
-				_ = Select(m.run, wid)
+				_ = Select(m.run, m.outer, wid)
 				return m, m.load
 			}
 		}
@@ -249,9 +248,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter", " ":
 			if idx := m.filtered(); m.cursor < len(idx) {
-				wid := m.agents[idx[m.cursor]].WindowID
+				wid := m.agents[idx[m.cursor]].PaneID
 				RefreshIfStale(m.run, wid, FileMtime)
-				_ = Select(m.run, wid)
+				_ = Select(m.run, m.outer, wid)
 				return m, m.load
 			}
 		case "x":
@@ -259,10 +258,14 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// fat-finger. First x arms (footer shows it), second x on the same
 			// item confirms; moving the cursor or switching tabs disarms.
 			if idx := m.filtered(); m.cursor < len(idx) {
-				wid := m.agents[idx[m.cursor]].WindowID
+				wid := m.agents[idx[m.cursor]].PaneID
 				if m.armedKill == wid {
 					m.armedKill = ""
+					wasActive := m.agents[idx[m.cursor]].Active
 					_ = Kill(m.run, wid)
+					if wasActive {
+						EnsureSlot(m.run, m.outer) // killed on display — heal the slot
+					}
 					return m, m.load
 				}
 				m.armedKill = wid
@@ -270,7 +273,8 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s":
 			// Quick shell agent in the outer session's dir.
 			if dir, err := CurrentPanePath(m.run); err == nil {
-				_, _ = Spawn(m.run, m.comp, "shell", dir, "", KindShell)
+				EnsureSlot(m.run, m.outer)
+				_, _ = Spawn(m.run, m.outer, "shell", dir, "", KindShell)
 			}
 			return m, m.load
 		}
@@ -342,9 +346,9 @@ func (m watchModel) View() string {
 		if a.Command != "" && !strings.EqualFold(a.Command, a.Name) {
 			label += dimStyle.Render(" · " + a.Command)
 		}
-		line := marker + statusGlyph(m.statuses[a.WindowID]) + " " + label
+		line := marker + statusGlyph(m.statuses[a.PaneID]) + " " + label
 		if row == m.cursor {
-			line = marker + statusGlyph(m.statuses[a.WindowID]) + " " + selectedStyle.Render(" "+a.Name+" ")
+			line = marker + statusGlyph(m.statuses[a.PaneID]) + " " + selectedStyle.Render(" "+a.Name+" ")
 		}
 		b.WriteString(truncate(line, m.width) + "\n")
 	}
@@ -360,7 +364,7 @@ func (m watchModel) View() string {
 	}
 	if m.armedKill != "" {
 		for _, a := range m.agents {
-			if a.WindowID == m.armedKill {
+			if a.PaneID == m.armedKill {
 				help = workingStyle.Render(" x again to kill " + a.Name + " ")
 			}
 		}

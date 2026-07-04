@@ -43,6 +43,15 @@ Examples:
 		if err != nil {
 			return err
 		}
+		bin, err := os.Executable()
+		if err != nil {
+			bin = "duck"
+		}
+		// Open BEFORE spawn: Spawn selects the newcomer into the viewport slot,
+		// which must exist.
+		if err := panel.Open(run, outer, comp, bin); err != nil {
+			return err
+		}
 		args = withCodexFullAccess(args)
 		quoted := make([]string, len(args))
 		for i, a := range args {
@@ -67,14 +76,7 @@ Examples:
 				kind = panel.KindShell
 			}
 		}
-		if _, err := panel.Spawn(run, comp, name, dir, line, kind); err != nil {
-			return err
-		}
-		bin, err := os.Executable()
-		if err != nil {
-			bin = "duck"
-		}
-		if err := panel.Open(run, outer, comp, bin); err != nil {
+		if _, err := panel.Spawn(run, outer, name, dir, line, kind); err != nil {
 			return err
 		}
 		fmt.Printf("spawned %s\n", name)

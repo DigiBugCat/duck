@@ -59,13 +59,13 @@ type AgentRef struct {
 
 // FindAgent locates the named agent window in outer's companion session.
 func FindAgent(run panel.Runner, outer, name string) (AgentRef, error) {
-	agents, err := panel.Agents(run, panel.Companion(outer))
+	agents, err := panel.Agents(run, outer)
 	if err != nil {
 		return AgentRef{}, err
 	}
 	for _, a := range agents {
 		if a.Name == name {
-			return AgentRef{Session: outer, Name: a.Name, WindowID: a.WindowID}, nil
+			return AgentRef{Session: outer, Name: a.Name, WindowID: a.PaneID}, nil
 		}
 	}
 	return AgentRef{}, fmt.Errorf("no agent %q in session %s (see: duck channel ls)", name, outer)
@@ -76,7 +76,7 @@ func FindAgent(run panel.Runner, outer, name string) (AgentRef, error) {
 // shells, builds) resolve to empty with no error — they have send-keys but no
 // structured stream.
 func Resolve(run panel.Runner, ref *AgentRef) error {
-	if out, err := run("show-options", "-w", "-t", ref.WindowID, "-v", panel.RolloutOption); err == nil {
+	if out, err := run("show-options", "-p", "-t", ref.WindowID, "-v", panel.RolloutOption); err == nil {
 		if v := strings.TrimSpace(out); v != "" {
 			ref.Rollout = v
 			return nil
@@ -95,12 +95,12 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 		return err
 	}
 	ref.Rollout = path
-	_, _ = run("set-option", "-w", "-t", ref.WindowID, panel.RolloutOption, path)
+	_, _ = run("set-option", "-p", "-t", ref.WindowID, panel.RolloutOption, path)
 	return nil
 }
 
 func windowSpawnedAt(run panel.Runner, windowID string) (time.Time, error) {
-	out, err := run("show-options", "-w", "-t", windowID, "-v", panel.SpawnedAtOption)
+	out, err := run("show-options", "-p", "-t", windowID, "-v", panel.SpawnedAtOption)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -322,13 +322,13 @@ func AllAgents(run panel.Runner) ([]AgentRef, error) {
 		return nil, err
 	}
 	var refs []AgentRef
-	for comp, outer := range owners {
-		agents, err := panel.Agents(run, comp)
+	for _, outer := range owners {
+		agents, err := panel.Agents(run, outer)
 		if err != nil {
-			continue // companion raced away — skip
+			continue // raced away — skip
 		}
 		for _, a := range agents {
-			ref := AgentRef{Session: outer, Name: a.Name, WindowID: a.WindowID}
+			ref := AgentRef{Session: outer, Name: a.Name, WindowID: a.PaneID}
 			_ = Resolve(run, &ref)
 			refs = append(refs, ref)
 		}

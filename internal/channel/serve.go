@@ -178,18 +178,18 @@ func (s *server) watch() {
 			continue
 		}
 		keep := map[string]bool{}
-		for comp, outer := range owners {
-			agents, err := panel.Agents(s.run, comp)
+		for _, outer := range owners {
+			agents, err := panel.Agents(s.run, outer)
 			if err != nil {
-				continue // companion raced away — next sweep
+				continue // raced away — next sweep
 			}
 			for _, a := range agents {
-				keep[a.WindowID] = true
-				rollout := s.resolver.Rollout(a.WindowID)
+				keep[a.PaneID] = true
+				rollout := s.resolver.Rollout(a.PaneID)
 				if rollout == "" {
 					continue
 				}
-				s.drain(AgentRef{Session: outer, Name: a.Name, WindowID: a.WindowID, Rollout: rollout})
+				s.drain(AgentRef{Session: outer, Name: a.Name, WindowID: a.PaneID, Rollout: rollout})
 			}
 		}
 		s.resolver.Forget(keep)
