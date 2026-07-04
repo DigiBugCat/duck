@@ -17,18 +17,20 @@ controls — navigate it, position it, close it, intercept its traffic, and
 inject an annotation layer so the human can highlight/comment/draw on the
 page and the agent can query those marks back as structured data.
 
-The routing model (settled 2026-07-04) — two KINDS, not three surfaces:
+The routing model (settled 2026-07-04) — two NOUNS: **Artifacts and Windows**.
 
-- **Static → it's an artifact.** Docs, reports, tables, charts, images,
-  diagrams — anything without time or interaction. One canonical form: a
-  page published at a URL. Viewport is a separate, free choice:
+- **Artifact = anything static.** Documents, reports, tables, non-animated
+  charts, diagrams, and plain images — a debug screenshot gets *published
+  as an artifact* like everything else (no special image path; `snap`
+  uploads, artifact publish gives it a URL + a sidebar entry). One
+  canonical form: published at a URL. Viewport is a separate, free choice:
   - `duck preview` = the terminal porthole onto the artifact (cells only:
     micro for md, lynx/carbonyl for html) — the in-flow glance.
   - the browser/laptop = the full-fidelity view of the SAME artifact.
   There is no separate preview render pipeline and no file-type ladder;
   preview is just "show this artifact URL in cells."
-- **Dynamic → it's a window thing.** Time, interaction, markup, bandwidth.
-  This is the only other surface.
+- **Window = anything dynamic.** Animation, interaction, realtime, markup,
+  bandwidth. This is the only other surface.
 
 ## What this obsoletes (kill list)
 
@@ -163,7 +165,15 @@ consequences:
 
 ## Verb sketch
 
+Two families, matching the two nouns:
+
 ```
+duck artifact <file>       publish anything static (html/md/image/svg):
+                           URL + sidebar artifacts-tab entry
+duck artifact ls|rm        the lifetime management the render dir never had
+duck render <file|url>     sugar: publish + open in the laptop browser
+duck preview <artifact>    the terminal porthole (cells) onto an artifact
+
 duck window <file|url>     publish (if file) and show in the duck window
 duck window marks [url]    structured annotations for current/given page
 duck window ls             host status, open page, published dirs
