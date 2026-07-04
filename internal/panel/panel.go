@@ -23,6 +23,7 @@ package panel
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DigiBugCat/duck/internal/names"
 	"github.com/DigiBugCat/duck/internal/paths"
 )
 
@@ -94,25 +96,6 @@ const (
 
 // BaseKinds is the always-visible tab order; dynamic kinds append after.
 var BaseKinds = []string{KindAgent, KindShell, KindArtifact, KindBuffer}
-
-// KindEmoji is a tab's collapsed glyph — inactive tabs render as just the
-// emoji so the bar stays narrow; only the active tab spells its name.
-func KindEmoji(kind string) string {
-	switch kind {
-	case KindAgent:
-		return "🤖"
-	case KindShell:
-		return "🐚"
-	case KindArtifact:
-		return "🖼"
-	case KindBuffer:
-		return "📝"
-	}
-	if kind == "workspaces" {
-		return "⌂"
-	}
-	return "📦"
-}
 
 // normalizeKind maps stamps to tab names: empty → agents, singular legacy
 // stamps → their tabs.
@@ -728,7 +711,8 @@ func Heal(run Runner, outer string) {
 
 // Workspace is one duck session on this hub, as the roster's ws view shows.
 type Workspace struct {
-	Name     string
+	Name     string // internal tmux id (the switch target)
+	Display  string // resolved display name (user ▸ pane title ▸ codex ▸ dir)
 	Attached bool
 	Current  bool
 }
@@ -736,28 +720,30 @@ type Workspace struct {
 // Workspaces lists the hub's duck sessions (companions excluded), current
 // first, then attached, then name order preserved from tmux.
 func Workspaces(run Runner, outer string) ([]Workspace, error) {
-	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{@duck_dir}\t#{"+panelOfOption+"}")
+	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{@duck_dir}\t#{"+panelOfOption+"}\t#{pane_title}")
 	if err != nil {
 		return nil, err
 	}
 	myProj := ProjectName(run, outer)
+	doc, _ := names.NewStore(shellRunner{}).Load() // display names; empty doc on any error
 	var ws []Workspace
-	// TrimRight newlines ONLY (TrimSpace eats the last line's trailing tab).
+	// TrimRight newlines ONLY (TrimSpace eats the last line's trailing tab);
+	// pane_title is free text and LAST, so the split is bounded.
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 4)
+		f := strings.SplitN(line, "\t", 5)
 		if len(f) < 3 {
 			continue
 		}
-		panelOf := ""
-		if len(f) == 4 {
+		panelOf, title := "", ""
+		if len(f) >= 4 {
 			panelOf = strings.TrimSpace(f[3])
+		}
+		if len(f) == 5 {
+			title = f[4]
 		}
 		if panelOf != "" {
 			continue // companions are plumbing
 		}
-		// PROJECT-scoped: only siblings of THIS workspace's project — a finch
-		// workspace has no business in duck's ⌂ tab. The current session is
-		// always shown.
 		dir := strings.TrimSpace(f[2])
 		proj := ""
 		if dir != "" {
@@ -766,9 +752,29 @@ func Workspaces(run Runner, outer string) ([]Workspace, error) {
 		if f[0] != outer && (proj == "" || proj != myProj) {
 			continue
 		}
-		ws = append(ws, Workspace{Name: f[0], Attached: f[1] != "0" && f[1] != "", Current: f[0] == outer})
+		ws = append(ws, Workspace{
+			Name:     f[0],
+			Display:  names.Resolve(doc, f[0], dir, title),
+			Attached: f[1] != "0" && f[1] != "",
+			Current:  f[0] == outer,
+		})
 	}
 	return ws, nil
+}
+
+// shellRunner adapts the names.Store Runner (shell-string commands) to
+// local execution — the roster runs on the hub, next to names.json.
+type shellRunner struct{}
+
+func (shellRunner) Run(cmd string) (string, error) {
+	out, err := exec.Command("sh", "-c", cmd).CombinedOutput()
+	return string(out), err
+}
+func (shellRunner) RunInput(cmd string, stdin io.Reader) (string, error) {
+	c := exec.Command("sh", "-c", cmd)
+	c.Stdin = stdin
+	out, err := c.CombinedOutput()
+	return string(out), err
 }
 
 // SwitchTo moves the outer session's attached client to another workspace,

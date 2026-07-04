@@ -192,7 +192,7 @@ func (m watchModel) visible() []int {
 	var idx []int
 	if m.tabKind == wsTab {
 		for i, w := range m.workspaces {
-			if q != "" && !isSubseq(strings.ToLower(w.Name), q) {
+			if q != "" && !isSubseq(strings.ToLower(w.Name+" "+w.Display), q) {
 				continue
 			}
 			idx = append(idx, i)
@@ -681,16 +681,9 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 		if kind == activeKind {
 			view = "▶"
 		}
-		// Inactive tabs collapse to their emoji (the bar stays narrow no
-		// matter how many tabs exist); the ACTIVE tab spells its full name.
-		label := view + KindEmoji(kind) + " "
-		if kind == m.tabKind {
-			label = view + kind + " "
-			if n > 0 && kind != wsTab {
-				label = fmt.Sprintf("%s%s %d ", view, kind, n)
-			}
-		} else if n > 0 && kind != wsTab {
-			label = fmt.Sprintf("%s%s%d ", view, KindEmoji(kind), n)
+		label := view + kind + " "
+		if n > 0 && kind != wsTab {
+			label = fmt.Sprintf("%s%s %d ", view, kind, n)
 		}
 		cell := tabStyle.Render(label)
 		if kind == m.tabKind {
@@ -801,7 +794,14 @@ func (m watchModel) View() string {
 		var line string
 		if m.tabKind == wsTab {
 			w := m.workspaces[i]
-			label := w.Name
+			disp := w.Display
+			if disp == "" {
+				disp = w.Name
+			}
+			label := disp
+			if disp != w.Name {
+				label += dimStyle.Render(" · " + w.Name)
+			}
 			if w.Current {
 				label += dimStyle.Render(" · here")
 			} else if w.Attached {
@@ -809,7 +809,7 @@ func (m watchModel) View() string {
 			}
 			line = "  " + label
 			if row == m.cursor {
-				line = "  " + selectedStyle.Render(" "+w.Name+" ")
+				line = "  " + selectedStyle.Render(" "+disp+" ")
 			}
 		} else {
 			a := m.agents[i]
