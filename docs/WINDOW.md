@@ -17,20 +17,26 @@ controls — navigate it, position it, close it, intercept its traffic, and
 inject an annotation layer so the human can highlight/comment/draw on the
 page and the agent can query those marks back as structured data.
 
-The routing model (settled 2026-07-04) — two NOUNS: **Artifacts and Windows**.
+The routing model (settled 2026-07-04) — ONE noun, three viewports.
 
-- **Artifact = anything static.** Documents, reports, tables, non-animated
-  charts, diagrams, and plain images — a debug screenshot gets *published
-  as an artifact* like everything else (no special image path; `snap`
-  uploads, artifact publish gives it a URL + a sidebar entry). One
-  canonical form: published at a URL. Viewport is a separate, free choice:
-  - `duck preview` = the terminal porthole onto the artifact (cells only:
-    micro for md, lynx/carbonyl for html) — the in-flow glance.
-  - the browser/laptop = the full-fidelity view of the SAME artifact.
-  There is no separate preview render pipeline and no file-type ladder;
-  preview is just "show this artifact URL in cells."
-- **Window = anything dynamic.** Animation, interaction, realtime, markup,
-  bandwidth. This is the only other surface.
+**Artifact** = anything duck published at a URL: documents, reports,
+tables, charts, diagrams, images (a debug screenshot is published like
+everything else — no special image path), AND dynamic things (animations,
+interactive pages, realtime dashboards). Static vs dynamic is a *property*
+of an artifact, not a different noun — it picks the default viewport:
+
+- **cells porthole** (`duck preview` / viewport pane): static artifacts,
+  in-flow glances. carbonyl/micro/lynx. No pixel machinery.
+- **laptop browser** (`duck render`): full-fidelity view of any artifact.
+- **duck window** (the client-side CDP chromium): dynamic artifacts —
+  animation, interaction, realtime, markup. The only surface with custody
+  + annotations.
+
+The sidebar **artifacts tab lists ALL artifacts, static and dynamic**.
+Selecting a static one shows it in the viewport pane; selecting a dynamic
+one opens/focuses THE WINDOW on the client machine — the roster row is the
+remote control for a surface living on studio (viewport pane can show a
+placeholder or a still). "Window" is a viewport, not a kind of content.
 
 ## What this obsoletes (kill list)
 
@@ -165,11 +171,12 @@ consequences:
 
 ## Verb sketch
 
-Two families, matching the two nouns:
+One noun (artifact), viewport verbs on top:
 
 ```
-duck artifact <file>       publish anything static (html/md/image/svg):
-                           URL + sidebar artifacts-tab entry
+duck artifact <file>       publish anything (html/md/image/svg, static or
+                           dynamic): URL + sidebar artifacts-tab entry;
+                           dynamic entries open the window when selected
 duck artifact ls|rm        the lifetime management the render dir never had
 duck render <file|url>     sugar: publish + open in the laptop browser
 duck preview <artifact>    the terminal porthole (cells) onto an artifact
