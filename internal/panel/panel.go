@@ -348,6 +348,9 @@ func Open(run Runner, outer, comp, duckBin string) error {
 			return err
 		}
 	}
+	// Geometry is asserted on EVERY open — spawn/edit/preview/attach all pass
+	// through here, so no code path can leave a mangled layout behind.
+	Heal(run, outer)
 	return nil
 }
 
