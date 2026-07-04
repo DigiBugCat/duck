@@ -22,9 +22,31 @@ Consequence (v3, Andrew's correction): **schedules drive EXECUTORS; events
 drive the MANAGER.** Routines launch/continue codex runs on the clock; the
 manager claude is woken only by their REPORTS — completion events delivered
 up the channel — never polled by a timer. A scheduled manager beat remains
-possible (`target = "manager"`) but is the exception: event-driven is a
-trusting manager, scheduled check-ins are a micromanaging one — both are
-valid management styles, so both exist, but trust is the default.
+possible (`target = "manager"`): event-driven is a trusting manager,
+scheduled check-ins are rigor — real management MIXES both, so a routine
+set composes them freely; trust is merely the default.
+
+## The org chart (v4)
+
+- **The channel fabric is ONE mechanism** — an endpoint is any pane you can
+  send-keys into plus a transcript you can tail. Codex executors have
+  rollouts; claude managers have their own session transcripts
+  (~/.claude/projects/…jsonl) — structural twins. Three EDGES, not three
+  systems: down (manager → its lot), up (manager → parent), lateral
+  (manager ↔ manager). Addressing: `duck channel send --workspace <ws>
+  <pane>`, with **`manager` reserved** for a workspace's main claude pane.
+- **@duck_parent** (session option) forms the tree. FLEXIBLE: any workspace
+  may parent others (middle managers are just workspaces whose children are
+  workspaces — "manager of managers" falls out for free).
+- **motherduck is the INVARIANT global root** — one workspace, always
+  exists, default parent for everything. Its roster flips scope: children
+  (workspaces) render as its agents — name, title, last report, status —
+  Enter walks in. The pane of glass is the ⌂ view grown into an org view.
+- **The secretary**: motherduck's standing routine #1 — a heartbeat executor
+  that diffs the org (workspaces born/died, parents changed, routines
+  edited, activity levels), keeps the org pad current, and reports notable
+  changes upward as ordinary completion digests. The org's bookkeeping is
+  expressed entirely in the system's own primitives.
 
 ## The duckisms this is built from
 
