@@ -137,12 +137,38 @@ func TestTailFiltersAndReturnsOffset(t *testing.T) {
 }
 
 func TestSendTypesThenEnter(t *testing.T) {
+	// Empty capture → composer clear → exactly one Enter, verified once.
 	f := &fakeRunner{out: map[string]string{}}
 	if err := Send(f.run, AgentRef{WindowID: "%3"}, "fix the tests"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.calls) != 2 || f.calls[0] != "send-keys -t %3 -l -- fix the tests" || f.calls[1] != "send-keys -t %3 Enter" {
+	want := []string{
+		"send-keys -t %3 -l -- fix the tests",
+		"send-keys -t %3 Enter",
+		"capture-pane -p -t %3",
+	}
+	if len(f.calls) != 3 || f.calls[0] != want[0] || f.calls[1] != want[1] || f.calls[2] != want[2] {
 		t.Fatalf("calls: %v", f.calls)
+	}
+}
+
+func TestSendRetriesEnterWhilePasteSitsInComposer(t *testing.T) {
+	// The composer still shows a pending paste after the first Enter (a big
+	// paste eats it) — Send must press Enter again rather than give up.
+	f := &fakeRunner{out: map[string]string{
+		"capture-pane -p -t %3": "transcript above\n› [Pasted Content 1018 chars]\nfooter",
+	}}
+	if err := Send(f.run, AgentRef{WindowID: "%3"}, "a long prompt"); err != nil {
+		t.Fatal(err)
+	}
+	enters := 0
+	for _, c := range f.calls {
+		if c == "send-keys -t %3 Enter" {
+			enters++
+		}
+	}
+	if enters != 3 { // initial + 2 retries, then stop guessing
+		t.Fatalf("want 3 Enters, got %d (calls: %v)", enters, f.calls)
 	}
 }
 

@@ -285,10 +285,54 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 	}
 	// A TUI receiving text and Enter in one burst treats it as a paste and
 	// leaves the message sitting in the composer (verified against codex).
-	// A short beat makes the Enter a distinct submit keystroke.
-	time.Sleep(250 * time.Millisecond)
-	_, err := run("send-keys", "-t", ref.WindowID, "Enter")
-	return err
+	// A short beat makes the Enter a distinct submit keystroke. Long messages
+	// arrive as a bracketed paste the TUI takes longer to swallow, so the
+	// beat scales with size; then VERIFY the composer emptied and retry the
+	// Enter — a large paste eats the first Enter as part of the paste
+	// (observed live, twice, with ~1KB prompts).
+	beat := 250 * time.Millisecond
+	if len(message) > 256 {
+		beat = 750 * time.Millisecond
+	}
+	time.Sleep(beat)
+	for attempt := 0; ; attempt++ {
+		if _, err := run("send-keys", "-t", ref.WindowID, "Enter"); err != nil {
+			return err
+		}
+		if attempt >= 2 {
+			return nil // three Enters sent; stop guessing
+		}
+		time.Sleep(500 * time.Millisecond)
+		if submitted(run, ref.WindowID, message) {
+			return nil
+		}
+	}
+}
+
+// submitted reports whether the composer no longer holds the message: it
+// captures the pane and looks for a composer line ("› …") still carrying the
+// message tail or a pending-paste marker. The submitted prompt also appears
+// in the transcript above, so only composer lines are inspected. Capture
+// errors count as submitted — never loop on a broken pane.
+func submitted(run panel.Runner, windowID, message string) bool {
+	out, err := run("capture-pane", "-p", "-t", windowID)
+	if err != nil {
+		return true
+	}
+	tail := message
+	if len(tail) > 24 {
+		tail = tail[len(tail)-24:]
+	}
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "›") {
+			continue
+		}
+		if strings.Contains(trimmed, "Pasted Content") || strings.Contains(trimmed, tail) {
+			return false
+		}
+	}
+	return true
 }
 
 // Companions lists every outer session that currently has a companion, so
