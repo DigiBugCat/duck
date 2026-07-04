@@ -8,8 +8,8 @@ import (
 func TestLineAppendsChannelFlags(t *testing.T) {
 	t.Setenv("DUCK_NO_CHANNELS", "")
 	got := Line(nil)
-	want := "duck panel >/dev/null 2>&1; claude " +
-		"'--channels' 'server:duck-agents' '--dangerously-load-development-channels'"
+	want := "claude " +
+		"'--dangerously-load-development-channels' 'server:duck-agents'"
 	if got != want {
 		t.Fatalf("Line(nil) =\n  %q\nwant\n  %q", got, want)
 	}
@@ -19,8 +19,8 @@ func TestLineForwardsArgsVerbatimBeforeChannelFlags(t *testing.T) {
 	t.Setenv("DUCK_NO_CHANNELS", "")
 	got := Line([]string{"--ben", "--model", "opus"})
 	// profile/claude args come first, each shell-quoted, then the channel flags.
-	want := "duck panel >/dev/null 2>&1; claude '--ben' '--model' 'opus' " +
-		"'--channels' 'server:duck-agents' '--dangerously-load-development-channels'"
+	want := "claude '--ben' '--model' 'opus' " +
+		"'--dangerously-load-development-channels' 'server:duck-agents'"
 	if got != want {
 		t.Fatalf("Line =\n  %q\nwant\n  %q", got, want)
 	}
@@ -33,7 +33,7 @@ func TestLineQuotesArgsWithSpaces(t *testing.T) {
 		t.Fatalf("space-bearing arg not single-quoted as one token: %q", got)
 	}
 	// The arg must land BEFORE the channel flags.
-	if strings.Index(got, "'be nice'") > strings.Index(got, "--channels") {
+	if strings.Index(got, "'be nice'") > strings.Index(got, "--dangerously-load-development-channels") {
 		t.Fatalf("arg came after channel flags: %q", got)
 	}
 }
@@ -44,7 +44,7 @@ func TestLineNoChannelsWhenEnvSet(t *testing.T) {
 	if strings.Contains(got, "--channels") || strings.Contains(got, "development-channels") {
 		t.Fatalf("DUCK_NO_CHANNELS set but channel flags present: %q", got)
 	}
-	if got != "duck panel >/dev/null 2>&1; claude '--ben'" {
+	if got != "claude '--ben'" {
 		t.Fatalf("unexpected line under DUCK_NO_CHANNELS: %q", got)
 	}
 }

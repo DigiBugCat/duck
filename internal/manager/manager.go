@@ -25,9 +25,14 @@ import (
 )
 
 // channelFlags are the Claude Code channel-sidecar flags duck auto-appends so
-// the manager hears its sidebar agents and duck-side publishes. Kept as data so
-// Line and ChannelsWired share one source of truth.
-var channelFlags = []string{"--channels", "server:duck-agents", "--dangerously-load-development-channels"}
+// the manager hears its sidebar agents and duck-side publishes. NOTE the dev
+// flag takes the server LIST as its own argument (`claude
+// --dangerously-load-development-channels server:duck-agents`) — it is not a
+// boolean, and combining it with a separate --channels does NOT extend the
+// allowlist bypass to those entries (research-preview docs), so the dev flag
+// alone is the whole story. Kept as data so Line and ChannelsWired share one
+// source of truth.
+var channelFlags = []string{"--dangerously-load-development-channels", "server:duck-agents"}
 
 // ChannelsWired reports whether the caller already opted into (or out of)
 // Claude's channel flags, so duck's auto-wiring stays out of the way. It is true
@@ -46,14 +51,16 @@ func ChannelsWired(extraArgs []string) bool {
 	return false
 }
 
-// Line is the single in-pane launch line for the workspace manager. It opens the
-// sidebar first (duck panel is idempotent and quick; the hub-side `duck` run
-// also self-installs the duck-agents MCP registration via the PersistentPreRun
-// hook), then runs bare `claude` with each extraArg shell-quoted so the pane's
-// shell re-parses them exactly as given, then the channel flags UNLESS they are
-// already wired (ChannelsWired).
+// Line is the single in-pane launch line for the workspace manager: bare
+// `claude` with each extraArg shell-quoted so the pane's shell re-parses them
+// exactly as given, then the channel flags UNLESS already wired
+// (ChannelsWired). It deliberately does NOT run `duck panel` first: the attach
+// path arms the panel hub-side at the same moment, and two concurrent arms
+// raced into a doubled sidebar (seen live on duck-5); interactive attaches arm
+// the panel anyway, and the user's `claude` shell function also runs `duck
+// panel` in-tmux. MCP registration rides the hub-side PersistentPreRun hook.
 func Line(extraArgs []string) string {
-	line := "duck panel >/dev/null 2>&1; claude"
+	line := "claude"
 	for _, a := range extraArgs {
 		line += " " + paths.Quote(a)
 	}
