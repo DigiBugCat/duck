@@ -711,6 +711,7 @@ func Heal(run Runner, outer string) {
 	if err != nil || roles["viewport"] == "" || roles["list"] == "" {
 		return // Open owns creation; heal only repositions complete panels
 	}
+	dedupeRoles(run, outer, roles)
 	// Reference: the first pane in the current window that is NOT panel
 	// furniture — the user's main pane.
 	out, err := run("list-panes", "-t", outer+":", "-F", "#{pane_id}\t#{"+roleOption+"}")
@@ -734,6 +735,41 @@ func Heal(run Runner, outer string) {
 	_, _ = run("join-pane", "-d", "-f", "-h", "-l", "34%", "-s", roles["viewport"], "-t", main)
 	_, _ = run("join-pane", "-d", "-v", "-l", rosterRows, "-s", roles["list"], "-t", roles["viewport"])
 	_, _ = run("resize-pane", "-t", roles["list"], "-y", rosterRows)
+}
+
+// dedupeRoles reaps EXTRA panes stamped with a panel role — the residue of the
+// pre-flock double-arm race (two Opens each minted a viewport+roster). The pane
+// Panes() elected for each role is kept; for extras the safety asymmetry is
+// respected: a duplicate roster is stateless UI (killing it is as sanctioned as
+// the roster respawn rule), but a duplicate viewport slot may hold swapped-in
+// real work, so it is reaped ONLY when it is demonstrably an idle terminal
+// occupant (no @duck_name, running a plain shell); anything else is left for a
+// human.
+func dedupeRoles(run Runner, outer string, roles map[string]string) {
+	out, err := run("list-panes", "-s", "-t", outer,
+		"-F", "#{pane_id}\t#{"+roleOption+"}\t#{pane_current_command}\t#{"+NameOption+"}")
+	if err != nil {
+		return
+	}
+	keep := map[string]bool{roles["viewport"]: true, roles["list"]: true}
+	plainShell := map[string]bool{"zsh": true, "bash": true, "sh": true, "fish": true}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		f := strings.SplitN(line, "\t", 4)
+		if len(f) < 3 {
+			continue
+		}
+		id, role, cmd := f[0], strings.TrimSpace(f[1]), strings.TrimSpace(f[2])
+		name := ""
+		if len(f) == 4 {
+			name = strings.TrimSpace(f[3])
+		}
+		if role == "" || keep[id] {
+			continue
+		}
+		if role == "list" || (role == "viewport" && name == "" && plainShell[cmd]) {
+			_, _ = run("kill-pane", "-t", id)
+		}
+	}
 }
 
 // Workspace is one duck session on this hub, as the roster's ws view shows.
