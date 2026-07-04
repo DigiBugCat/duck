@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DigiBugCat/duck/internal/channel"
 	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
@@ -156,15 +157,13 @@ func TestFreshSessionIDAvoidsCollision(t *testing.T) {
 	}
 }
 
-// TestTickDropsManualAndHeartbeat verifies the Phase-1 gate: only cron
-// routines are auto-fired by a tick. A manual and a heartbeat routine present
-// in a project must not fire (no session creation, no state change).
-func TestTickIgnoresNonCron(t *testing.T) {
+// TestTickIgnoresManual: manual routines never auto-fire — no session
+// creation, no state change.
+func TestTickIgnoresManual(t *testing.T) {
 	duckHome := t.TempDir()
 	t.Setenv("DUCK_HOME", duckHome)
 	proj := t.TempDir()
 	writeRoutine(t, proj, "manualjob", "trigger = \"manual\"\n", "do a thing")
-	writeRoutine(t, proj, "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "beat")
 	if err := Enable(proj); err != nil {
 		t.Fatal(err)
 	}
@@ -180,11 +179,189 @@ func TestTickIgnoresNonCron(t *testing.T) {
 		t.Fatal(err)
 	}
 	if f.called("new-session") {
-		t.Fatalf("tick must not fire manual/heartbeat routines; calls=%v", f.calls)
+		t.Fatalf("tick must not fire manual routines; calls=%v", f.calls)
 	}
 	st, _ := LoadState()
 	if len(st.LastFire) != 0 {
 		t.Fatalf("no beats should be recorded, got %v", st.LastFire)
+	}
+}
+
+// TestTickFiresHeartbeat: a fresh heartbeat is due on the FIRST tick (no cron
+// seed) — its persistent codex TUI pane spawns, the composer is awaited, and
+// the prompt is typed in. The spawned cmdline is the TUI (no `exec`) with the
+// notify hook wired.
+func TestTickFiresHeartbeat(t *testing.T) {
+	duckHome := t.TempDir()
+	t.Setenv("DUCK_HOME", duckHome)
+	t.Setenv("DUCK_CODEX_BIN", "echo-codex")
+	oldSleep := sleepFn
+	sleepFn = func(time.Duration) {}
+	defer func() { sleepFn = oldSleep }()
+	proj := t.TempDir()
+	writeRoutine(t, proj, "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "report status")
+	if err := Enable(proj); err != nil {
+		t.Fatal(err)
+	}
+
+	var spawnCmd string
+	f := &fakeRunner{responder: func(args []string) (string, bool) {
+		switch args[0] {
+		case "list-sessions":
+			return "", true
+		case "has-session":
+			return "", true
+		case "list-windows":
+			return "lot\n", true
+		case "list-panes":
+			return "", true // no existing pane named beat
+		case "split-window":
+			spawnCmd = strings.Join(args, " ")
+			return "%42\n", true
+		case "new-window":
+			return "%2\n", true
+		case "capture-pane":
+			return "codex ready\n› \n", true // composer on screen
+		}
+		return "", false
+	}}
+	var log bytes.Buffer
+	if err := Tick(f.run, time.Now(), &log); err != nil {
+		t.Fatalf("tick: %v\nlog=%s", err, log.String())
+	}
+	if !strings.Contains(spawnCmd, "echo-codex --dangerously-bypass-approvals-and-sandbox") || strings.Contains(spawnCmd, " exec ") {
+		t.Fatalf("heartbeat must spawn the persistent TUI (no exec); spawnCmd=%q\nlog=%s", spawnCmd, log.String())
+	}
+	if !strings.Contains(spawnCmd, `,"channel","notify"]`) {
+		t.Fatalf("notify hook not wired on heartbeat pane; spawnCmd=%q", spawnCmd)
+	}
+	// The beat itself was typed into the new pane.
+	if !f.called("send-keys") {
+		t.Fatalf("beat prompt must be sent; calls=%v", f.calls)
+	}
+	sent := false
+	for _, c := range f.calls {
+		if strings.Contains(c, "send-keys -t %42 -l -- report status") {
+			sent = true
+		}
+	}
+	if !sent {
+		t.Fatalf("prompt not delivered to the heartbeat pane; calls=%v", f.calls)
+	}
+	// And the beat was recorded.
+	st, _ := LoadState()
+	if st.LastFire[Key(proj, "beat")].IsZero() {
+		t.Fatalf("heartbeat beat not recorded: %v", st.LastFire)
+	}
+}
+
+// TestCourierDeliversBatchedDigest: breadcrumbs for a workspace become ONE
+// send-keys digest into the main claude pane (no sidecar alive in this test),
+// with report="none" routines filtered out.
+func TestCourierDeliversBatchedDigest(t *testing.T) {
+	duckHome := t.TempDir()
+	t.Setenv("DUCK_HOME", duckHome)
+	proj := t.TempDir()
+	writeRoutine(t, proj, "loud", "trigger = \"manual\"\n", "p")
+	writeRoutine(t, proj, "quiet", "trigger = \"manual\"\nreport = \"none\"\n", "p")
+
+	for _, r := range []channel.RunReport{
+		{Routine: "loud", Message: "42 tests passed\nlong detail", At: time.Now()},
+		{Routine: "quiet", Message: "secret", At: time.Now()},
+		{Routine: "adhoc", Message: "did a thing", At: time.Now()},
+	} {
+		if err := channel.ReportRun("work", r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var sent []string
+	f := &fakeRunner{responder: func(args []string) (string, bool) {
+		switch args[0] {
+		case "show-options":
+			return proj + "\n", true
+		case "list-panes":
+			return "%1\t\tclaude\n", true
+		case "send-keys":
+			sent = append(sent, strings.Join(args, " "))
+			return "", true
+		}
+		return "", true
+	}}
+	var log bytes.Buffer
+	courier(f.run, &log)
+
+	if len(sent) == 0 {
+		t.Fatalf("digest not sent; log=%s", log.String())
+	}
+	digest := strings.Join(sent, "\n")
+	if !strings.Contains(digest, "routine loud completed: 42 tests passed") ||
+		!strings.Contains(digest, "duck channel tail loud") {
+		t.Fatalf("digest missing loud line: %q", digest)
+	}
+	if !strings.Contains(digest, "adhoc") {
+		t.Fatalf("ad-hoc runs must be included: %q", digest)
+	}
+	if strings.Contains(digest, "quiet") || strings.Contains(digest, "secret") {
+		t.Fatalf("report=none must be filtered: %q", digest)
+	}
+	// Drained: a second courier pass delivers nothing.
+	sent = nil
+	courier(f.run, &log)
+	if len(sent) != 0 {
+		t.Fatalf("breadcrumbs must be consumed: %v", sent)
+	}
+}
+
+// TestFireManagerPrefersPublishThenSendKeys: target=manager delivers via the
+// publish spool when the sidecar is alive, else types into the main claude
+// pane, else drops the beat (recorded, logged).
+func TestFireManagerPaths(t *testing.T) {
+	duckHome := t.TempDir()
+	t.Setenv("DUCK_HOME", duckHome)
+	d := Def{Name: "digest", Dir: "/w", Trigger: TriggerCron, Target: TargetManager, Prompt: "daily digest please"}
+
+	// Path 1: no sidecar, main pane runs claude → send-keys.
+	f := &fakeRunner{responder: func(args []string) (string, bool) {
+		switch args[0] {
+		case "list-sessions":
+			return "work\t/w\t1\t1\t1\n", true
+		case "has-session":
+			return "", true
+		case "list-windows":
+			return "lot\n", true
+		case "list-panes":
+			return "%1\t\tclaude\n%2\tviewport\tzsh\n", true
+		}
+		return "", false
+	}}
+	var log bytes.Buffer
+	if !fireManager(f.run, d, "work", &log) {
+		t.Fatalf("fireManager failed: %s", log.String())
+	}
+	typed := false
+	for _, c := range f.calls {
+		if strings.Contains(c, "send-keys -t %1 -l -- daily digest please") {
+			typed = true
+		}
+	}
+	if !typed {
+		t.Fatalf("manager turn not typed into main claude pane; calls=%v", f.calls)
+	}
+
+	// Path 2: no sidecar, no claude in the main pane → beat dropped (true), logged.
+	f2 := &fakeRunner{responder: func(args []string) (string, bool) {
+		if args[0] == "list-panes" {
+			return "%1\t\tzsh\n", true
+		}
+		return "", true
+	}}
+	log.Reset()
+	if !fireManager(f2.run, d, "work", &log) {
+		t.Fatal("absent manager must drop the beat, not error")
+	}
+	if !strings.Contains(log.String(), "no manager claude") {
+		t.Fatalf("drop must be logged: %s", log.String())
 	}
 }
 

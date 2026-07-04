@@ -174,13 +174,57 @@ func TestHandleNotifyPinsRolloutByThreadID(t *testing.T) {
 	if !found {
 		t.Fatalf("notify must pin the rollout option; calls=%v", f.calls)
 	}
-	// Outside tmux, or an unknown thread id → quiet no-op.
+	// Outside tmux → quiet no-op.
 	if err := HandleNotify(f.run, "", payload); err != nil {
 		t.Fatal(err)
 	}
+	// Unknown thread id → no pin (but the breadcrumb check may still probe).
 	n := len(f.calls)
-	if err := HandleNotify(f.run, "%7", `{"type":"agent-turn-complete","thread-id":"019f0000-0000-7000-8000-00000000dead"}`); err != nil || len(f.calls) != n {
-		t.Fatalf("unknown thread id must be a no-op, err=%v calls=%v", err, f.calls[n:])
+	if err := HandleNotify(f.run, "%7", `{"type":"agent-turn-complete","thread-id":"019f0000-0000-7000-8000-00000000dead"}`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.calls[n:] {
+		if strings.HasPrefix(c, "set-option") {
+			t.Fatalf("unknown thread id must not pin: %v", f.calls[n:])
+		}
+	}
+}
+
+// TestHandleNotifyLeavesRunBreadcrumb: a completing routine executor
+// (kind=runs) leaves a courier breadcrumb for its OWNER workspace, carrying
+// the routine name and last message — even though its pane dies immediately.
+func TestHandleNotifyLeavesRunBreadcrumb(t *testing.T) {
+	old := spoolHome
+	spoolHome = t.TempDir()
+	defer func() { spoolHome = old }()
+	t.Setenv("DUCK_CODEX_SESSIONS", t.TempDir()) // no rollout on disk — pin skipped
+
+	f := &fakeRunner{out: map[string]string{
+		"display-message -p -t %9 #{@duck_kind}\t#{@duck_name}\t#{session_name}": "runs\tnightly\twork-agents\n",
+		"show-options -t work-agents -v @duck_panel_of":                          "work\n",
+	}}
+	payload := `{"type":"agent-turn-complete","thread-id":"019f2f69-33a2-7d02-909d-b8f0d1328621","last-assistant-message":"all green\ndetails below"}`
+	if err := HandleNotify(f.run, "%9", payload); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DrainReports("work")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("want 1 breadcrumb for owner workspace, got %v err=%v", got, err)
+	}
+	if got[0].Routine != "nightly" || !strings.HasPrefix(got[0].Message, "all green") {
+		t.Fatalf("breadcrumb wrong: %+v", got[0])
+	}
+	// Drained means gone.
+	if again, _ := DrainReports("work"); len(again) != 0 {
+		t.Fatalf("drain must consume: %v", again)
+	}
+	// Non-run panes leave nothing.
+	f.out["display-message -p -t %9 #{@duck_kind}\t#{@duck_name}\t#{session_name}"] = "agents\tchat\twork-agents\n"
+	if err := HandleNotify(f.run, "%9", payload); err != nil {
+		t.Fatal(err)
+	}
+	if crumbs, _ := DrainReports("work"); len(crumbs) != 0 {
+		t.Fatalf("non-run pane must not leave breadcrumbs: %v", crumbs)
 	}
 }
 

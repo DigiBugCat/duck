@@ -128,8 +128,9 @@ func HandleNotify(run panel.Runner, paneID, payload string) error {
 		return nil // notify fired outside tmux — nothing to attribute
 	}
 	var p struct {
-		Type     string `json:"type"`
-		ThreadID string `json:"thread-id"`
+		Type        string `json:"type"`
+		ThreadID    string `json:"thread-id"`
+		LastMessage string `json:"last-assistant-message"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
 		return fmt.Errorf("notify payload: %w", err)
@@ -137,14 +138,30 @@ func HandleNotify(run panel.Runner, paneID, payload string) error {
 	if p.Type != "agent-turn-complete" || p.ThreadID == "" {
 		return nil
 	}
-	path := rolloutByThreadID(SessionsDir(), p.ThreadID)
-	if path == "" {
-		return nil // rollout not on disk (yet) — the sweep's fallback pairing stands
+	if path := rolloutByThreadID(SessionsDir(), p.ThreadID); path != "" {
+		// Unconditional pin: the process itself says so — this also heals a
+		// wrong pairing the correlation fallback might have guessed earlier.
+		_, _ = run("set-option", "-p", "-t", paneID, panel.RolloutOption, path)
 	}
-	// Unconditional: the process itself says so — this also heals a wrong
-	// pairing the correlation fallback might have guessed earlier.
-	_, err := run("set-option", "-p", "-t", paneID, panel.RolloutOption, path)
-	return err
+	// Routine executor (kind=runs)? Leave a completion breadcrumb for the
+	// courier — the pane may be gone before any sweep can read its rollout
+	// (codex exec closes it the instant the turn ends), but THIS process runs
+	// at exactly that instant with the last message in hand.
+	out, err := run("display-message", "-p", "-t", paneID, "#{@duck_kind}\t#{@duck_name}\t#{session_name}")
+	if err != nil {
+		return nil // pane already gone — nothing more to attribute
+	}
+	f := strings.SplitN(strings.TrimRight(out, "\n"), "\t", 3)
+	if len(f) != 3 || f[0] != panel.KindRun || f[1] == "" {
+		return nil
+	}
+	ws := f[2]
+	if owner, oerr := run("show-options", "-t", ws, "-v", "@duck_panel_of"); oerr == nil {
+		if v := strings.TrimSpace(owner); v != "" {
+			ws = v // pane parked in the companion — report to its owner
+		}
+	}
+	return ReportRun(ws, RunReport{Routine: f[1], Message: p.LastMessage, At: time.Now()})
 }
 
 // rolloutByThreadID locates root/YYYY/MM/DD/rollout-*-<id>.jsonl without

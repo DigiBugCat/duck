@@ -241,6 +241,12 @@ func (s *server) watch() {
 			}
 			for _, a := range agents {
 				keep[a.PaneID] = true
+				// Routine executors (kind=runs) report through the courier's
+				// batched digest — pushing their rollout events here too would
+				// double-deliver every completion to the manager.
+				if a.Kind == panel.KindRun {
+					continue
+				}
 				rollout := s.resolver.Rollout(a.PaneID)
 				if rollout == "" {
 					continue

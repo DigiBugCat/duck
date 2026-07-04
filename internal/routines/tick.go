@@ -94,15 +94,17 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 			continue
 		}
 		for _, d := range defs {
-			if d.Trigger != TriggerCron {
-				continue // manual never auto-fires; heartbeat is Phase 2
+			if d.Trigger == TriggerManual {
+				continue // manual never auto-fires
 			}
 			last := state.LastFire[Key(d.Dir, d.Name)]
-			if last.IsZero() {
-				// First sight of this routine: seed last-fire so it waits for
+			if d.Trigger == TriggerCron && last.IsZero() {
+				// First sight of a cron routine: seed last-fire so it waits for
 				// its next cron slot. Without the seed a zero last is never due
 				// (Due can't distinguish "brand new" from "fired long ago" in a
-				// way that wouldn't refire forever).
+				// way that wouldn't refire forever). Heartbeats skip the seed —
+				// a fresh heartbeat is due NOW (Due treats zero-last as due), so
+				// its persistent pane exists from the first tick.
 				state.LastFire[Key(d.Dir, d.Name)] = now
 				changed = true
 				continue
@@ -128,6 +130,10 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 			return fmt.Errorf("save state: %w", err)
 		}
 	}
+
+	// Report courier LAST: runs that completed since the previous tick (their
+	// breadcrumbs left by the notify hook) become one digest per workspace.
+	courier(run, logw)
 	return nil
 }
 
@@ -138,11 +144,6 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 // dropped the beat); false only on a hard error that left nothing done, so the
 // caller can leave last-fire untouched and retry next minute.
 func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
-	if d.Target != TargetRun {
-		fmt.Fprintf(logw, "routines: %s/%s target=%s not yet implemented (Phase 2) — skipping\n", d.Dir, d.Name, d.Target)
-		return false
-	}
-
 	outer, err := ensureWorkspace(run, d.Dir)
 	if err != nil {
 		fmt.Fprintf(logw, "routines: %s/%s: ensure workspace: %v\n", d.Dir, d.Name, err)
@@ -151,6 +152,12 @@ func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
 	if _, err := panel.EnsureCompanion(run, outer, d.Dir); err != nil {
 		fmt.Fprintf(logw, "routines: %s/%s: ensure companion: %v\n", d.Dir, d.Name, err)
 		return false
+	}
+	if d.Target == TargetManager {
+		return fireManager(run, d, outer, logw)
+	}
+	if d.Trigger == TriggerHeartbeat {
+		return fireHeartbeat(run, d, outer, logw)
 	}
 
 	// Concurrency guard: if a pane by this routine's name already exists AND its
@@ -171,6 +178,162 @@ func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
 	fmt.Fprintf(logw, "routines: fired %s/%s (workspace %s)\n", d.Dir, d.Name, outer)
 	return true
 }
+
+// fireHeartbeat delivers one beat of a heartbeat routine: ONE persistent
+// codex TUI pane per routine, each beat a channel send of the prompt into it
+// — recurring turns in a single thread, watchable in the viewport
+// (docs/ROUTINES.md "target=run, heartbeat"). The pane is created lazily on
+// the first beat; a beat that lands while the previous turn is still open is
+// DROPPED, not queued.
+func fireHeartbeat(run panel.Runner, d Def, outer string, logw io.Writer) bool {
+	ref, err := channel.FindAgent(run, outer, d.Name)
+	if err != nil {
+		// No pane yet — spawn the persistent TUI and wait for its composer
+		// before typing (keys sent during TUI startup are eaten).
+		cmdline := codexBin() + " --dangerously-bypass-approvals-and-sandbox" + notifyArg()
+		paneID, serr := panel.Spawn(run, outer, d.Name, d.Dir, cmdline, panel.KindRun)
+		if serr != nil {
+			fmt.Fprintf(logw, "routines: %s/%s: spawn heartbeat pane: %v\n", d.Dir, d.Name, serr)
+			return false
+		}
+		ref = channel.AgentRef{Session: outer, Name: d.Name, WindowID: paneID}
+		if !awaitComposer(run, paneID, 15*time.Second) {
+			fmt.Fprintf(logw, "routines: %s/%s: composer not ready after spawn — sending anyway\n", d.Dir, d.Name)
+		}
+	} else if channel.StatusByWindow(run, ref.WindowID) == "working" {
+		fmt.Fprintf(logw, "routines: %s/%s heartbeat still working — dropping this beat\n", d.Dir, d.Name)
+		return true
+	}
+	if err := channel.Send(run, ref, d.Prompt); err != nil {
+		fmt.Fprintf(logw, "routines: %s/%s: send beat: %v\n", d.Dir, d.Name, err)
+		return false
+	}
+	fmt.Fprintf(logw, "routines: heartbeat %s/%s beat delivered (workspace %s)\n", d.Dir, d.Name, outer)
+	return true
+}
+
+// courier is the manager's inbox (docs/ROUTINES.md "Reporting upward"): per
+// workspace with pending run-completion breadcrumbs (left by the codex notify
+// hook at the instant each run finished), deliver ONE batched digest turn to
+// the manager — the publish lane when a channel sidecar is alive, send-keys
+// into the main claude pane otherwise. Routines with report="none" are
+// filtered out; breadcrumbs with no matching definition (ad-hoc runs) are
+// included. Undeliverable digests are dropped, not replayed.
+func courier(run panel.Runner, logw io.Writer) {
+	wss, err := channel.ReportWorkspaces()
+	if err != nil {
+		fmt.Fprintf(logw, "routines: courier: %v\n", err)
+		return
+	}
+	for _, ws := range wss {
+		reports, err := channel.DrainReports(ws)
+		if err != nil {
+			fmt.Fprintf(logw, "routines: courier %s: %v\n", ws, err)
+			continue
+		}
+		if len(reports) == 0 {
+			continue
+		}
+		policy := map[string]string{}
+		if out, derr := run("show-options", "-t", ws, "-v", "@duck_dir"); derr == nil {
+			if proj, perr := paths.Expand(strings.TrimSpace(out)); perr == nil && proj != "" {
+				if defs, lerr := Load(proj); lerr == nil {
+					for _, d := range defs {
+						policy[d.Name] = d.Report
+					}
+				}
+			}
+		}
+		var lines []string
+		for _, r := range reports {
+			if policy[r.Routine] == "none" {
+				continue
+			}
+			first := strings.SplitN(strings.TrimSpace(r.Message), "\n", 2)[0]
+			if first == "" {
+				first = "(no message)"
+			}
+			lines = append(lines, fmt.Sprintf("routine %s completed: %s — `duck channel tail %s` for detail", r.Routine, first, r.Routine))
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		digest := strings.Join(lines, "\n")
+		if channel.AliveWithin(ws, 10*time.Second) {
+			if err := channel.Publish(ws, digest, map[string]string{"source": "routines", "type": "digest"}); err == nil {
+				fmt.Fprintf(logw, "routines: courier: digest (%d) published to %s\n", len(lines), ws)
+				continue
+			}
+		}
+		if pane, ok := managerPane(run, ws); ok {
+			if err := channel.Send(run, channel.AgentRef{Session: ws, Name: "manager", WindowID: pane}, digest); err == nil {
+				fmt.Fprintf(logw, "routines: courier: digest (%d) typed into %s manager\n", len(lines), ws)
+				continue
+			}
+		}
+		fmt.Fprintf(logw, "routines: courier: %s has no reachable manager — digest (%d) dropped\n", ws, len(lines))
+	}
+}
+
+// fireManager delivers a scheduled turn to the workspace's MANAGER — the
+// main claude pane (docs/ROUTINES.md "target=manager"). Preferred delivery is
+// the publish lane: a live channel sidecar injects it as a structured event
+// without touching the composer. Fallback is send-keys into a main pane
+// actually running claude. No manager present → the beat is dropped with a
+// log line (missed beats are dropped, not replayed).
+func fireManager(run panel.Runner, d Def, outer string, logw io.Writer) bool {
+	if channel.AliveWithin(outer, 10*time.Second) {
+		if err := channel.Publish(outer, d.Prompt, map[string]string{"source": "routines", "type": "routine", "routine": d.Name}); err == nil {
+			fmt.Fprintf(logw, "routines: manager turn %s/%s published (workspace %s)\n", d.Dir, d.Name, outer)
+			return true
+		}
+	}
+	pane, ok := managerPane(run, outer)
+	if !ok {
+		fmt.Fprintf(logw, "routines: %s/%s: no manager claude in %s — dropping this beat\n", d.Dir, d.Name, outer)
+		return true
+	}
+	if err := channel.Send(run, channel.AgentRef{Session: outer, Name: "manager", WindowID: pane}, d.Prompt); err != nil {
+		fmt.Fprintf(logw, "routines: %s/%s: send to manager: %v\n", d.Dir, d.Name, err)
+		return false
+	}
+	fmt.Fprintf(logw, "routines: manager turn %s/%s typed into %s (workspace %s)\n", d.Dir, d.Name, pane, outer)
+	return true
+}
+
+// managerPane finds the workspace's main claude pane: the first pane of the
+// outer window that is not panel furniture (no role option) AND is running
+// claude. `manager` is the reserved name for this endpoint in the org model.
+func managerPane(run panel.Runner, outer string) (string, bool) {
+	out, err := run("list-panes", "-t", outer+":", "-F", "#{pane_id}\t#{@duck_panel_role}\t#{pane_current_command}")
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		f := strings.SplitN(line, "\t", 3)
+		if len(f) == 3 && strings.TrimSpace(f[1]) == "" && strings.TrimSpace(f[2]) == "claude" {
+			return f[0], true
+		}
+	}
+	return "", false
+}
+
+// awaitComposer polls the pane until codex's composer prompt is on screen.
+// Attempt-bounded (not wall-clock) so tests with a stubbed sleepFn finish
+// instantly instead of busy-spinning to a deadline.
+func awaitComposer(run panel.Runner, paneID string, timeout time.Duration) bool {
+	const every = 500 * time.Millisecond
+	for i := 0; i < int(timeout/every)+1; i++ {
+		if out, err := run("capture-pane", "-p", "-t", paneID); err == nil && strings.Contains(out, "›") {
+			return true
+		}
+		sleepFn(every)
+	}
+	return false
+}
+
+// sleepFn is a package var so tests can stub waiting.
+var sleepFn = time.Sleep
 
 // sweepProjects is the union of three sources, all as absolute deduped paths:
 // (a) live workspaces' @duck_dir, (b) the registered projects file, and (c)
