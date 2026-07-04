@@ -91,15 +91,15 @@
 <body>
 <div class="wrap">
 <header>
-  <div class="eyebrow">duck · routing model · 2026-07-04</div>
+  <div class="eyebrow">duck · artifacts &amp; viewports · 2026-07-04</div>
   <h1>What goes where</h1>
-  <p class="lede">Two kinds, not three surfaces. <strong>Static content is an artifact</strong> — a page at a URL, with the terminal as an optional porthole. <strong>Dynamic content gets a window</strong> — the duck-owned chromium on the client machine. Nothing else exists.</p>
+  <p class="lede">One noun, three viewports. <strong>Everything duck publishes is an artifact</strong> — a URL plus a row in the sidebar's artifacts tab. Static or dynamic is a <strong>property</strong>, and it picks where the artifact shows up when you select it.</p>
 </header>
 
 <div class="kinds">
   <section class="kind static">
-    <h2>Static <span class="verb">→ artifact</span></h2>
-    <p class="rule">No time, no interaction. If a screenshot of it loses nothing, it's an artifact.</p>
+    <h2>Static <span class="verb">→ viewport pane</span></h2>
+    <p class="rule">No time, no interaction — a screenshot of it loses nothing. Selecting it renders in the sidebar (carbonyl/micro cells); full fidelity is one `render` away in the browser.</p>
     <ul class="ex">
       <li><span class="dot">●</span><span><b>Design docs &amp; reviews</b><small>WINDOW.md itself, ROUTINES.md, a PR walkthrough with code excerpts</small></span></li>
       <li><span class="dot">●</span><span><b>Reports &amp; digests</b><small>test-run summary, the morning fleet digest, a bug investigation writeup</small></span></li>
@@ -111,8 +111,8 @@
   </section>
 
   <section class="kind dynamic">
-    <h2>Dynamic <span class="verb">→ window</span></h2>
-    <p class="rule">Time, interaction, or your pen on it. If it moves or talks back, it's a window thing.</p>
+    <h2>Dynamic <span class="verb">→ duck window</span></h2>
+    <p class="rule">Time, interaction, or your pen on it. Selecting it opens/focuses the duck-owned chromium on the client — the roster row is a remote control for a surface on studio.</p>
     <ul class="ex">
       <li><span class="dot">◆</span><span><b>Animations &amp; simulations</b><small>a boids run, a physics toy, an animated algorithm visualization</small></span></li>
       <li><span class="dot">◆</span><span><b>Live dashboards</b><small>streaming fleet metrics, a tail of build output with sparklines</small></span></li>
@@ -125,20 +125,20 @@
 </div>
 
 <div class="bridge">
-  <span class="verb">duck preview</span>
-  <p><strong>Not a third kind — a viewport.</strong> The terminal porthole onto the <em>same</em> artifact: micro for markdown, lynx/carbonyl for html. Cells only, zero pixel machinery. For the in-flow glance when you don't want to leave the pane.</p>
+  <span class="verb">artifacts tab</span>
+  <p><strong>One list, every artifact, static and dynamic together.</strong> The three viewports — cells porthole (preview), laptop browser (render), duck window — are ways of <em>looking</em>, not kinds of content. Selection does the right thing per entry.</p>
 </div>
 
 <section class="edge">
   <h2>Edge cases, called</h2>
   <div class="tablewrap">
   <table>
-    <tr><th>Content</th><th>Goes to</th><th>Why</th></tr>
-    <tr><td>Chart that <em>could</em> be live</td><td class="to-a">artifact</td><td>Default static. Promote to window only when the liveness is the point.</td></tr>
-    <tr><td>Big document you'll annotate</td><td class="to-w">window</td><td>Markup is interaction — the static/dynamic line is about what <em>you</em> do, not the bytes.</td></tr>
-    <tr><td>Screenshot for the agent's eyes</td><td class="to-a">artifact <small>(or just Read)</small></td><td>Nothing renders to a human at all; `snap` already covers it.</td></tr>
-    <tr><td>Slideshow / carousel</td><td class="to-a">artifact</td><td>Paging isn't interaction, it's reading. Scroll it.</td></tr>
-    <tr><td>Agent demoing a UI to you</td><td class="to-w">window</td><td>Duck drives the page via CDP while you watch — custody is the feature.</td></tr>
+    <tr><th>Content</th><th>Opens in</th><th>Why</th></tr>
+    <tr><td>Chart that <em>could</em> be live</td><td class="to-a">viewport pane</td><td>Default static. Promote to the window only when the liveness is the point.</td></tr>
+    <tr><td>Big document you'll annotate</td><td class="to-w">duck window</td><td>Markup is interaction — the static/dynamic line is about what <em>you</em> do, not the bytes.</td></tr>
+    <tr><td>Screenshot for the agent's eyes</td><td class="to-a">viewport pane <small>(or just Read)</small></td><td>Nothing renders to a human at all; `snap` already covers it.</td></tr>
+    <tr><td>Slideshow / carousel</td><td class="to-a">viewport pane</td><td>Paging isn't interaction, it's reading. Scroll it.</td></tr>
+    <tr><td>Agent demoing a UI to you</td><td class="to-w">duck window</td><td>Duck drives the page via CDP while you watch — custody is the feature.</td></tr>
     <tr><td>Quick `htop`-style monitoring</td><td>terminal <small>(spawn)</small></td><td>It's a terminal <em>program</em>, not rendered content. Sidebar as always.</td></tr>
   </table>
   </div>
