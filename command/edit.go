@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/DigiBugCat/duck/internal/panel"
-	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/spf13/cobra"
 )
 
@@ -70,7 +69,7 @@ var editCmd = &cobra.Command{
 			return err
 		}
 		// A regular buffer: plain editor, pane closes when the editor exits.
-		line := fmt.Sprintf(`sh -c '"${EDITOR:-vim}" %s'`, paths.Quote(abs))
+		line := panel.EditorCmd(abs)
 		_, err = panel.Spawn(run, outer, filepath.Base(abs), dir, line, panel.KindBuffer)
 		return err
 	},

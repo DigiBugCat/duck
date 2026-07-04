@@ -198,11 +198,24 @@ func fileExists(path string) bool {
 // silent auto-reload of external edits — agents can write into a pad the
 // human is watching), else $EDITOR.
 func PadCmd(path string) string {
+	return "sh -c " + paths.Quote(`while :; do `+editorScript(path)+`; sleep 0.3; done`)
+}
+
+// EditorCmd is the ONE-SHOT editor invocation for a file: the same editor
+// preferences as pads (micro with autosave + live-reload + softwrap when
+// installed, $DUCK_PAD_EDITOR override, $EDITOR fallback) but the pane
+// closes when the editor exits — right for `duck edit <file>` buffers and
+// markdown previews, where quit means done.
+func EditorCmd(path string) string {
+	return "sh -c " + paths.Quote(editorScript(path))
+}
+
+// editorScript is the shared editor-preference chain both wrappers run.
+func editorScript(path string) string {
 	q := paths.Quote(path)
-	script := `while :; do if [ -n "$DUCK_PAD_EDITOR" ]; then $DUCK_PAD_EDITOR ` + q +
+	return `if [ -n "$DUCK_PAD_EDITOR" ]; then $DUCK_PAD_EDITOR ` + q +
 		`; elif command -v micro >/dev/null 2>&1; then micro -autosave 1 -reload auto -savecursor true -softwrap true -wordwrap true ` + q +
-		`; else "${EDITOR:-vim}" ` + q + `; fi; sleep 0.3; done`
-	return "sh -c " + paths.Quote(script)
+		`; else "${EDITOR:-vim}" ` + q + `; fi`
 }
 
 // EnsureScratch guarantees the project's long-lived scratch buffer exists

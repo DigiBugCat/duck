@@ -139,7 +139,11 @@ func previewRender(target string) (render string, hold bool, err error) {
 	case ".html", ".htm":
 		return htmlRenderer() + " file://" + q, false, nil
 	case ".md", ".markdown":
-		return "glow -p " + q, false, nil
+		// Markdown opens the way pads do — micro: softwrapped, editable,
+		// autosaving, live-reloading — the treatment Andrew standardized on.
+		// (glow stays installed for anyone wanting a styled read: `spawn
+		// glow -p <file>`.)
+		return panel.EditorCmd(abs), false, nil
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp":
 		// Pixels first (kitty via tmux passthrough — one layer in the swap
 		// design), cells as the universal fallback if the forced mode errors.
