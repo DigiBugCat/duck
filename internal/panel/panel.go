@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -85,13 +86,14 @@ const (
 // as long as a pane carries it (`duck spawn --tab <name>`), so duck — or an
 // agent driving duck — can grow the tab set at runtime with zero declaration.
 const (
-	KindAgent    = "agents"    // runners you supervise (default)
-	KindShell    = "shells"    // plain interactive shells
-	KindArtifact = "artifacts" // things you look at (previews)
+	KindAgent    = "agents"     // runners you supervise (default)
+	KindShell    = "shells"     // plain interactive shells
+	KindArtifact = "artifacts"  // things you look at (previews)
+	KindBuffer   = "scratchpad" // editor panes: the scratch note + duck edit files
 )
 
 // BaseKinds is the always-visible tab order; dynamic kinds append after.
-var BaseKinds = []string{KindAgent, KindShell, KindArtifact}
+var BaseKinds = []string{KindAgent, KindShell, KindArtifact, KindBuffer}
 
 // normalizeKind maps stamps to tab names: empty → agents, singular legacy
 // stamps → their tabs.
@@ -114,6 +116,61 @@ const terminalCmd = `sh -c 'while :; do "${SHELL:-sh}" -l || true; sleep 0.5; do
 
 // anchorCmd keeps the lot window alive forever; hidden from the roster.
 const anchorCmd = `sh -c 'while :; do sleep 3600; done'`
+
+// ScratchPath is the workspace's persistent scratch file (the emacs
+// *scratch* idea, file-backed so it survives everything): one markdown note
+// per workspace under ~/.duck/scratch/.
+func ScratchPath(outer string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".duck", "scratch")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, outer+".md")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		header := "# scratch — " + outer + "\n\n"
+		if werr := os.WriteFile(path, []byte(header), 0o644); werr != nil {
+			return "", werr
+		}
+	}
+	return path, nil
+}
+
+// EnsureScratch guarantees the workspace's long-lived scratch buffer exists
+// as a PARKED pane (roster tab: buffers) — present from the first glance,
+// shown only when selected. The editor runs in a respawn loop so :q just
+// reopens it; killing it for real is the roster's two-press x.
+func EnsureScratch(run Runner, outer string) {
+	agents, err := Agents(run, outer)
+	if err != nil {
+		return
+	}
+	for _, a := range agents {
+		if a.Kind == KindBuffer && a.Name == "scratch" {
+			return
+		}
+	}
+	path, err := ScratchPath(outer)
+	if err != nil {
+		return
+	}
+	cmd := fmt.Sprintf(`sh -c 'while :; do "${EDITOR:-vim}" %s; sleep 0.3; done'`, paths.Quote(path))
+	id, err := run("split-window", "-d", "-t", Companion(outer)+":lot", "-P", "-F", "#{pane_id}", cmd)
+	if err != nil {
+		return
+	}
+	pid := strings.TrimSpace(id)
+	for _, opt := range [][2]string{
+		{NameOption, "scratch"},
+		{kindOption, KindBuffer},
+	} {
+		_, _ = run("set-option", "-p", "-t", pid, opt[0], opt[1])
+	}
+	_, _ = run("select-layout", "-t", Companion(outer)+":lot", "tiled")
+}
 
 // Companion returns the companion (lot) session name for an outer session.
 func Companion(outer string) string { return outer + "-agents" }

@@ -272,6 +272,16 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.armedKill = wid
 			}
+		case "e":
+			// Jump to the workspace scratch buffer (create if missing).
+			EnsureScratch(m.run, m.outer)
+			for _, a := range m.agents {
+				if a.Kind == KindBuffer && a.Name == "scratch" {
+					_ = Select(m.run, m.outer, a.PaneID)
+					break
+				}
+			}
+			return m, m.load
 		case "s":
 			// Quick shell agent in the outer session's dir.
 			if dir, err := CurrentPanePath(m.run); err == nil {
@@ -360,7 +370,7 @@ func (m watchModel) View() string {
 			viewing = a.Name
 		}
 	}
-	help := dimStyle.Render(" ⇥ tab · ↵ view · x kill · s shell · q close")
+	help := dimStyle.Render(" ⇥ tab · ↵ view · e scratch · x kill · s shell · q close")
 	if viewing != "" {
 		help = activeStyle.Render(" ▶ viewing "+viewing) + dimStyle.Render(" · ⇥ tab · ↵ view · x kill · q close")
 	}

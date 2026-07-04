@@ -50,7 +50,13 @@ inside a tmux (duck) session.`,
 		if err != nil {
 			bin = "duck"
 		}
-		return panel.Open(run, outer, comp, bin)
+		if err := panel.Open(run, outer, comp, bin); err != nil {
+			return err
+		}
+		// The workspace's standing furniture: an immortal scratch buffer,
+		// parked until selected (roster: buffers tab, or the e key).
+		panel.EnsureScratch(run, outer)
+		return nil
 	},
 }
 
