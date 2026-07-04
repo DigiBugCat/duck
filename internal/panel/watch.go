@@ -38,7 +38,8 @@ type watchModel struct {
 	statusFn    StatusFn
 	agents      []Agent
 	statuses    map[string]string // windowID → working|done|idle, refreshed with each poll
-	cursor      int
+	tab         int               // active tab (index into tabs)
+	cursor      int               // index into filtered() — the active tab's items
 	width       int
 	height      int
 	focused     bool // pane focus (tmux focus-events): the click that focuses us must not also select
@@ -72,38 +73,61 @@ func (m watchModel) load() tea.Msg {
 	return agentsMsg{agents: agents, statuses: statuses, err: err}
 }
 
-// headerLines is the number of rendered lines above the first roster row —
-// the contract between View and the mouse-click row mapping.
+// headerLines is the number of rendered lines above the first roster row
+// (the tab bar and the rule) — the contract between View and the mouse-click
+// row mapping.
 const headerLines = 2
 
-// rowRef is one rendered roster line: a section header (agentIdx == -1) or
-// an entry pointing into m.agents. View and the mouse/cursor mapping share
-// this so a click can never land on the wrong item.
-type rowRef struct {
-	section  string // non-empty → section header line
-	agentIdx int    // index into m.agents; -1 for headers
+// tabs are the roster's top-level views, in bar order.
+var tabs = []struct {
+	label string
+	kind  string
+}{
+	{"agents", KindAgent},
+	{"artifacts", KindArtifact},
 }
 
-// rows lays out the roster: agents section first, then artifacts — each with
-// a header line, omitted when the section is empty.
-func (m watchModel) rows() []rowRef {
-	var out []rowRef
-	appendKind := func(section, kind string) {
-		first := true
-		for i, a := range m.agents {
-			if a.Kind != kind {
-				continue
-			}
-			if first {
-				out = append(out, rowRef{section: section, agentIdx: -1})
-				first = false
-			}
-			out = append(out, rowRef{agentIdx: i})
+// filtered returns the indexes into m.agents belonging to the ACTIVE tab.
+func (m watchModel) filtered() []int {
+	var idx []int
+	for i, a := range m.agents {
+		if a.Kind == tabs[m.tab].kind {
+			idx = append(idx, i)
 		}
 	}
-	appendKind("agents", KindAgent)
-	appendKind("artifacts", KindArtifact)
-	return out
+	return idx
+}
+
+// tabSpan is one rendered tab's clickable x-range on the bar line.
+type tabSpan struct{ start, end, tab int }
+
+// renderTabs draws the tab bar and returns it with the click spans. The same
+// function feeds View and the mouse handler so a click can never land on the
+// wrong tab.
+func (m watchModel) renderTabs() (string, []tabSpan) {
+	var b strings.Builder
+	var spans []tabSpan
+	x := 0
+	for ti, t := range tabs {
+		n := 0
+		for _, a := range m.agents {
+			if a.Kind == t.kind {
+				n++
+			}
+		}
+		label := fmt.Sprintf(" %s (%d) ", t.label, n)
+		cell := tabStyle.Render(label)
+		if ti == m.tab {
+			cell = tabActiveStyle.Render(label)
+		}
+		w := lipgloss.Width(cell)
+		spans = append(spans, tabSpan{start: x, end: x + w, tab: ti})
+		b.WriteString(cell)
+		x += w
+		b.WriteString(" ")
+		x++
+	}
+	return b.String(), spans
 }
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -121,8 +145,8 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agents = msg.agents
 		}
 		m.statuses = msg.statuses
-		if m.cursor >= len(m.agents) {
-			m.cursor = max(0, len(m.agents)-1)
+		if n := len(m.filtered()); m.cursor >= n {
+			m.cursor = max(0, n-1)
 		}
 	case tea.FocusMsg:
 		// tmux delivers focus-in BEFORE the click that caused it, so arm a
@@ -139,11 +163,23 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.focused, m.swallowNext = true, false
 				return m, nil
 			}
-			rows := m.rows()
+			// Tab bar click: switch tabs.
+			if msg.Y == 0 {
+				_, spans := m.renderTabs()
+				for _, sp := range spans {
+					if msg.X >= sp.start && msg.X < sp.end {
+						m.tab, m.cursor = sp.tab, 0
+						return m, nil
+					}
+				}
+				return m, nil
+			}
+			// Row click: select that item in the viewport.
+			idx := m.filtered()
 			row := msg.Y - headerLines
-			if row >= 0 && row < len(rows) && rows[row].agentIdx >= 0 {
-				m.cursor = rows[row].agentIdx
-				_ = Select(m.run, m.agents[m.cursor].WindowID)
+			if row >= 0 && row < len(idx) {
+				m.cursor = row
+				_ = Select(m.run, m.agents[idx[row]].WindowID)
 				return m, m.load
 			}
 		}
@@ -154,22 +190,26 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// pane dies with the process).
 			_ = Close(m.run, m.outer)
 			return m, tea.Quit
+		case "tab", "right", "l":
+			m.tab, m.cursor = (m.tab+1)%len(tabs), 0
+		case "shift+tab", "left", "h":
+			m.tab, m.cursor = (m.tab+len(tabs)-1)%len(tabs), 0
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.agents)-1 {
+			if m.cursor < len(m.filtered())-1 {
 				m.cursor++
 			}
 		case "enter", " ":
-			if m.cursor < len(m.agents) {
-				_ = Select(m.run, m.agents[m.cursor].WindowID)
+			if idx := m.filtered(); m.cursor < len(idx) {
+				_ = Select(m.run, m.agents[idx[m.cursor]].WindowID)
 				return m, m.load
 			}
 		case "x":
-			if m.cursor < len(m.agents) {
-				_ = Kill(m.run, m.agents[m.cursor].WindowID)
+			if idx := m.filtered(); m.cursor < len(idx) {
+				_ = Kill(m.run, m.agents[idx[m.cursor]].WindowID)
 				return m, m.load
 			}
 		case "s":
@@ -184,13 +224,14 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("11"))
-	activeStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	workingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))  // yellow: turn in flight
-	doneStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green: finished, result waiting
-	sectionStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("6"))
+	titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
+	dimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	selectedStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("11"))
+	activeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
+	workingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))  // yellow: turn in flight
+	doneStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green: finished, result waiting
+	tabStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	tabActiveStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6"))
 )
 
 // statusGlyph renders the notification dot for one agent state.
@@ -216,24 +257,25 @@ func (m watchModel) View() string {
 			done++
 		}
 	}
-	head := titleStyle.Render(" duck ") + dimStyle.Render(fmt.Sprintf("(%d)", len(m.agents)))
+	bar, _ := m.renderTabs()
 	if working > 0 {
-		head += workingStyle.Render(fmt.Sprintf("  ● %d working", working))
+		bar += workingStyle.Render(fmt.Sprintf(" ●%d", working))
 	}
 	if done > 0 {
-		head += doneStyle.Render(fmt.Sprintf("  ✔ %d done", done))
+		bar += doneStyle.Render(fmt.Sprintf(" ✔%d", done))
 	}
-	b.WriteString(head + "\n")
+	b.WriteString(truncate(bar, m.width) + "\n")
 	b.WriteString(dimStyle.Render(strings.Repeat("─", max(1, m.width))) + "\n")
-	if len(m.agents) == 0 {
-		b.WriteString(dimStyle.Render("\n  nothing running\n\n  duck spawn <cmd>\n  duck preview <file>\n  or press s for a shell"))
-	}
-	for _, r := range m.rows() {
-		if r.agentIdx < 0 {
-			b.WriteString(sectionStyle.Render(" "+r.section) + "\n")
-			continue
+	idx := m.filtered()
+	if len(idx) == 0 {
+		if tabs[m.tab].kind == KindArtifact {
+			b.WriteString(dimStyle.Render("\n  no artifacts\n\n  duck preview <file|url>"))
+		} else {
+			b.WriteString(dimStyle.Render("\n  no agents\n\n  duck spawn <cmd>\n  or press s for a shell"))
 		}
-		a := m.agents[r.agentIdx]
+	}
+	for row, i := range idx {
+		a := m.agents[i]
 		marker := "  "
 		if a.Active {
 			marker = activeStyle.Render("▶ ")
@@ -243,12 +285,12 @@ func (m watchModel) View() string {
 			label += dimStyle.Render(" · " + a.Command)
 		}
 		line := marker + statusGlyph(m.statuses[a.WindowID]) + " " + label
-		if r.agentIdx == m.cursor {
+		if row == m.cursor {
 			line = marker + statusGlyph(m.statuses[a.WindowID]) + " " + selectedStyle.Render(" "+a.Name+" ")
 		}
 		b.WriteString(truncate(line, m.width) + "\n")
 	}
-	help := dimStyle.Render(" ↵ view · x kill · s shell · q close")
+	help := dimStyle.Render(" ⇥ tab · ↵ view · x kill · s shell · q close")
 	// Pin help to the bottom when we know the height.
 	body := b.String()
 	if m.height > 0 {
