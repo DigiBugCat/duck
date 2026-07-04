@@ -1,23 +1,28 @@
-// watch.go is the Bubble Tea program that runs INSIDE the panel's list pane
-// (`duck panel watch <outer>`): a live, clickable list of the launched agents.
-// It polls the companion session every 2s (tmux is the source of truth —
-// nothing stored) and drives selection with select-window, which the nested
-// viewport client follows.
+// watch.go is the Bubble Tea program that runs INSIDE the panel's roster
+// pane (`duck panel watch <outer>`): the workspace's citizens as a list,
+// with an ALWAYS-VISIBLE command box underneath — no hidden modes, no
+// memorized chords. Typing filters and jumps (fuzzy, fzf-style); verbs
+// (spawn/edit/preview/render/kill/close) complete with ghost text and a hint
+// line that says what Enter will do. tmux stays the source of truth (2s
+// polls); selection drives swap-pane through Select.
 package panel
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/DigiBugCat/duck/internal/paths"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/DigiBugCat/duck/internal/paths"
 )
 
-// pollEvery is the agent-list refresh cadence. Cheap: one local
-// `tmux list-windows` per tick.
+// pollEvery is the roster refresh cadence. Cheap: one local list-panes tick.
 const pollEvery = 2 * time.Second
 
 type tickMsg time.Time
@@ -27,41 +32,52 @@ type agentsMsg struct {
 	err      error
 }
 
-// StatusFn classifies an agent window's state for the roster ("working",
-// "done", "idle"). Injected by the command layer (internal/channel implements
-// it over codex rollouts) so panel stays free of the channel dependency.
-type StatusFn func(windowID string) string
+// StatusFn classifies an agent pane's state ("working", "done", "idle").
+// Injected by the command layer (internal/channel implements it over codex
+// rollouts) so panel stays free of the channel dependency.
+type StatusFn func(paneID string) string
 
-// watchModel is the list-pane TUI state.
-type watchModel struct {
-	run         Runner
-	outer       string
-	statusFn    StatusFn
-	agents      []Agent
-	statuses    map[string]string // windowID → working|done|idle, refreshed with each poll
-	tab         int               // active tab (index into tabs)
-	cursor      int               // index into filtered() — the active tab's items
-	width       int
-	height      int
-	focused     bool   // pane focus (tmux focus-events): the click that focuses us must not also select
-	swallowNext bool   // the next click is the one that focused the pane — ignore exactly one
-	armedKill   string // windowID armed for kill: x arms, second x confirms (accidental-kill guard)
-	cmdMode     bool   // the : palette (the roster is the minibuffer)
-	cmdInput    string
-	cmdErr      string // last palette error, shown until the next keypress
+// verbs the command box understands, with the usage hint the suggestion
+// line shows. Order = suggestion priority.
+var verbs = []struct{ name, usage string }{
+	{"spawn", "spawn <cmd…>  — launch an agent"},
+	{"edit", "edit [pad]  — open/create a pad (no name: workspace pad)"},
+	{"preview", "preview <file|url>  — render in the viewport"},
+	{"render", "render <file|url>  — open in your laptop browser"},
+	{"kill", "kill <name>  — kill an agent/buffer"},
+	{"close", "close  — close this panel (everything keeps running)"},
 }
 
-// Watch runs the list TUI until the user quits (q / ^c). It is the body of
-// the hidden `duck panel watch` command.
+type watchModel struct {
+	run      Runner
+	outer    string
+	statusFn StatusFn
+
+	agents   []Agent
+	statuses map[string]string
+	tab      int
+	cursor   int // index into visible() rows
+	width    int
+	height   int
+
+	input       textinput.Model
+	lastMsg     string // result/error of the last command, shown until next keypress
+	focused     bool
+	swallowNext bool // the click that focuses the pane must not also select
+}
+
+// Watch runs the roster TUI until close/ctrl+c.
 func Watch(run Runner, outer string, status StatusFn) error {
-	m := watchModel{run: run, outer: outer, statusFn: status}
+	ti := textinput.New()
+	ti.Prompt = "❯ "
+	ti.Placeholder = "type a name to jump · spawn <cmd> · edit <pad> · …"
+	ti.Focus()
+	m := watchModel{run: run, outer: outer, statusFn: status, input: ti}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus()).Run()
 	return err
 }
 
-func (m watchModel) Init() tea.Cmd {
-	return tea.Batch(m.load, tick())
-}
+func (m watchModel) Init() tea.Cmd { return tea.Batch(m.load, tick(), textinput.Blink) }
 
 func tick() tea.Cmd {
 	return tea.Tick(pollEvery, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -78,24 +94,20 @@ func (m watchModel) load() tea.Msg {
 	return agentsMsg{agents: agents, statuses: statuses, err: err}
 }
 
-// headerLines is the number of rendered lines above the first roster row
-// (the tab bar and the rule) — the contract between View and the mouse-click
-// row mapping.
+// headerLines: tab bar + rule, above the first row (mouse-mapping contract).
 const headerLines = 2
 
-// tabs returns the tab bar contents: the base set (always shown, stable
-// order) plus any OTHER kind currently carried by a window, sorted — tabs
-// appear and disappear with their windows, no declaration anywhere.
+// tabs: base set always visible, dynamic kinds appended sorted.
 func (m watchModel) tabs() []string {
 	out := append([]string{}, BaseKinds...)
 	base := map[string]bool{}
 	for _, k := range BaseKinds {
 		base[k] = true
 	}
-	extra := map[string]bool{}
+	seen := map[string]bool{}
 	for _, a := range m.agents {
-		if !base[a.Kind] && !extra[a.Kind] {
-			extra[a.Kind] = true
+		if !base[a.Kind] && !seen[a.Kind] {
+			seen[a.Kind] = true
 			out = append(out, a.Kind)
 		}
 	}
@@ -103,8 +115,6 @@ func (m watchModel) tabs() []string {
 	return out
 }
 
-// activeKind is the kind (tab name) the active tab shows, clamped in case a
-// dynamic tab vanished out from under the cursor.
 func (m watchModel) activeKind() string {
 	t := m.tabs()
 	if m.tab >= len(t) {
@@ -113,290 +123,78 @@ func (m watchModel) activeKind() string {
 	return t[m.tab]
 }
 
-// filtered returns the indexes into m.agents belonging to the ACTIVE tab.
-func (m watchModel) filtered() []int {
+// visible returns the rows on screen: the active tab's items, live-filtered
+// by the command box whenever its text isn't a verb command.
+func (m watchModel) visible() []int {
 	kind := m.activeKind()
+	q := strings.ToLower(strings.TrimSpace(m.input.Value()))
+	if m.isVerb() {
+		q = ""
+	}
 	var idx []int
 	for i, a := range m.agents {
-		if a.Kind == kind {
-			idx = append(idx, i)
+		if a.Kind != kind {
+			continue
 		}
+		if q != "" && !isSubseq(strings.ToLower(a.Name), q) {
+			continue
+		}
+		idx = append(idx, i)
 	}
 	return idx
 }
 
-// tabSpan is one rendered tab's clickable x-range on the bar line.
-type tabSpan struct{ start, end, tab int }
-
-// renderTabs draws the tab bar and returns it with the click spans. The same
-// function feeds View and the mouse handler so a click can never land on the
-// wrong tab.
-func (m watchModel) renderTabs() (string, []tabSpan) {
-	var b strings.Builder
-	var spans []tabSpan
-	x := 0
-	activeKind := ""
-	for _, a := range m.agents {
-		if a.Active {
-			activeKind = a.Kind
+// isVerb reports whether the box currently holds a verb command (vs a jump/
+// filter query).
+func (m watchModel) isVerb() bool {
+	f := strings.Fields(m.input.Value())
+	if len(f) == 0 {
+		return false
+	}
+	for _, v := range verbs {
+		if f[0] == v.name || (len(f) > 1 && strings.HasPrefix(v.name, f[0])) {
+			return true
 		}
 	}
-	for ti, kind := range m.tabs() {
-		n := 0
-		for _, a := range m.agents {
-			if a.Kind == kind {
-				n++
-			}
-		}
-		// ▶ on the tab whose window the viewport is SHOWING right now — the
-		// browse position (highlight) and the shown item live on different
-		// tabs often enough that both need a signal.
-		view := " "
-		if kind == activeKind {
-			view = "▶"
-		}
-		label := fmt.Sprintf("%s%s %d ", view, kind, n)
-		cell := tabStyle.Render(label)
-		if ti == m.tab {
-			cell = tabActiveStyle.Render(label)
-		}
-		w := lipgloss.Width(cell)
-		spans = append(spans, tabSpan{start: x, end: x + w, tab: ti})
-		b.WriteString(cell)
-		x += w
-		b.WriteString(" ")
-		x++
-	}
-	return b.String(), spans
+	return false
 }
 
-func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
-	case tickMsg:
-		return m, tea.Batch(m.load, tick())
-	case agentsMsg:
-		// A dead companion (last agent closed) is not an error state — render an
-		// empty list; spawn recreates everything.
-		if msg.err != nil {
-			m.agents = nil
-		} else {
-			m.agents = msg.agents
-		}
-		m.statuses = msg.statuses
-		if n := len(m.tabs()); m.tab >= n {
-			m.tab = n - 1
-		}
-		if n := len(m.filtered()); m.cursor >= n {
-			m.cursor = max(0, n-1)
-		}
-	case tea.FocusMsg:
-		// tmux delivers focus-in BEFORE the click that caused it, so arm a
-		// one-shot swallow for that click; a second click is a real selection.
-		m.focused = true
-		m.swallowNext = true
-	case tea.BlurMsg:
-		m.focused = false
-	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			// The click that brings the pane into focus is just that — a focus
-			// click; only a click on an already-focused pane selects a row.
-			if !m.focused || m.swallowNext {
-				m.focused, m.swallowNext = true, false
-				return m, nil
+// suggest computes the ghost completion and the hint line for the current
+// input. ghost is the REMAINDER to display after the typed text.
+func (m watchModel) suggest() (ghost, hint string) {
+	val := m.input.Value()
+	f := strings.Fields(val)
+	if len(f) == 0 {
+		return "", ""
+	}
+	// Verb completion (first token only).
+	if len(f) == 1 && !strings.HasSuffix(val, " ") {
+		for _, v := range verbs {
+			if strings.HasPrefix(v.name, f[0]) && v.name != f[0] {
+				return v.name[len(f[0]):], v.usage
 			}
-			// Tab bar click: switch tabs.
-			if msg.Y == 0 {
-				_, spans := m.renderTabs()
-				for _, sp := range spans {
-					if msg.X >= sp.start && msg.X < sp.end {
-						m.tab, m.cursor = sp.tab, 0
-						return m, nil
-					}
-				}
-				return m, nil
-			}
-			// Row click: select that item in the viewport.
-			idx := m.filtered()
-			row := msg.Y - headerLines
-			if row >= 0 && row < len(idx) {
-				m.cursor = row
-				wid := m.agents[idx[row]].PaneID
-				// Swap FIRST so a stale preview respawns at slot geometry, not
-				// at the parked pane's tiny tiled size.
-				_ = Select(m.run, m.outer, wid)
-				RefreshIfStale(m.run, wid, FileMtime)
-				return m, m.load
-			}
-		}
-	case tea.KeyMsg:
-		if m.cmdMode {
-			switch msg.String() {
-			case "esc", "ctrl+c":
-				m.cmdMode, m.cmdInput = false, ""
-			case "enter":
-				m.cmdErr = m.runPalette(strings.TrimSpace(m.cmdInput))
-				m.cmdMode, m.cmdInput = false, ""
-				return m, m.load
-			case "backspace":
-				if len(m.cmdInput) > 0 {
-					r := []rune(m.cmdInput)
-					m.cmdInput = string(r[:len(r)-1])
-				}
-			default:
-				if msg.Type == tea.KeyRunes || msg.String() == " " {
-					m.cmdInput += string(msg.Runes)
-					if msg.String() == " " && len(msg.Runes) == 0 {
-						m.cmdInput += " "
-					}
-				}
-			}
-			return m, nil
-		}
-		m.cmdErr = ""
-		switch msg.String() {
-		case ":":
-			m.cmdMode, m.cmdInput = true, ""
-		case "q", "ctrl+c":
-			// Close the whole panel: the viewport pane too, then quit (our own
-			// pane dies with the process).
-			_ = Close(m.run, m.outer)
-			return m, tea.Quit
-		case "tab", "right", "l":
-			m.tab, m.cursor, m.armedKill = (m.tab+1)%len(m.tabs()), 0, ""
-		case "shift+tab", "left", "h":
-			n := len(m.tabs())
-			m.tab, m.cursor, m.armedKill = (m.tab+n-1)%n, 0, ""
-		case "up", "k":
-			m.armedKill = ""
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			m.armedKill = ""
-			if m.cursor < len(m.filtered())-1 {
-				m.cursor++
-			}
-		case "enter", " ":
-			if idx := m.filtered(); m.cursor < len(idx) {
-				wid := m.agents[idx[m.cursor]].PaneID
-				_ = Select(m.run, m.outer, wid)
-				RefreshIfStale(m.run, wid, FileMtime)
-				return m, m.load
-			}
-		case "x":
-			// Two-press guard: killing an agent kills its process — too easy to
-			// fat-finger. First x arms (footer shows it), second x on the same
-			// item confirms; moving the cursor or switching tabs disarms.
-			if idx := m.filtered(); m.cursor < len(idx) {
-				wid := m.agents[idx[m.cursor]].PaneID
-				if m.armedKill == wid {
-					m.armedKill = ""
-					wasActive := m.agents[idx[m.cursor]].Active
-					_ = Kill(m.run, wid)
-					if wasActive {
-						EnsureSlot(m.run, m.outer) // killed on display — heal the slot
-					}
-					return m, m.load
-				}
-				m.armedKill = wid
-			}
-		case "e":
-			// Jump to the workspace scratch buffer (create if missing).
-			EnsureScratch(m.run, m.outer)
-			for _, a := range m.agents {
-				if a.Kind == KindBuffer && a.Name == "scratch" {
-					_ = Select(m.run, m.outer, a.PaneID)
-					break
-				}
-			}
-			return m, m.load
-		case "s":
-			// Quick shell agent in the outer session's dir.
-			if dir, err := CurrentPanePath(m.run); err == nil {
-				EnsureSlot(m.run, m.outer)
-				_, _ = Spawn(m.run, m.outer, "shell", dir, "", KindShell)
-			}
-			return m, m.load
 		}
 	}
-	return m, nil
+	for _, v := range verbs {
+		if f[0] == v.name {
+			return "", v.usage
+		}
+	}
+	// Jump: best fuzzy match across ALL agents (any tab).
+	if a := m.fuzzyAgent(strings.ToLower(strings.TrimSpace(val))); a != nil {
+		g := ""
+		if strings.HasPrefix(strings.ToLower(a.Name), strings.ToLower(val)) {
+			g = a.Name[len(val):]
+		}
+		return g, "↵ view " + a.Name + " (" + a.Kind + ")"
+	}
+	return "", "no match — ↵ does nothing"
 }
 
-// runPalette executes one palette line. Grammar (v1, deliberately tiny):
-//
-//	<bare words>        fuzzy-jump to the agent/buffer whose name matches
-//	s|spawn <cmd...>    spawn an agent running cmd
-//	e|edit [name]       open a pad (workspace pad when no name)
-//	k|kill <name>       kill by roster name (no confirm — you typed it)
-//
-// Returns "" on success or a short error for the footer.
-func (m *watchModel) runPalette(line string) string {
-	if line == "" {
-		return ""
+func (m watchModel) fuzzyAgent(q string) *Agent {
+	if q == "" {
+		return nil
 	}
-	f := strings.Fields(line)
-	switch f[0] {
-	case "s", "spawn":
-		if len(f) < 2 {
-			return "spawn what?"
-		}
-		dir, err := CurrentPanePath(m.run)
-		if err != nil {
-			return err.Error()
-		}
-		name := f[1]
-		if i := strings.LastIndex(f[1], "/"); i >= 0 {
-			name = f[1][i+1:]
-		}
-		if _, err := Spawn(m.run, m.outer, name, dir, strings.Join(f[1:], " "), KindAgent); err != nil {
-			return err.Error()
-		}
-		return ""
-	case "e", "edit":
-		name := m.outer
-		if len(f) > 1 {
-			name = f[1]
-		}
-		path, err := PadPath(name)
-		if err != nil {
-			return err.Error()
-		}
-		dir, _ := CurrentPanePath(m.run)
-		for _, a := range m.agents {
-			if a.Kind == KindBuffer && a.Name == name {
-				_ = Select(m.run, m.outer, a.PaneID)
-				return ""
-			}
-		}
-		cmd := "sh -c 'while :; do \"${EDITOR:-vim}\" " + paths.Quote(path) + "; sleep 0.3; done'"
-		if _, err := Spawn(m.run, m.outer, name, dir, cmd, KindBuffer); err != nil {
-			return err.Error()
-		}
-		return ""
-	case "k", "kill":
-		if len(f) < 2 {
-			return "kill what?"
-		}
-		if a := m.fuzzyAgent(strings.Join(f[1:], " ")); a != nil {
-			_ = Kill(m.run, a.PaneID)
-			return ""
-		}
-		return "no match: " + f[1]
-	}
-	// Bare words: switch-to-buffer.
-	if a := m.fuzzyAgent(line); a != nil {
-		_ = Select(m.run, m.outer, a.PaneID)
-		return ""
-	}
-	return "no match: " + line
-}
-
-// fuzzyAgent finds the best roster match: exact name, then prefix, then
-// subsequence — first hit in roster order wins each tier.
-func (m *watchModel) fuzzyAgent(q string) *Agent {
-	q = strings.ToLower(q)
 	var prefix, subseq *Agent
 	for i := range m.agents {
 		a := &m.agents[i]
@@ -427,18 +225,276 @@ func isSubseq(hay, needle string) bool {
 	return i == len(needle)
 }
 
+// runInput executes the command box's content. Empty + a selected row →
+// view it. Returns a footer message ("" for silent success, "__quit__" to
+// exit).
+func (m *watchModel) runInput() string {
+	line := strings.TrimSpace(m.input.Value())
+	if line == "" {
+		if idx := m.visible(); m.cursor < len(idx) {
+			_ = Select(m.run, m.outer, m.agents[idx[m.cursor]].PaneID)
+		}
+		return ""
+	}
+	f := strings.Fields(line)
+	// Accept unambiguous verb prefixes ("sp cargo…" == spawn).
+	verb := ""
+	for _, v := range verbs {
+		if f[0] == v.name {
+			verb = v.name
+			break
+		}
+	}
+	if verb == "" {
+		var hits []string
+		for _, v := range verbs {
+			if strings.HasPrefix(v.name, f[0]) {
+				hits = append(hits, v.name)
+			}
+		}
+		if len(hits) == 1 && len(f) > 1 {
+			verb = hits[0]
+		}
+	}
+	switch verb {
+	case "spawn":
+		if len(f) < 2 {
+			return "spawn what?"
+		}
+		dir, err := CurrentPanePath(m.run)
+		if err != nil {
+			return err.Error()
+		}
+		name := f[1]
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		if _, err := Spawn(m.run, m.outer, name, dir, strings.Join(f[1:], " "), KindAgent); err != nil {
+			return err.Error()
+		}
+		return "spawned " + name
+	case "edit":
+		name := m.outer
+		if len(f) > 1 {
+			name = f[1]
+		}
+		for _, a := range m.agents {
+			if a.Kind == KindBuffer && a.Name == name {
+				_ = Select(m.run, m.outer, a.PaneID)
+				return ""
+			}
+		}
+		path, err := PadPath(name)
+		if err != nil {
+			return err.Error()
+		}
+		dir, _ := CurrentPanePath(m.run)
+		cmd := `sh -c 'while :; do "${EDITOR:-vim}" ` + paths.Quote(path) + `; sleep 0.3; done'`
+		if _, err := Spawn(m.run, m.outer, name, dir, cmd, KindBuffer); err != nil {
+			return err.Error()
+		}
+		return "pad " + name
+	case "preview", "render":
+		if len(f) < 2 {
+			return verb + " what?"
+		}
+		return m.duckExec(verb, f[1])
+	case "kill":
+		if len(f) < 2 {
+			return "kill what?"
+		}
+		if a := m.fuzzyAgent(strings.ToLower(strings.Join(f[1:], " "))); a != nil {
+			_ = Kill(m.run, a.PaneID)
+			return "killed " + a.Name
+		}
+		return "no match: " + f[1]
+	case "close":
+		_ = Close(m.run, m.outer)
+		return "__quit__"
+	}
+	// Bare words: jump.
+	if a := m.fuzzyAgent(strings.ToLower(line)); a != nil {
+		_ = Select(m.run, m.outer, a.PaneID)
+		return ""
+	}
+	return "no match: " + line
+}
+
+// duckExec shells out to this same duck binary for verbs whose logic lives
+// in the command layer (preview/render). Context is safe: panel context is
+// pane-anchored via TMUX_PANE.
+func (m *watchModel) duckExec(args ...string) string {
+	self, err := os.Executable()
+	if err != nil {
+		return err.Error()
+	}
+	out, err := exec.Command(self, args...).CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err != nil {
+		if msg == "" {
+			msg = err.Error()
+		}
+		return firstLine(msg)
+	}
+	if msg == "" {
+		msg = strings.Join(args, " ") + " ✓"
+	}
+	return firstLine(msg)
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.input.Width = max(10, m.width-4)
+	case tickMsg:
+		return m, tea.Batch(m.load, tick())
+	case agentsMsg:
+		if msg.err != nil {
+			m.agents = nil
+		} else {
+			m.agents = msg.agents
+		}
+		m.statuses = msg.statuses
+		if n := len(m.tabs()); m.tab >= n {
+			m.tab = n - 1
+		}
+		if n := len(m.visible()); m.cursor >= n {
+			m.cursor = max(0, n-1)
+		}
+	case tea.FocusMsg:
+		m.focused, m.swallowNext = true, true
+	case tea.BlurMsg:
+		m.focused = false
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if !m.focused || m.swallowNext {
+				m.focused, m.swallowNext = true, false
+				return m, nil
+			}
+			if msg.Y == 0 { // tab bar
+				_, spans := m.renderTabs()
+				for _, sp := range spans {
+					if msg.X >= sp.start && msg.X < sp.end {
+						m.tab, m.cursor = sp.tab, 0
+						return m, nil
+					}
+				}
+				return m, nil
+			}
+			idx := m.visible()
+			row := msg.Y - headerLines
+			if row >= 0 && row < len(idx) {
+				m.cursor = row
+				wid := m.agents[idx[row]].PaneID
+				_ = Select(m.run, m.outer, wid) // swap first: previews respawn at slot geometry
+				RefreshIfStale(m.run, wid, FileMtime)
+				return m, m.load
+			}
+		}
+	case tea.KeyMsg:
+		m.lastMsg = ""
+		switch msg.String() {
+		case "ctrl+c":
+			_ = Close(m.run, m.outer)
+			return m, tea.Quit
+		case "esc":
+			m.input.SetValue("")
+		case "enter":
+			res := m.runInput()
+			if res == "__quit__" {
+				return m, tea.Quit
+			}
+			m.lastMsg = res
+			m.input.SetValue("")
+			return m, m.load
+		case "up":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down":
+			if m.cursor < len(m.visible())-1 {
+				m.cursor++
+			}
+		case "tab":
+			// With a suggestion pending, tab completes; otherwise it cycles tabs.
+			if g, _ := m.suggest(); g != "" && m.input.Value() != "" {
+				m.input.SetValue(m.input.Value() + g)
+				m.input.CursorEnd()
+			} else {
+				m.tab, m.cursor = (m.tab+1)%len(m.tabs()), 0
+			}
+		case "shift+tab":
+			n := len(m.tabs())
+			m.tab, m.cursor = (m.tab+n-1)%n, 0
+		default:
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			m.cursor = 0 // typing re-anchors the filter selection
+			return m, cmd
+		}
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+type tabSpan struct{ start, end, tab int }
+
+func (m watchModel) renderTabs() (string, []tabSpan) {
+	var b strings.Builder
+	var spans []tabSpan
+	x := 0
+	activeKind := ""
+	for _, a := range m.agents {
+		if a.Active {
+			activeKind = a.Kind
+		}
+	}
+	for ti, kind := range m.tabs() {
+		n := 0
+		for _, a := range m.agents {
+			if a.Kind == kind {
+				n++
+			}
+		}
+		view := " "
+		if kind == activeKind {
+			view = "▶"
+		}
+		label := fmt.Sprintf("%s%s %d ", view, kind, n)
+		cell := tabStyle.Render(label)
+		if ti == m.tab {
+			cell = tabActiveStyle.Render(label)
+		}
+		w := lipgloss.Width(cell)
+		spans = append(spans, tabSpan{start: x, end: x + w, tab: ti})
+		b.WriteString(cell)
+		x += w
+		b.WriteString(" ")
+		x++
+	}
+	return b.String(), spans
+}
+
 var (
-	titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
 	dimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	selectedStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("11"))
 	activeStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	workingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))  // yellow: turn in flight
-	doneStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("10")) // green: finished, result waiting
+	workingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	doneStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	tabStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	tabActiveStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6"))
+	ghostStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
 )
 
-// statusGlyph renders the notification dot for one agent state.
 func statusGlyph(status string) string {
 	switch status {
 	case "working":
@@ -452,6 +508,7 @@ func statusGlyph(status string) string {
 
 func (m watchModel) View() string {
 	var b strings.Builder
+	bar, _ := m.renderTabs()
 	working, done := 0, 0
 	for _, s := range m.statuses {
 		switch s {
@@ -461,7 +518,6 @@ func (m watchModel) View() string {
 			done++
 		}
 	}
-	bar, _ := m.renderTabs()
 	if working > 0 {
 		bar += workingStyle.Render(fmt.Sprintf(" ●%d", working))
 	}
@@ -470,16 +526,10 @@ func (m watchModel) View() string {
 	}
 	b.WriteString(truncate(bar, m.width) + "\n")
 	b.WriteString(dimStyle.Render(strings.Repeat("─", max(1, m.width))) + "\n")
-	idx := m.filtered()
+
+	idx := m.visible()
 	if len(idx) == 0 {
-		switch m.activeKind() {
-		case KindArtifact:
-			b.WriteString(dimStyle.Render("\n  no artifacts\n\n  duck preview <file|url>"))
-		case KindShell:
-			b.WriteString(dimStyle.Render("\n  no shells\n\n  press s for one"))
-		default:
-			b.WriteString(dimStyle.Render("\n  nothing here\n\n  duck spawn <cmd>"))
-		}
+		b.WriteString(dimStyle.Render("  nothing here — try the box below") + "\n")
 	}
 	for row, i := range idx {
 		a := m.agents[i]
@@ -497,40 +547,33 @@ func (m watchModel) View() string {
 		}
 		b.WriteString(truncate(line, m.width) + "\n")
 	}
-	viewing := ""
-	for _, a := range m.agents {
-		if a.Active {
-			viewing = a.Name
-		}
+
+	// Bottom: the command box + its hint, pinned.
+	ghost, hint := m.suggest()
+	inputLine := " " + m.input.View()
+	if ghost != "" {
+		inputLine += ghostStyle.Render(ghost)
 	}
-	help := dimStyle.Render(" : cmd · ⇥ tab · ↵ view · e scratch · x kill · s shell · q close")
-	if viewing != "" {
-		help = activeStyle.Render(" ▶ viewing "+viewing) + dimStyle.Render(" · ⇥ tab · ↵ view · x kill · q close")
+	var hintLine string
+	switch {
+	case m.lastMsg != "":
+		hintLine = workingStyle.Render(" " + m.lastMsg)
+	case hint != "":
+		hintLine = dimStyle.Render(" " + hint)
+	default:
+		hintLine = dimStyle.Render(" ↵ view selected · ⇥ tabs/complete · spawn · edit · preview · render · kill · close")
 	}
-	if m.cmdMode {
-		help = titleStyle.Render(" :") + m.cmdInput + selectedStyle.Render(" ")
-	} else if m.cmdErr != "" {
-		help = workingStyle.Render(" " + m.cmdErr)
-	}
-	if m.armedKill != "" {
-		for _, a := range m.agents {
-			if a.PaneID == m.armedKill {
-				help = workingStyle.Render(" x again to kill " + a.Name + " ")
-			}
-		}
-	}
-	// Pin help to the bottom when we know the height.
+
 	body := b.String()
 	if m.height > 0 {
-		lines := strings.Count(body, "\n") + 1
+		lines := strings.Count(body, "\n") + 2 // + input + hint
 		for i := lines; i < m.height-1; i++ {
 			body += "\n"
 		}
 	}
-	return body + help
+	return body + truncate(inputLine, m.width) + "\n" + truncate(hintLine, m.width)
 }
 
-// truncate clips a rendered line to w columns (rune-naive is fine for labels).
 func truncate(s string, w int) string {
 	if w <= 0 || lipgloss.Width(s) <= w {
 		return s

@@ -186,7 +186,7 @@ func Companion(outer string) string { return outer + "-agents" }
 // CurrentSession returns the name of the tmux session this process's pane
 // belongs to.
 func CurrentSession(run Runner) (string, error) {
-	out, err := run("display-message", "-p", "#{session_name}")
+	out, err := run(displayArgs("#{session_name}")...)
 	if err != nil {
 		return "", err
 	}
@@ -195,11 +195,22 @@ func CurrentSession(run Runner) (string, error) {
 
 // CurrentPanePath returns the current pane's working directory.
 func CurrentPanePath(run Runner) (string, error) {
-	out, err := run("display-message", "-p", "#{pane_current_path}")
+	out, err := run(displayArgs("#{pane_current_path}")...)
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// displayArgs targets display-message at THIS process's pane when known.
+// Without -t, tmux answers for the most recent CLIENT's context — which is
+// whatever terminal the human last touched, not necessarily where this
+// process runs (a real mis-resolution we hit across sessions).
+func displayArgs(format string) []string {
+	if p := os.Getenv("TMUX_PANE"); p != "" {
+		return []string{"display-message", "-p", "-t", p, format}
+	}
+	return []string{"display-message", "-p", format}
 }
 
 // SessionPath returns the working directory of a session's active pane —
