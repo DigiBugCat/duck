@@ -204,6 +204,15 @@ type Flow struct {
 	// the real one needs config/hub/anchor/claude — which flow must not import; a
 	// no-op by default so unit tests need no wiring. See SetClaudeReconciler.
 	reconcileClaude func()
+	// launchManager sends the workspace MANAGER launch line into a FRESHLY created
+	// session's main pane before it is attached — a duck workspace is an employee
+	// whose manager is claude in the main pane, so duck owns that launch. Injected
+	// as a closure (the line builder + record stamp live in the command layer,
+	// which flow must not import). Called ONLY for created==true sessions on the
+	// bare-`duck` path, never on reattach. A nil closure (the default) launches
+	// nothing — preserving the old bare-shell behavior for callers that don't wire
+	// it and for `duck --shell`. See SetManagerLauncher.
+	launchManager func(tmuxName, tildeDir string)
 }
 
 // SetLocal marks the flow as running ON the hub itself. When set, the bare-`duck`
@@ -241,6 +250,12 @@ func (f *Flow) SetClaudeReconciler(fn func()) {
 // tests that don't care about the ledger need no wiring); names.json behavior is
 // never affected either way.
 func (f *Flow) SetWorkspaces(store *workspaces.Store) { f.workspaces = store }
+
+// SetManagerLauncher wires the manager-launch closure the bare-`duck` created
+// path calls before attaching a fresh session (see Flow.launchManager). Passing
+// nil disables it (bare-shell workspace — `duck --shell`). Called from the
+// command layer after construction so flow keeps no command-layer import.
+func (f *Flow) SetManagerLauncher(fn func(tmuxName, tildeDir string)) { f.launchManager = fn }
 
 // SetInteractiveAttach overrides the interactive-attach seam (the command layer
 // wires in its reconnect loop). A nil arg restores the default. Called by the
@@ -629,6 +644,15 @@ func (f *Flow) RunWithOverride(cwd string, override Override) error {
 	tmuxName, created, err := f.EnsureSession(sessionDir, true)
 	if err != nil {
 		return err
+	}
+	// A duck workspace is an EMPLOYEE whose manager is claude in the main pane, so
+	// on a FRESHLY minted session duck launches the manager itself (channel flags
+	// included) rather than dropping the human into a bare shell. Only for a
+	// created session — a reused/reattached one must NOT be sent anything. Nil
+	// launcher (`duck --shell`, or callers that don't wire it) keeps the old
+	// bare-shell behavior.
+	if created && f.launchManager != nil {
+		f.launchManager(tmuxName, sessionDir)
 	}
 	// Route EVERY interactive attach through the injected seam (the command layer's
 	// reconnect loop). cleanLeave reports whether the user left CLEANLY (detached /

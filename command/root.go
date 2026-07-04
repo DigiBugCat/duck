@@ -36,6 +36,18 @@ var (
 	flagPush     bool
 	flagPull     bool
 	flagMerge    bool
+	flagShell    bool
+)
+
+// managerArgs / managerShell carry the bare-`duck` manager-launch decision for
+// the CURRENT invocation into the launcher closure wired in build(). managerArgs
+// are the profile/claude args passed after `--` (e.g. `duck -- --ben`),
+// forwarded VERBATIM onto the manager line; managerShell mirrors --shell (skip
+// the manager launch, open a bare-shell workspace — the old behavior). They are
+// set in the bare-`duck` RunE right before build()/RunWithOverride.
+var (
+	managerArgs  []string
+	managerShell bool
 )
 
 var rootCmd = &cobra.Command{
@@ -53,7 +65,15 @@ drop straight in; a large/home/root folder it hasn't seen prompts first
   duck --sync/--no-sync  force syncing (or not) for this folder, and remember it
   duck -c / --continue   reattach the most recent session for this dir
   duck --resume [name]   pick from existing sessions / attach a named one
+  duck --shell           open a bare shell (don't auto-launch the claude manager)
+  duck -- <args>         forward args to the auto-launched claude (e.g. duck -- --ben)
   duck ls                list remote sessions without attaching
+
+A fresh 'duck' workspace auto-launches its MANAGER — claude in the main pane,
+wired to its sidebar agent flock — instead of dropping you at a shell. Anything
+after '--' is forwarded verbatim onto that claude launch line (profile flags
+like --ben included); --shell skips the manager for a bare-shell workspace.
+Reattaching an existing session never re-launches anything.
 
 duck also bundles 'duck sync', a Mutagen-backed multi-machine path sync.`,
 	SilenceUsage: true,
@@ -61,11 +81,19 @@ duck also bundles 'duck sync', a Mutagen-backed multi-machine path sync.`,
 	// bare `duck` takes an optional positional FOLDER (`duck ~/dev/foo`) that the
 	// sync-aware flow targets in place of cwd. (The old claude-aware
 	// "duck <session-name>" form is gone; this positional is a folder path.)
+	// Args after `--` are manager passthrough (e.g. `duck -- --ben`), NOT duck
+	// positionals: `duck` takes at most ONE positional FOLDER before the dash. So
+	// the count check applies only to pre-dash args (ArgsLenAtDash, -1 when no
+	// `--` was given → the whole slice).
 	Args: func(c *cobra.Command, args []string) error {
-		if flagContinue {
-			return cobra.NoArgs(c, args)
+		before := args
+		if n := c.ArgsLenAtDash(); n >= 0 {
+			before = args[:n]
 		}
-		return cobra.MaximumNArgs(1)(c, args)
+		if flagContinue {
+			return cobra.NoArgs(c, before)
+		}
+		return cobra.MaximumNArgs(1)(c, before)
 	},
 	RunE: func(c *cobra.Command, args []string) error {
 		switch {
@@ -88,14 +116,25 @@ duck also bundles 'duck sync', a Mutagen-backed multi-machine path sync.`,
 		if err := ensureHubOrOfferSetup(); err != nil {
 			return err
 		}
+		// Split args at `--`: everything before is the (optional) FOLDER positional;
+		// everything after is manager passthrough forwarded verbatim onto the
+		// claude launch line (`duck -- --ben`). Stash the launch decision for the
+		// build() launcher closure. --shell opens a bare-shell workspace (no
+		// manager), the old behavior.
+		before := args
+		if n := c.ArgsLenAtDash(); n >= 0 {
+			before = args[:n]
+			managerArgs = args[n:]
+		}
+		managerShell = flagShell
 		// Bare `duck` targets cwd by default, or the positional FOLDER if given
 		// (expanded to an absolute path; ~, relative, and absolute all work).
 		target, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-		if len(args) == 1 {
-			target, err = paths.Expand(args[0])
+		if len(before) == 1 {
+			target, err = paths.Expand(before[0])
 			if err != nil {
 				return err
 			}
@@ -251,6 +290,8 @@ func init() {
 		"push cwd to the hub: local CLOBBERS the hub copy (incl. deletes)")
 	rootCmd.Flags().BoolVar(&flagPull, "pull", false,
 		"pull the hub into cwd: hub CLOBBERS your local copy (incl. deletes)")
+	rootCmd.Flags().BoolVar(&flagShell, "shell", false,
+		"open a bare-shell workspace (skip auto-launching the claude manager)")
 	rootCmd.MarkFlagsMutuallyExclusive("continue", "resume")
 	rootCmd.MarkFlagsMutuallyExclusive("sync", "no-sync", "merge", "push", "pull")
 

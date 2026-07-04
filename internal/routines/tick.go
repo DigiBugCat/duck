@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/DigiBugCat/duck/internal/channel"
+	"github.com/DigiBugCat/duck/internal/manager"
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/session"
@@ -269,6 +270,21 @@ func healPersistent(run panel.Runner, logw io.Writer) {
 		if r.Parent != "" {
 			if _, err := run("set-option", "-t", r.Name, "@duck_parent", r.Parent); err != nil {
 				fmt.Fprintf(logw, "routines: heal %s: set @duck_parent: %v\n", r.Name, err)
+			}
+		}
+		// A healed workspace is an employee whose manager is claude in the main
+		// pane, so the org self-restarts: launch the manager into the fresh
+		// session's pane the same way bare `duck` does (bare `claude`, so the pane
+		// shell's function owns profiles; channel flags unless DUCK_NO_CHANNELS).
+		// Best-effort — a send failure logs but never stops the heal/tick.
+		if _, err := run("send-keys", "-t", r.Name, manager.Line(nil), "Enter"); err != nil {
+			fmt.Fprintf(logw, "routines: heal %s: launch manager: %v\n", r.Name, err)
+		} else if !manager.ChannelsWired(nil) && !r.Channels {
+			// Stamp the record channel-aware once the manager launched with channel
+			// flags, so the ledger reflects reality. Best-effort.
+			r.Channels = true
+			if err := wsStore().Save(r); err != nil {
+				fmt.Fprintf(logw, "routines: heal %s: stamp channels: %v\n", r.Name, err)
 			}
 		}
 		fmt.Fprintf(logw, "routines: healed persistent workspace %s (%s)\n", r.Name, tilde)

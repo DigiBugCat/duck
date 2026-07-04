@@ -155,6 +155,20 @@ func build() (*wiring, error) {
 	fl.SetInteractiveAttach(func(tmuxName string, _ bool) (bool, error) {
 		return runAttachLoop(sess, tmuxName, "", useTssh) == CleanLeave, nil
 	})
+	// Launch the workspace MANAGER (claude in the main pane, channel-wired) into a
+	// freshly created bare-`duck` session before attach — unless --shell was given
+	// (managerArgs/managerShell are set by the root RunE for this invocation). The
+	// line runs the BARE WORD `claude` so the pane shell's `claude` function owns
+	// profile flags; managerArgs forwards them verbatim.
+	fl.SetManagerLauncher(func(tmuxName, tildeDir string) {
+		if managerShell {
+			return
+		}
+		if err := sess.Send(tmuxName, managerLine(managerArgs)); err != nil {
+			return
+		}
+		stampManagerLaunched(&wiring{client: client, sessions: sess}, tildeDir, tmuxName, managerArgs)
+	})
 	// Per-folder Claude history co-sync (ON by default): when on, a bare `duck`
 	// that mirrors a folder also co-syncs that folder's ~/.claude/projects/<slug>.
 	fl.SetClaudeHistory(cfg.SyncClaudeHistoryEnabled())
