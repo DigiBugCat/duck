@@ -10,10 +10,40 @@ package command
 
 import (
 	"os"
+	"strings"
 
+	"github.com/DigiBugCat/duck/internal/claude"
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/spf13/cobra"
 )
+
+// channelsWired reports whether the user already opted into (or out of)
+// Claude's channel flags, so duck's auto-wiring stays out of the way.
+func channelsWired(args []string) bool {
+	if os.Getenv("DUCK_NO_CHANNELS") != "" {
+		return true
+	}
+	for _, a := range args {
+		if a == "--channels" || strings.HasPrefix(a, "--channels=") ||
+			a == "--dangerously-load-development-channels" {
+			return true
+		}
+	}
+	return false
+}
+
+// claudeConfigHome resolves the dir holding Claude's config (~/.claude.json),
+// honoring CLAUDE_CONFIG_DIR the way command/agentdoc.go does.
+func claudeConfigHome() string {
+	if d := os.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
 
 // claudeRunner is the in-session program the launched command runs. cass wraps
 // claude with per-project .cass.toml + MCP-key refresh; the host-side wrapper
@@ -43,6 +73,22 @@ duck session inside another.`,
 		w, err := build()
 		if err != nil {
 			return err
+		}
+		// Wire the Claude Code channel sidecar so the manager Claude hears its
+		// sidebar agents and duck-side publishes. Best-effort throughout — a
+		// registry write or a read-only home must NEVER block launching claude.
+		// NOTE: the in-tmux `claude` shell function (used when you start claude
+		// already inside a duck session) bypasses `duck claude`, so it needs the
+		// same --channels flags added independently — a docs/wrapper problem, not
+		// something this code path can fix.
+		if !channelsWired(args) {
+			if home := claudeConfigHome(); home != "" {
+				_, _ = claude.NewRegistry(home).EnsureMCPServer("duck-agents", map[string]any{
+					"command": "duck",
+					"args":    []any{"channel", "serve"},
+				})
+			}
+			args = append(args, "--channels", "server:duck-agents", "--dangerously-load-development-channels")
 		}
 		tildeDir := paths.Contract(cwd)
 		// Always a FRESH session: each claude you launch is its own resumable

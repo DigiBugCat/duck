@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/DigiBugCat/duck/internal/channel"
 	"github.com/DigiBugCat/duck/internal/panel"
@@ -111,6 +112,32 @@ var channelSendCmd = &cobra.Command{
 	},
 }
 
+var channelPublishCmd = &cobra.Command{
+	Use:   "publish <message…>",
+	Short: "Notify the workspace's manager Claude (spooled to its channel sidecar)",
+	Long: `Append a message to the workspace's channel spool. The Claude Code channel
+sidecar (duck channel serve) drains it each sweep and pushes it into the
+manager's context — no tmux send-keys, no interrupting a running turn. If no
+sidecar is alive the event parks in the spool and is delivered when one starts.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(c *cobra.Command, args []string) error {
+		outer, err := channelOuter(panel.ExecRunner)
+		if err != nil {
+			return err
+		}
+		msg := strings.Join(args, " ")
+		if err := channel.Publish(outer, msg, map[string]string{"source": "cli"}); err != nil {
+			return err
+		}
+		if channel.AliveWithin(outer, 10*time.Second) {
+			fmt.Printf("published to %s (sidecar alive)\n", outer)
+		} else {
+			fmt.Printf("spooled for %s (no sidecar alive yet — parked until one starts)\n", outer)
+		}
+		return nil
+	},
+}
+
 var channelServeAll bool
 
 var channelServeCmd = &cobra.Command{
@@ -146,6 +173,6 @@ func init() {
 	channelServeCmd.Flags().BoolVar(&channelServeAll, "all", false, "sweep every workspace on the machine (motherduck), not just the enclosing one")
 	channelTailCmd.Flags().BoolVarP(&channelTailFollow, "follow", "f", false, "keep streaming as new events arrive")
 	channelTailCmd.Flags().BoolVar(&channelTailRaw, "raw", false, "raw rollout lines (unfiltered)")
-	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd)
+	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd, channelPublishCmd)
 	rootCmd.AddCommand(channelCmd)
 }

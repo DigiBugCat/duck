@@ -176,6 +176,57 @@ func (r *Registry) Register(absPaths ...string) (added []string, err error) {
 	return nil, fmt.Errorf("~/.claude.json kept changing under us; skipped registering %d path(s) (will retry next reconcile)", len(absPaths))
 }
 
+// EnsureMCPServer adds an entry to the top-level "mcpServers" map for name if
+// none exists, writing the file back atomically. It reports whether it added
+// one. Like Register it is ADD-only — an existing entry (whatever the user or
+// Claude wrote) is left verbatim — and uses the same advisory lock + mtime
+// compare-and-swap so it never clobbers a concurrent Claude write. Every other
+// top-level key and project entry round-trips byte-for-byte.
+func (r *Registry) EnsureMCPServer(name string, server map[string]any) (added bool, err error) {
+	unlock := r.lock()
+	defer unlock()
+
+	serverJSON, err := json.Marshal(server)
+	if err != nil {
+		return false, err
+	}
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		before := r.modTime()
+		top, _, err := r.load()
+		if err != nil {
+			return false, err
+		}
+		servers := map[string]json.RawMessage{}
+		if raw, ok := top["mcpServers"]; ok && len(bytes.TrimSpace(raw)) > 0 {
+			if err := json.Unmarshal(raw, &servers); err != nil {
+				return false, fmt.Errorf("~/.claude.json mcpServers is not an object: %w", err)
+			}
+		}
+		if _, ok := servers[name]; ok {
+			return false, nil // already present → never overwrite, don't rewrite
+		}
+		servers[name] = json.RawMessage(serverJSON)
+		serversRaw, err := json.Marshal(servers)
+		if err != nil {
+			return false, err
+		}
+		top["mcpServers"] = serversRaw
+		out, err := json.MarshalIndent(top, "", "  ")
+		if err != nil {
+			return false, err
+		}
+		if !r.modTime().Equal(before) {
+			continue // concurrent Claude write — reload and reapply
+		}
+		if err := r.atomicWrite(out); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("~/.claude.json kept changing under us; skipped registering mcpServer %q (will retry next launch)", name)
+}
+
 // atomicWrite streams to a temp sibling then renames over the target, so a
 // reader never sees a partial file. Mode 0600 matches Claude's own (the file
 // holds auth material).

@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -197,4 +199,97 @@ func TestServeHandshakeAndReply(t *testing.T) {
 	if !sent {
 		t.Fatalf("reply tool must send-keys into the agent window: %v", f.calls)
 	}
+}
+
+// TestServeDrainsPublishSpool pre-spools a published event, runs Serve scoped
+// to the workspace, and asserts a notifications/claude/channel carrying that
+// content lands on stdout after the handshake.
+func TestServeDrainsPublishSpool(t *testing.T) {
+	old := spoolHome
+	spoolHome = t.TempDir()
+	defer func() { spoolHome = old }()
+	oldSweep := sweepEvery
+	sweepEvery = 5 * time.Millisecond
+	defer func() { sweepEvery = oldSweep }()
+
+	if err := Publish("work", "routine fired: standup", map[string]string{"source": "routines", "type": "digest"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Scoped mode with no companions: Companions() returns whatever the fake
+	// gives; an empty list is fine — drainPublish covers s.workspace directly.
+	f := &fakeRunner{out: map[string]string{}}
+	pr, pw := io.Pipe()
+	var out lockedBuffer
+	done := make(chan error, 1)
+	go func() { done <- Serve(f.run, "work", pr, &out) }()
+
+	// Handshake, then leave stdin open so watch() can sweep.
+	io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
+	io.WriteString(pw, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
+
+	// Poll for the notification (generous timeout — no real-time race).
+	deadline := time.Now().Add(3 * time.Second)
+	var got map[string]any
+	for time.Now().Before(deadline) {
+		for _, m := range parseLines(out.String()) {
+			if m["method"] == "notifications/claude/channel" {
+				got = m
+			}
+		}
+		if got != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pw.Close()
+	<-done
+	if got == nil {
+		t.Fatalf("no channel notification emitted; output was:\n%s", out.String())
+	}
+	params := got["params"].(map[string]any)
+	if params["content"] != "routine fired: standup" {
+		t.Fatalf("wrong content: %v", params["content"])
+	}
+	meta := params["meta"].(map[string]any)
+	if meta["session"] != "work" || meta["type"] != "digest" || meta["source"] != "routines" {
+		t.Fatalf("meta wrong: %v", meta)
+	}
+	// The sidecar marked the workspace alive.
+	if !AliveWithin("work", time.Minute) {
+		t.Fatal("sidecar should have touched the alive marker")
+	}
+}
+
+// lockedBuffer is a tiny goroutine-safe buffer: Serve's watch goroutine writes
+// while the test reads.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func parseLines(s string) []map[string]any {
+	var out []map[string]any
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) == nil {
+			out = append(out, m)
+		}
+	}
+	return out
 }

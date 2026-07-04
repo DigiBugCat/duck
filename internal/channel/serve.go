@@ -29,8 +29,9 @@ import (
 )
 
 // sweepEvery is the cadence for discovering agents and draining their
-// rollouts. Local file reads + one tmux list — cheap.
-const sweepEvery = 2 * time.Second
+// rollouts. Local file reads + one tmux list — cheap. A var (not const) so
+// tests can shorten it.
+var sweepEvery = 2 * time.Second
 
 // maxPush caps a pushed event's content so a huge final message can't blow
 // up the supervisor's context.
@@ -44,8 +45,12 @@ const maxPush = 2000
 // the org chart: a manager hears its own lot, not every workspace on the
 // machine. Empty means machine-wide (motherduck / explicit --all).
 func Serve(run panel.Runner, workspace string, in io.Reader, out io.Writer) error {
-	s := &server{run: run, workspace: workspace, out: out, offsets: map[string]int64{}, resolver: NewResolver(run)}
-	go s.watch()
+	s := &server{run: run, workspace: workspace, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{})}
+	watchDone := make(chan struct{})
+	go func() { defer close(watchDone); s.watch() }()
+	// Stop the watcher when stdin closes (Claude exited) and wait for it to
+	// actually exit before returning, so no goroutine outlives Serve.
+	defer func() { close(s.stop); <-watchDone }()
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
 	for sc.Scan() {
@@ -62,7 +67,8 @@ type server struct {
 	run       panel.Runner
 	workspace string // sweep only this duck session's agents ("" = machine-wide)
 	out       io.Writer
-	resolver  *Resolver // memoized pairing/status — watch goroutine only
+	resolver  *Resolver     // memoized pairing/status — watch goroutine only
+	stop      chan struct{} // closed when Serve returns; stops the watch goroutine
 
 	mu      sync.Mutex       // guards out and ready (watcher + handler both touch them)
 	offsets map[string]int64 // rollout → drained byte offset; watch goroutine only
@@ -192,16 +198,34 @@ func (s *server) handle(line []byte) {
 // task_complete / agent errors push, per-step agent commentary does not.
 func (s *server) watch() {
 	for {
-		time.Sleep(sweepEvery)
+		select {
+		case <-s.stop:
+			return
+		case <-time.After(sweepEvery):
+		}
 		s.mu.Lock()
 		ready := s.ready
 		s.mu.Unlock()
 		if !ready {
 			continue
 		}
+		// Publish lane (scoped): mark ourselves alive and drain the spool for
+		// our one workspace. Done BEFORE the tmux listing below so a spooled
+		// event is delivered even when the lot is empty or a list errors —
+		// publishes are independent of whether any agent exists.
+		if s.workspace != "" {
+			s.drainPublish(s.workspace)
+		}
 		owners, err := Companions(s.run)
 		if err != nil {
 			continue
+		}
+		// Publish lane (--all): a publisher always targets a specific
+		// workspace, so touch+drain every workspace that exists.
+		if s.workspace == "" {
+			for _, outer := range owners {
+				s.drainPublish(outer)
+			}
 		}
 		keep := map[string]bool{}
 		for _, outer := range owners {
@@ -222,6 +246,42 @@ func (s *server) watch() {
 			}
 		}
 		s.resolver.Forget(keep)
+	}
+}
+
+// drainPublish marks the workspace's sidecar alive and flushes its publish
+// spool, emitting each spooled event as a channel notification. Called only
+// from watch() after ready, so events published before the handshake stay
+// spooled (the rename in DrainSpool only fires here) and are delivered on the
+// first post-ready sweep — never lost.
+func (s *server) drainPublish(workspace string) {
+	if workspace == "" {
+		return
+	}
+	_ = TouchAlive(workspace)
+	events, err := DrainSpool(workspace)
+	if err != nil || len(events) == 0 {
+		return
+	}
+	for _, ev := range events {
+		meta := map[string]any{"session": workspace}
+		typ := "publish"
+		for k, v := range ev.Meta {
+			meta[k] = v
+			if k == "type" {
+				typ = v
+			}
+		}
+		meta["session"] = workspace // authoritative — a publisher can't spoof it
+		meta["type"] = typ
+		s.write(map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "notifications/claude/channel",
+			"params": map[string]any{
+				"content": ev.Content,
+				"meta":    meta,
+			},
+		})
 	}
 }
 
