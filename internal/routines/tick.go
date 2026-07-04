@@ -49,6 +49,19 @@ func codexBin() string {
 // touching the real process environment. Defaults to os.Getenv.
 var getenv = os.Getenv
 
+// notifyArg wires codex's end-of-turn notify hook to `duck channel notify`
+// (same treatment `duck spawn` gives interactive agents): the hook pins the
+// executor pane's rollout by thread id the moment its turn ends, so channel
+// attribution is exact instead of cwd+time-correlated. Empty on any error —
+// the fallback pairing still works, just slower.
+func notifyArg() string {
+	self, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return " -c " + paths.Quote(fmt.Sprintf(`notify=[%q,"channel","notify"]`, self))
+}
+
 // Tick is the entrypoint the systemd/launchd timer calls once a minute. It is
 // robust by construction: a broken project or routine logs to logw and the
 // sweep continues — one bad definition never stops the others. State is loaded
@@ -150,7 +163,7 @@ func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
 		}
 	}
 
-	cmdline := codexBin() + " exec --dangerously-bypass-approvals-and-sandbox " + paths.Quote(d.Prompt)
+	cmdline := codexBin() + " exec --dangerously-bypass-approvals-and-sandbox" + notifyArg() + " " + paths.Quote(d.Prompt)
 	if _, err := panel.Spawn(run, outer, d.Name, d.Dir, cmdline, panel.KindRun); err != nil {
 		fmt.Fprintf(logw, "routines: %s/%s: spawn: %v\n", d.Dir, d.Name, err)
 		return false

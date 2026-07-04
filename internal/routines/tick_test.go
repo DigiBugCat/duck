@@ -245,6 +245,11 @@ func TestTickFiresDueCron(t *testing.T) {
 	if !strings.Contains(spawnCmd, "'run the nightly job'") {
 		t.Fatalf("prompt not shell-quoted; spawnCmd=%q", spawnCmd)
 	}
+	// The codex notify hook must be wired so the executor's rollout is pinned
+	// exactly (same treatment duck spawn gives interactive agents).
+	if !strings.Contains(spawnCmd, `,"channel","notify"]`) {
+		t.Fatalf("notify hook not wired; spawnCmd=%q", spawnCmd)
+	}
 	// last-fire advanced to ~now.
 	st2, _ := LoadState()
 	if got := st2.LastFire[Key(proj, "nightly")]; time.Since(got) > time.Minute {
