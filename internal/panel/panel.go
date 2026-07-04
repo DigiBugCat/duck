@@ -81,6 +81,7 @@ const (
 	kindOption      = "@duck_kind"       // roster tab (see Kinds)
 	SpawnedAtOption = "@duck_spawned_at" // unix epoch of spawn (channel pairing)
 	RolloutOption   = "@duck_rollout"    // cached codex rollout path
+	CmdOption       = "@duck_cmd"        // spawn cmdline (channel pairing eligibility)
 	anchorOption    = "@duck_anchor"     // the lot's immortal keep-alive pane
 )
 
@@ -551,6 +552,7 @@ func Spawn(run Runner, outer, name, dir, cmdline, kind string) (paneID string, e
 		{NameOption, name},
 		{kindOption, kind},
 		{SpawnedAtOption, strconv.FormatInt(time.Now().Unix(), 10)},
+		{CmdOption, cmdline},
 	} {
 		_, _ = run("set-option", "-p", "-t", paneID, opt[0], opt[1])
 	}

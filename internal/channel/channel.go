@@ -82,6 +82,14 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 			return nil
 		}
 	}
+	// Pairing is cwd+time correlation, so ONLY panes actually launched as
+	// codex may attempt it — otherwise a preview/shell/carbonyl pane spawned
+	// in the same directory adopts a neighboring agent's rollout (the duck-2
+	// misattribution). Panes predating the @duck_cmd stamp read as empty and
+	// simply never pair fresh; anything they pinned earlier is honored above.
+	if cmd, err := run("show-options", "-p", "-t", ref.WindowID, "-v", panel.CmdOption); err != nil || !cmdRunsCodex(cmd) {
+		return err
+	}
 	spawnedAt, err := windowSpawnedAt(run, ref.WindowID)
 	if err != nil {
 		return err
@@ -90,13 +98,43 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 	if err != nil {
 		return err
 	}
-	path, err := matchRollout(SessionsDir(), strings.TrimSpace(dir), spawnedAt)
+	path, err := matchRollout(SessionsDir(), strings.TrimSpace(dir), spawnedAt, claimedRollouts(run))
 	if err != nil || path == "" {
 		return err
 	}
 	ref.Rollout = path
 	_, _ = run("set-option", "-p", "-t", ref.WindowID, panel.RolloutOption, path)
 	return nil
+}
+
+// cmdRunsCodex reports whether a spawn cmdline launches codex: some token's
+// path basename is exactly "codex" (covers "codex", "codex --model x",
+// "/usr/local/bin/codex resume"), without false-positiving on incidental
+// substrings ("gosling render codex-notes.html").
+func cmdRunsCodex(cmdline string) bool {
+	for _, tok := range strings.Fields(cmdline) {
+		if filepath.Base(tok) == "codex" {
+			return true
+		}
+	}
+	return false
+}
+
+// claimedRollouts collects every rollout already pinned in some pane's
+// @duck_rollout, machine-wide. A claimed rollout is off-limits to fresh
+// pairing: two codex agents sharing a cwd must never adopt the same stream.
+func claimedRollouts(run panel.Runner) map[string]bool {
+	claimed := map[string]bool{}
+	out, err := run("list-panes", "-a", "-F", "#{"+panel.RolloutOption+"}")
+	if err != nil {
+		return claimed
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			claimed[p] = true
+		}
+	}
+	return claimed
 }
 
 func windowSpawnedAt(run panel.Runner, windowID string) (time.Time, error) {
@@ -113,9 +151,10 @@ func windowSpawnedAt(run panel.Runner, windowID string) (time.Time, error) {
 
 // matchRollout scans rollout files modified after spawnedAt whose
 // session_meta cwd equals dir, returning the one whose meta timestamp is
-// closest after (spawnedAt - slack). Empty when none match yet (codex still
+// closest after (spawnedAt - slack). Rollouts in claimed (already pinned by
+// another pane) are skipped. Empty when none match yet (codex still
 // starting) — callers retry.
-func matchRollout(root, dir string, spawnedAt time.Time) (string, error) {
+func matchRollout(root, dir string, spawnedAt time.Time, claimed map[string]bool) (string, error) {
 	if root == "" {
 		return "", nil
 	}
@@ -139,7 +178,7 @@ func matchRollout(root, dir string, spawnedAt time.Time) (string, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".jsonl") {
+		if !strings.HasSuffix(path, ".jsonl") || claimed[path] {
 			return nil
 		}
 		info, err := d.Info()

@@ -45,7 +45,7 @@ const maxPush = 2000
 // the org chart: a manager hears its own lot, not every workspace on the
 // machine. Empty means machine-wide (motherduck / explicit --all).
 func Serve(run panel.Runner, workspace string, in io.Reader, out io.Writer) error {
-	s := &server{run: run, workspace: workspace, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{})}
+	s := &server{run: run, workspace: workspace, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{}), started: time.Now().Truncate(time.Second)}
 	watchDone := make(chan struct{})
 	go func() { defer close(watchDone); s.watch() }()
 	// Stop the watcher when stdin closes (Claude exited) and wait for it to
@@ -69,6 +69,7 @@ type server struct {
 	out       io.Writer
 	resolver  *Resolver     // memoized pairing/status — watch goroutine only
 	stop      chan struct{} // closed when Serve returns; stops the watch goroutine
+	started   time.Time     // sidecar start; panes spawned after this drain from 0
 
 	mu      sync.Mutex       // guards out and ready (watcher + handler both touch them)
 	offsets map[string]int64 // rollout → drained byte offset; watch goroutine only
@@ -193,9 +194,11 @@ func (s *server) handle(line []byte) {
 }
 
 // watch sweeps agents and pushes fresh signal events as channel
-// notifications. A rollout seen for the FIRST time starts at its current end
-// (history is the transcript's business, not the channel's); task_started /
-// task_complete / agent errors push, per-step agent commentary does not.
+// notifications. A rollout first seen for a pane that predates the sidecar
+// starts at its current end (history is the transcript's business, not the
+// channel's); one paired to a pane spawned under this sidecar drains from the
+// start, so a first turn that finishes before pairing still notifies.
+// task_started / task_complete push, per-step agent commentary does not.
 func (s *server) watch() {
 	for {
 		select {
@@ -291,10 +294,19 @@ var pushTypes = map[string]bool{"task_started": true, "task_complete": true}
 func (s *server) drain(ref AgentRef) {
 	off, seen := s.offsets[ref.Rollout]
 	if !seen {
-		if info, err := os.Stat(ref.Rollout); err == nil {
-			s.offsets[ref.Rollout] = info.Size()
+		// First sight of this rollout. A pane spawned AFTER the sidecar
+		// started is a fresh agent whose pairing simply lagged its first turn
+		// (codex creates the rollout lazily; the resolver backs off between
+		// pairing attempts) — its whole file is signal, drain from the start
+		// so a fast first turn's task_complete isn't swallowed as "history".
+		// A pane older than us really does carry history: start at the end.
+		if at, err := windowSpawnedAt(s.run, ref.WindowID); err == nil && !at.Before(s.started) {
+			off = 0
+		} else if info, err := os.Stat(ref.Rollout); err == nil {
+			off = info.Size()
+		} else {
+			return
 		}
-		return
 	}
 	var buf strings.Builder
 	newOff, _ := Tail(&buf, ref.Rollout, off, false, false)
