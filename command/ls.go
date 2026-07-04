@@ -30,15 +30,15 @@ var lsJSON bool
 // lsRow is the JSON shape of one session for `duck ls --json`. Field names are
 // the stable contract with agent consumers; add fields, don't rename.
 type lsRow struct {
-	Name       string `json:"name"`              // resolved display name
-	Title      string `json:"title,omitempty"`   // raw pane title — Claude Code's live task summary
-	Dir        string `json:"dir,omitempty"`     // tilde-form working dir ("" for foreign sessions)
-	Status     string `json:"status"`            // attached | active | idle | evicted
-	Age        string `json:"age"`               // humanized, e.g. "2m", "1h"
-	AgeSeconds int64  `json:"age_seconds"`       // seconds since last pane activity (or eviction)
-	LastActive string `json:"last_active"`       // RFC3339
+	Name       string `json:"name"`            // resolved display name
+	Title      string `json:"title,omitempty"` // raw pane title — Claude Code's live task summary
+	Dir        string `json:"dir,omitempty"`   // tilde-form working dir ("" for foreign sessions)
+	Status     string `json:"status"`          // attached | active | idle | evicted
+	Age        string `json:"age"`             // humanized, e.g. "2m", "1h"
+	AgeSeconds int64  `json:"age_seconds"`     // seconds since last pane activity (or eviction)
+	LastActive string `json:"last_active"`     // RFC3339
 	Attached   bool   `json:"attached"`
-	Looped     bool   `json:"looped"`  // running a /loop (@duck_loop)
+	Looped     bool   `json:"looped"` // running a /loop (@duck_loop)
 	Windows    int    `json:"windows"`
 	Evicted    bool   `json:"evicted"` // not live; revivable via the picker (claude --resume)
 	TmuxName   string `json:"tmux"`    // handle for duck kill/rename

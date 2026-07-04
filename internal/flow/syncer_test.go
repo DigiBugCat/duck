@@ -160,9 +160,9 @@ func TestPathCoveredBy(t *testing.T) {
 		dir, ancestor string
 		want          bool
 	}{
-		{"/home/a/dev/foo", "/home/a/dev/foo", true}, // exact
-		{"/home/a/dev/foo", "/home/a/dev", true},     // parent
-		{"/home/a/dev/foo", "/home/a", true},         // grandparent
+		{"/home/a/dev/foo", "/home/a/dev/foo", true},     // exact
+		{"/home/a/dev/foo", "/home/a/dev", true},         // parent
+		{"/home/a/dev/foo", "/home/a", true},             // grandparent
 		{"/home/a/dev/foobar", "/home/a/dev/foo", false}, // prefix-but-not-ancestor
 		{"/home/a/dev", "/home/a/dev/foo", false},        // child can't cover parent
 		{"/home/a/other", "/home/a/dev", false},          // sibling

@@ -1,0 +1,135 @@
+// `duck channel` — the machine lane onto sidebar agents (internal/channel):
+//
+//	duck channel ls            list agents and their event streams
+//	duck channel tail <agent>  stream an agent's structured events (JSONL)
+//	duck channel send <agent> <msg…>  type a message into the agent's TUI
+//	duck channel serve         Claude Code channel sidecar (MCP stdio)
+//
+// ls/tail/send default to the current tmux session's agents (--session to
+// target another). serve is machine-wide: it multiplexes every sidebar agent
+// on this machine into one Claude channel; register it in .mcp.json and
+// launch Claude with `--channels server:duck-agents
+// --dangerously-load-development-channels` (research preview). Without tmux
+// or without any agents, everything here degrades to a quiet no-op.
+package command
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/DigiBugCat/duck/internal/channel"
+	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/spf13/cobra"
+)
+
+var channelSession string
+
+var channelCmd = &cobra.Command{
+	Use:   "channel",
+	Short: "Structured I/O onto sidebar agents (tail events, send prompts)",
+}
+
+// channelOuter resolves the duck session whose agents we address: --session
+// wins, else the enclosing tmux session.
+func channelOuter(run panel.Runner) (string, error) {
+	if channelSession != "" {
+		return channelSession, nil
+	}
+	if !panel.InsideTmux() {
+		return "", fmt.Errorf("not inside tmux — pass --session <name> to pick the duck session")
+	}
+	return panel.CurrentSession(run)
+}
+
+var channelLsCmd = &cobra.Command{
+	Use:   "ls",
+	Short: "List every sidebar agent on this machine and its event stream",
+	RunE: func(c *cobra.Command, args []string) error {
+		refs, err := channel.AllAgents(panel.ExecRunner)
+		if err != nil {
+			return err
+		}
+		if len(refs) == 0 {
+			fmt.Println("no agents (spawn one: duck spawn <cmd>)")
+			return nil
+		}
+		for _, r := range refs {
+			stream := r.Rollout
+			if stream == "" {
+				stream = "- (no codex stream; send-keys only)"
+			}
+			fmt.Printf("%s/%s\t%s\n", r.Session, r.Name, stream)
+		}
+		return nil
+	},
+}
+
+var channelTailFollow bool
+var channelTailRaw bool
+
+var channelTailCmd = &cobra.Command{
+	Use:   "tail <agent>",
+	Short: "Stream an agent's structured events (JSONL on stdout)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(c *cobra.Command, args []string) error {
+		run := panel.ExecRunner
+		outer, err := channelOuter(run)
+		if err != nil {
+			return err
+		}
+		ref, err := channel.FindAgent(run, outer, args[0])
+		if err != nil {
+			return err
+		}
+		if err := channel.Resolve(run, &ref); err != nil {
+			return err
+		}
+		if ref.Rollout == "" {
+			return fmt.Errorf("agent %q has no codex event stream (not a codex window, or codex still starting)", args[0])
+		}
+		_, err = channel.Tail(os.Stdout, ref.Rollout, 0, channelTailFollow, channelTailRaw)
+		return err
+	},
+}
+
+var channelSendCmd = &cobra.Command{
+	Use:   "send <agent> <message…>",
+	Short: "Type a message into the agent's TUI (visible in the viewport)",
+	Args:  cobra.MinimumNArgs(2),
+	RunE: func(c *cobra.Command, args []string) error {
+		run := panel.ExecRunner
+		outer, err := channelOuter(run)
+		if err != nil {
+			return err
+		}
+		ref, err := channel.FindAgent(run, outer, args[0])
+		if err != nil {
+			return err
+		}
+		return channel.Send(run, ref, strings.Join(args[1:], " "))
+	},
+}
+
+var channelServeCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Claude Code channel sidecar: all agents on this machine, one channel",
+	Long: `MCP stdio server pushing sidebar-agent events (turn started/finished) into a
+Claude Code session, with a reply tool routing answers back into the agent's
+TUI. Register in .mcp.json:
+
+  {"mcpServers": {"duck-agents": {"command": "duck", "args": ["channel", "serve"]}}}
+
+and launch: claude --channels server:duck-agents --dangerously-load-development-channels`,
+	RunE: func(c *cobra.Command, args []string) error {
+		return channel.Serve(panel.ExecRunner, os.Stdin, os.Stdout)
+	},
+}
+
+func init() {
+	channelCmd.PersistentFlags().StringVar(&channelSession, "session", "", "duck session owning the agent (default: current tmux session)")
+	channelTailCmd.Flags().BoolVarP(&channelTailFollow, "follow", "f", false, "keep streaming as new events arrive")
+	channelTailCmd.Flags().BoolVar(&channelTailRaw, "raw", false, "raw rollout lines (unfiltered)")
+	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd)
+	rootCmd.AddCommand(channelCmd)
+}

@@ -241,6 +241,7 @@ exit 1`
 //
 // -p (perms) is intentionally KEPT (own-file chmod never fails) so the exec bit
 // still seeds and mutagen has no exec-bit conflict to resolve.
+//
 //	-s (--secluded-args)  send the remote path over the rsync PROTOCOL, not via
 //	  the hub's shell. REQUIRED: it both (a) bypasses remote-shell word-splitting
 //	  so a space/$/;/`/* in the path is safe WITHOUT manual quoting, and (b) is

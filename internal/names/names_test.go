@@ -178,9 +178,9 @@ func TestCleanTitle(t *testing.T) {
 		{"✳ Set up new Obsidian vault for todo tracking", "Set up new Obsidian vault for todo tracking"},
 		{"⠂ Extract and organize Plaud recording transcripts", "Extract and organize Plaud recording transcripts"},
 		{"✳ Investigate stack", "Investigate stack"},
-		{"✳ Claude Code", ""},   // placeholder before a summary exists
-		{"Duck.local", ""},      // bare shell — hostname, no glyph
-		{"zsh", ""},             // bare shell — command name, no glyph
+		{"✳ Claude Code", ""},       // placeholder before a summary exists
+		{"Duck.local", ""},          // bare shell — hostname, no glyph
+		{"zsh", ""},                 // bare shell — command name, no glyph
 		{"~/Obsidian/Business", ""}, // cwd, no glyph
 		{"", ""},
 	}

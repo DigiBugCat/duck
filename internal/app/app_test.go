@@ -44,7 +44,7 @@ type fakeAttacher struct{ attached string }
 func (f *fakeAttacher) ExecAttach(id string) error { f.attached = id; return nil }
 func (f *fakeAttacher) RunAttach(id string) error  { f.attached = id; return nil }
 
-const listCmd = "tmux list-sessions -F '#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{@duck_loop}\t#{pane_title}'"
+const listCmd = "tmux list-sessions -F '#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{@duck_loop}\t#{@duck_panel_of}\t#{pane_title}'"
 
 func newApp(r *fakeRunner, n namer.Namer) *App {
 	mgr := session.NewManager(r, &fakeAttacher{})
@@ -472,5 +472,24 @@ func TestAttachDelegates(t *testing.T) {
 	}
 	if att.attached != "foo" {
 		t.Fatalf("Attach delegated %q, want foo", att.attached)
+	}
+}
+
+// TestRefreshHidesPanelCompanions pins that a `duck panel` companion session
+// (@duck_panel_of set) never becomes a picker row — its agents surface in the
+// owning session's sidebar, not in `duck --resume` / `duck ls`.
+func TestRefreshHidesPanelCompanions(t *testing.T) {
+	r := &fakeRunner{out: map[string]string{
+		listCmd: "auth\t~/dev/auth\t1\t100\t2\t\t\t\n" +
+			"auth-agents\t\t0\t100\t3\t\tauth\t\n",
+		"cat ~/.duck/names.json 2>/dev/null || echo '{}'": `{}`,
+	}}
+	a := newApp(r, namer.DirDerived{})
+	rows, err := a.Refresh()
+	if err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if len(rows) != 1 || rows[0].TmuxName != "auth" {
+		t.Fatalf("companion should be hidden; rows = %+v", rows)
 	}
 }

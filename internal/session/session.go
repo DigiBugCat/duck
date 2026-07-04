@@ -56,6 +56,7 @@ type Sess struct {
 	Windows    int       // window count
 	Looped     bool      // the @duck_loop option is set — the session is running a /loop; the picker pins these at the top
 	PaneTitle  string    // active pane's #{pane_title} — Claude Code writes a task summary here (with a ✳/⠂ status glyph), which names.Resolve prefers over codex
+	PanelOf    string    // @duck_panel_of — set on a `duck panel` companion session; non-empty means "plumbing, hide from picker/ls"
 }
 
 // dirOption is the tmux user option duck stamps on each session it creates so
@@ -87,14 +88,15 @@ func NewManager(run Runner, attach Attacher) *Manager {
 // so a display name (resolved elsewhere) never breaks parsing; @duck_dir may be
 // empty for non-duck sessions. The order is the contract with parseList.
 //
-//	name \t @duck_dir \t attached \t activity-epoch \t windows \t @duck_loop \t pane_title
+//	name \t @duck_dir \t attached \t activity-epoch \t windows \t @duck_loop \t @duck_panel_of \t pane_title
 //
 // pane_title is last because it is free text (Claude Code's task summary) that
 // may itself contain odd characters; trailing it keeps the earlier fields
-// unambiguous. @duck_loop sits just before it (a controlled "1"/empty marker, so
-// it never carries a tab) so the free-text title stays the trailing field. tmux
-// resolves #{pane_title} to the active pane of the active window for the session.
-const listFormat = "#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{@duck_loop}\t#{pane_title}"
+// unambiguous. @duck_loop and @duck_panel_of sit just before it (controlled
+// markers — a "1"/empty flag and a tmux session id — so they never carry a
+// tab) and the free-text title stays the trailing field. tmux resolves
+// #{pane_title} to the active pane of the active window for the session.
+const listFormat = "#{session_name}\t#{@duck_dir}\t#{session_attached}\t#{session_activity}\t#{session_windows}\t#{@duck_loop}\t#{@duck_panel_of}\t#{pane_title}"
 
 // List returns every live tmux session on the hub, parsed from a single
 // `tmux list-sessions -F …` call (name, dir option, attached, activity,
@@ -128,6 +130,11 @@ func (m *Manager) List() ([]Sess, error) {
 // first session. Matched as substrings so the socket path is ignored. The second
 // form is anchored on "error connecting to" so it can't be confused with an
 // unrelated ENOENT from a real transport failure.
+// IsNoServer is the exported form of isNoServer for other packages that read
+// tmux directly (internal/channel drives the LOCAL server) and must treat an
+// empty/never-started server as a quiet no-op rather than an error.
+func IsNoServer(s string) bool { return isNoServer(s) }
+
 func isNoServer(s string) bool {
 	return strings.Contains(s, "no server running") ||
 		(strings.Contains(s, "error connecting to") && strings.Contains(s, "No such file or directory"))
@@ -164,7 +171,11 @@ func parseList(out string) []Sess {
 			loop := strings.TrimSpace(fields[5])
 			s.Looped = loop != "" && loop != "0"
 		}
-		if len(fields) >= 7 {
+		if len(fields) >= 8 {
+			s.PanelOf = strings.TrimSpace(fields[6])
+			s.PaneTitle = fields[7]
+		} else if len(fields) >= 7 {
+			// Older 7-field output (no @duck_panel_of): title is the trailing field.
 			s.PaneTitle = fields[6]
 		}
 		sessions = append(sessions, s)
@@ -181,7 +192,29 @@ func (m *Manager) New(id, dir string) error {
 	if _, err := m.run.Run(fmt.Sprintf("tmux new-session -d -s %s -c %s", paths.Quote(id), hubPath(dir))); err != nil {
 		return err
 	}
-	return m.SetOption(id, dirOption, dir)
+	if err := m.SetOption(id, dirOption, dir); err != nil {
+		return err
+	}
+	return m.enableTitlePassthrough(id)
+}
+
+// titlesString is the outer-terminal tab title tmux renders while a duck
+// session is attached: the live #{pane_title} (Claude Code's task summary)
+// when a program has written one, falling back to the session name when the
+// pane title is still the terminal default (a bare shell leaves it at the
+// hostname — see names.CleanTitle, which makes the same distinction).
+const titlesString = "#{?#{==:#{pane_title},#{host}},#{session_name},#{pane_title}}"
+
+// enableTitlePassthrough turns on tmux's title forwarding for session id so
+// escape-coded titles written INSIDE the session (Claude Code's live task
+// summary) reach the outer terminal's tab. Without set-titles, tmux captures
+// them into #{pane_title} and the tab keeps whatever was last written locally.
+func (m *Manager) enableTitlePassthrough(id string) error {
+	if _, err := m.run.Run(fmt.Sprintf("tmux set-option -t %s set-titles on", paths.Quote(id))); err != nil {
+		return err
+	}
+	_, err := m.run.Run(fmt.Sprintf("tmux set-option -t %s set-titles-string %s", paths.Quote(id), paths.Quote(titlesString)))
+	return err
 }
 
 // Send types a command line into session id's active pane and presses Enter
@@ -199,6 +232,9 @@ func (m *Manager) Send(id, line string) error {
 // over the warmed control-master socket. Callers MUST fully tear down any local
 // TUI first so ssh/tmux own a clean TTY. Returns only on a failure to exec.
 func (m *Manager) Attach(id string) error {
+	// Best-effort heal: sessions created before title passthrough existed (or
+	// by hand) get it on their next attach. Never blocks the attach itself.
+	_ = m.enableTitlePassthrough(id)
 	return m.attach.ExecAttach(id)
 }
 
@@ -209,6 +245,7 @@ func (m *Manager) Attach(id string) error {
 // can, after the user leaves, check IsUntouched and clean up an untouched
 // session. Returns nil on a normal interactive exit.
 func (m *Manager) AttachAndWait(id string) error {
+	_ = m.enableTitlePassthrough(id) // same best-effort heal as Attach
 	return m.attach.RunAttach(id)
 }
 

@@ -158,8 +158,8 @@ func TestNewSessionUsesHubPathAndStampsDuckDir(t *testing.T) {
 	if err := m.New("foo", "~/dev/foo"); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if len(f.cmds) != 2 {
-		t.Fatalf("New should issue new-session then set-option, got %v", f.cmds)
+	if len(f.cmds) != 4 {
+		t.Fatalf("New should issue new-session, @duck_dir, then title passthrough, got %v", f.cmds)
 	}
 	// new-session uses -c with a $HOME-expanded path (tmux -c does NOT expand ~).
 	wantNew := `tmux new-session -d -s 'foo' -c "$HOME"/'dev/foo'`
@@ -170,6 +170,16 @@ func TestNewSessionUsesHubPathAndStampsDuckDir(t *testing.T) {
 	wantOpt := `tmux set-option -t 'foo' '@duck_dir' '~/dev/foo'`
 	if f.cmds[1] != wantOpt {
 		t.Fatalf("set-option =\n  %q\nwant\n  %q", f.cmds[1], wantOpt)
+	}
+	// Title passthrough: set-titles on + the pane_title-tracking titles-string,
+	// so Claude's in-session title escapes reach the outer terminal tab.
+	wantTitles := `tmux set-option -t 'foo' set-titles on`
+	if f.cmds[2] != wantTitles {
+		t.Fatalf("set-titles =\n  %q\nwant\n  %q", f.cmds[2], wantTitles)
+	}
+	wantTitlesStr := `tmux set-option -t 'foo' set-titles-string '` + titlesString + `'`
+	if f.cmds[3] != wantTitlesStr {
+		t.Fatalf("set-titles-string =\n  %q\nwant\n  %q", f.cmds[3], wantTitlesStr)
 	}
 }
 
@@ -401,5 +411,35 @@ func TestHasSessionEmptyHub(t *testing.T) {
 	m := NewManager(r, &fakeAttacher{})
 	if ok, err := m.HasSession("foo"); err != nil || ok {
 		t.Fatalf("HasSession on empty hub = %v,%v, want false,nil", ok, err)
+	}
+}
+
+// TestListParsesPanelOf pins the 8-field format: @duck_panel_of sits between
+// @duck_loop and the trailing pane_title. A companion session carries the
+// owning session's name; a normal session leaves it empty; the 7-field legacy
+// line still reads its trailing field as the title.
+func TestListParsesPanelOf(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{}}
+	want := "tmux list-sessions -F '" + listFormat + "'"
+	f.out[want] = "work\t~/dev/work\t1\t100\t1\t\t\t✳ working\n" + // normal 8-field
+		"work-agents\t\t0\t100\t3\t\twork\t\n" + // companion: panel_of=work
+		"legacy\t~/dev/l\t0\t100\t1\t1\told title\n" // 7-field: trailing = title
+	m := NewManager(f, &fakeAttacher{})
+
+	sessions, err := m.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("want 3 sessions, got %d: %+v", len(sessions), sessions)
+	}
+	if sessions[0].PanelOf != "" || sessions[0].PaneTitle != "✳ working" {
+		t.Fatalf("row 0: %+v", sessions[0])
+	}
+	if sessions[1].PanelOf != "work" || sessions[1].PaneTitle != "" {
+		t.Fatalf("row 1 companion should carry PanelOf: %+v", sessions[1])
+	}
+	if sessions[2].PanelOf != "" || sessions[2].PaneTitle != "old title" {
+		t.Fatalf("row 2 legacy 7-field line: %+v", sessions[2])
 	}
 }

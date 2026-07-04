@@ -136,11 +136,15 @@ while IFS="$SEP" read -r name attached activity loop renamed cid; do
   echo "renamed $name"
 done
 fi
-tmux list-sessions -F "#{session_name}${SEP}#{@duck_dir}${SEP}#{session_attached}${SEP}#{session_activity}${SEP}#{@duck_loop}${SEP}#{@claude_session_id}${SEP}#{@claude_resume_args}${SEP}#{@duck_renamed_at}" 2>/dev/null | unesc |
-while IFS="$SEP" read -r name dir attached activity loop cid rargs renamed; do
+tmux list-sessions -F "#{session_name}${SEP}#{@duck_dir}${SEP}#{session_attached}${SEP}#{session_activity}${SEP}#{@duck_loop}${SEP}#{@claude_session_id}${SEP}#{@claude_resume_args}${SEP}#{@duck_renamed_at}${SEP}#{@duck_panel_of}" 2>/dev/null | unesc |
+while IFS="$SEP" read -r name dir attached activity loop cid rargs renamed panelof; do
   [ -z "$name" ] && continue
   [ -n "$attached" ] && [ "$attached" != "0" ] && continue
   [ -n "$loop" ] && [ "$loop" != "0" ] && continue
+  # Panel companions (@duck_panel_of set) host live sidebar agents and are
+  # detached by design (only the nested viewport client attaches them) —
+  # evicting one would SIGHUP every agent. Never sweep them.
+  [ -n "$panelof" ] && continue
   [ -z "$activity" ] && continue
   [ $((now - activity)) -lt "$AGE_SECS" ] && continue
   stamped=$cid

@@ -137,6 +137,11 @@ func (a *App) refresh(autoName bool) ([]model.Row, error) {
 	}
 	rows := make([]model.Row, 0, len(live))
 	for _, s := range live {
+		// Panel companion sessions (@duck_panel_of set) are sidebar plumbing —
+		// their agents surface in the owning session's panel, not the picker.
+		if s.PanelOf != "" {
+			continue
+		}
 		rows = append(rows, model.Row{
 			Display:  names.Resolve(n, s.Name, s.Dir, s.PaneTitle),
 			Title:    s.PaneTitle,
@@ -173,6 +178,12 @@ func (a *App) autoNameOnFirstSight(live []session.Sess, n names.Names, now time.
 	}
 	dirty := false
 	for _, s := range live {
+		// Panel companions never reach the picker (refresh skips them), so a
+		// codex naming call — and the pane-content upload it implies — would be
+		// pure waste plus an orphan names.json entry.
+		if s.PanelOf != "" {
+			continue
+		}
 		e := n.Names[s.Name]
 		if e.UserName != "" || !a.autoNameEnabled(s.Dir) {
 			continue
@@ -369,6 +380,12 @@ func (a *App) CleanDetached() (int, error) {
 	for _, s := range live {
 		if s.Attached {
 			continue // never kill a session someone is in
+		}
+		// Panel companions are detached by design (only the nested viewport
+		// client attaches them) but host LIVE sidebar agents — killing one would
+		// SIGHUP every agent. clean must leave the plumbing alone.
+		if s.PanelOf != "" {
+			continue
 		}
 		if err := a.sessions.Kill(s.Name); err != nil {
 			fmt.Printf("  %s: %v\n", s.Name, err)
