@@ -18,6 +18,7 @@ import (
 	"github.com/DigiBugCat/duck/internal/flow"
 	"github.com/DigiBugCat/duck/internal/namer"
 	"github.com/DigiBugCat/duck/internal/names"
+	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/session"
 	"github.com/DigiBugCat/duck/internal/sshx"
 )
@@ -111,6 +112,15 @@ func build() (*wiring, error) {
 	model := cfg.CodexModel
 	if model == "" {
 		model = defaultCodexModel
+	}
+
+	// Arm the workspace sidebar for every interactive attach: opening a duck
+	// session drops you into the cockpit (main pane + agent sidebar), not a
+	// bare shell. Runs the HUB's duck binary so the panel logic executes where
+	// tmux lives; best-effort and silent — an old hub binary just means no
+	// sidebar, never a broken attach.
+	armPanel = func(session string) {
+		_, _ = client.Run("duck panel --session " + paths.Quote(session) + " >/dev/null 2>&1 || true")
 	}
 
 	// Arm the open-interceptor for every interactive attach this process makes:

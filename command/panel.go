@@ -18,6 +18,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var panelSession string
+
 var panelCmd = &cobra.Command{
 	Use:   "panel",
 	Short: "Open the agent sidebar in the current tmux session",
@@ -27,7 +29,16 @@ agents below. Agents are spawned with 'duck spawn <cmd>'. Must be run from
 inside a tmux (duck) session.`,
 	RunE: func(c *cobra.Command, args []string) error {
 		run := panel.ExecRunner
-		outer, dir, err := panelContext(run)
+		var outer, dir string
+		var err error
+		if panelSession != "" {
+			// Targeted form (used by the attach path over ssh): no enclosing
+			// tmux needed — the session names itself and donates its cwd.
+			outer = panelSession
+			dir, err = panel.SessionPath(run, outer)
+		} else {
+			outer, dir, err = panelContext(run)
+		}
 		if err != nil {
 			return err
 		}
@@ -84,6 +95,7 @@ func panelContext(run panel.Runner) (outer, dir string, err error) {
 }
 
 func init() {
+	panelCmd.Flags().StringVar(&panelSession, "session", "", "target tmux session (default: the enclosing one)")
 	panelCmd.AddCommand(panelCloseCmd, panelWatchCmd)
 	rootCmd.AddCommand(panelCmd)
 }

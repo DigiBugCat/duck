@@ -137,6 +137,16 @@ func CurrentPanePath(run Runner) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// SessionPath returns the working directory of a session's active pane —
+// the cwd a panel opened from OUTSIDE the session should adopt.
+func SessionPath(run Runner, outer string) (string, error) {
+	out, err := run("display-message", "-p", "-t", outer+":", "#{pane_current_path}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // EnsureCompanion creates the lot session for outer if it doesn't exist:
 // one window holding the immortal anchor pane, stamped as plumbing
 // (hidden from picker, skipped by clean/evict). Idempotent.

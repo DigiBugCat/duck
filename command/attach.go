@@ -256,7 +256,17 @@ func productionRemember(tmuxName string) { _ = ttyMemSet(CurrentTTY(), tmuxName)
 // title labels the terminal tab for the duration of the attach; empty falls back
 // to the internal tmux name (callers that know the session's display name — the
 // picker — pass it, the direct-attach paths don't).
+// armPanel, when set (wired in build()), opens the workspace sidebar on the
+// hub for a session about to be attached — "duck connects to a WORKSPACE",
+// not a bare shell. Best-effort: failures (old hub binary, no panel support)
+// must never delay or break the attach.
+var armPanel func(session string)
+
 func runAttachLoop(sessions SessionAttacher, tmuxName, title string, selfHealing bool) Outcome {
+	if armPanel != nil {
+		armPanel(tmuxName)
+	}
+
 	if title == "" {
 		title = tmuxName
 	}
