@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/term"
+	"golang.org/x/sys/unix"
 )
 
 // localCellSize queries the controlling terminal for its cell size in
@@ -34,16 +35,18 @@ func localCellSize() (w, h int, ok bool) {
 	if _, err := os.Stdout.WriteString("\x1b[16t"); err != nil {
 		return 0, 0, false
 	}
-	// Read the reply with a deadline; a terminal that doesn't answer must
-	// never stall the attach.
-	if err := tty.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
-		return 0, 0, false
-	}
-	defer tty.SetReadDeadline(time.Time{})
+	// Poll for the reply with a wall-clock deadline. NOTE: os.File
+	// SetReadDeadline is NOT supported on terminal devices (it errors and
+	// an early return here silently skipped every measurement) — nonblock
+	// polling is the portable pattern.
+	fd := int(tty.Fd())
 	buf := make([]byte, 64)
 	acc := ""
-	for len(acc) < 64 {
-		n, err := tty.Read(buf)
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) && len(acc) < 64 {
+		_ = unix.SetNonblock(fd, true)
+		n, _ := unix.Read(fd, buf)
+		_ = unix.SetNonblock(fd, false)
 		if n > 0 {
 			acc += string(buf[:n])
 			var hh, ww int
@@ -51,9 +54,7 @@ func localCellSize() (w, h int, ok bool) {
 				return ww, hh, true
 			}
 		}
-		if err != nil {
-			break
-		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	return 0, 0, false
 }
