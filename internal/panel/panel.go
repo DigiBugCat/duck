@@ -93,6 +93,7 @@ const (
 	KindShell    = "shells"     // plain interactive shells
 	KindArtifact = "artifacts"  // things you look at (previews)
 	KindBuffer   = "scratchpad" // editor panes: the scratch note + duck edit files
+	KindRun      = "runs"       // routine executor panes (see internal/routines) — dynamic tab
 )
 
 // BaseKinds is the always-visible tab order; dynamic kinds append after.
