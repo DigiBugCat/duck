@@ -85,16 +85,35 @@ const placeholderWindow = "terminal"
 // Agents/Spawn identify it structurally rather than by its display name.
 const placeholderOption = "@duck_placeholder"
 
-// KindAgent and KindArtifact are the two window kinds the roster sections
-// windows into: runners you supervise vs things you look at (previews).
-// Stored in the kindOption window option; an unset kind reads as agent.
+// Kinds are ROSTER TAB NAMES, stored per window in kindOption. The base set
+// below always shows in the tab bar; any other value creates its own tab for
+// as long as a window carries it (`duck spawn --tab <name>`), so duck — or an
+// agent driving duck — can grow the tab set at runtime with zero declaration.
 const (
-	KindAgent    = "agent"
-	KindArtifact = "artifact"
+	KindAgent    = "agents"    // runners you supervise (default)
+	KindShell    = "shells"    // plain interactive shells
+	KindArtifact = "artifacts" // things you look at (previews)
 )
 
-// kindOption is the WINDOW user option carrying the kind.
+// BaseKinds is the always-visible tab order; dynamic kinds append after.
+var BaseKinds = []string{KindAgent, KindShell, KindArtifact}
+
+// kindOption is the WINDOW user option carrying the kind (= tab name).
 const kindOption = "@duck_kind"
+
+// normalizeKind maps stamps to tab names: empty → agents, and the pre-tab
+// singular stamps ("agent"/"artifact") read as their tabs.
+func normalizeKind(k string) string {
+	switch k {
+	case "", "agent":
+		return KindAgent
+	case "artifact":
+		return KindArtifact
+	case "shell":
+		return KindShell
+	}
+	return k
+}
 
 // placeholderCmd runs a real interactive shell in a respawn loop: typing
 // `exit` just gives a fresh shell instead of killing the companion (and the
@@ -270,11 +289,7 @@ func Agents(run Runner, comp string) ([]Agent, error) {
 		if len(f) < 8 || strings.TrimSpace(f[5]) != "" {
 			continue
 		}
-		kind := strings.TrimSpace(f[6])
-		if kind == "" {
-			kind = KindAgent
-		}
-		a := Agent{WindowID: f[0], Name: f[2], Active: f[3] == "1", Command: f[4], Kind: kind, Title: f[7]}
+		a := Agent{WindowID: f[0], Name: f[2], Active: f[3] == "1", Command: f[4], Kind: normalizeKind(strings.TrimSpace(f[6])), Title: f[7]}
 		fmt.Sscanf(f[1], "%d", &a.Index)
 		agents = append(agents, a)
 	}

@@ -7,6 +7,7 @@ package panel
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -78,20 +79,42 @@ func (m watchModel) load() tea.Msg {
 // row mapping.
 const headerLines = 2
 
-// tabs are the roster's top-level views, in bar order.
-var tabs = []struct {
-	label string
-	kind  string
-}{
-	{"agents", KindAgent},
-	{"artifacts", KindArtifact},
+// tabs returns the tab bar contents: the base set (always shown, stable
+// order) plus any OTHER kind currently carried by a window, sorted — tabs
+// appear and disappear with their windows, no declaration anywhere.
+func (m watchModel) tabs() []string {
+	out := append([]string{}, BaseKinds...)
+	base := map[string]bool{}
+	for _, k := range BaseKinds {
+		base[k] = true
+	}
+	extra := map[string]bool{}
+	for _, a := range m.agents {
+		if !base[a.Kind] && !extra[a.Kind] {
+			extra[a.Kind] = true
+			out = append(out, a.Kind)
+		}
+	}
+	sort.Strings(out[len(BaseKinds):])
+	return out
+}
+
+// activeKind is the kind (tab name) the active tab shows, clamped in case a
+// dynamic tab vanished out from under the cursor.
+func (m watchModel) activeKind() string {
+	t := m.tabs()
+	if m.tab >= len(t) {
+		return t[len(t)-1]
+	}
+	return t[m.tab]
 }
 
 // filtered returns the indexes into m.agents belonging to the ACTIVE tab.
 func (m watchModel) filtered() []int {
+	kind := m.activeKind()
 	var idx []int
 	for i, a := range m.agents {
-		if a.Kind == tabs[m.tab].kind {
+		if a.Kind == kind {
 			idx = append(idx, i)
 		}
 	}
@@ -108,14 +131,14 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 	var b strings.Builder
 	var spans []tabSpan
 	x := 0
-	for ti, t := range tabs {
+	for ti, kind := range m.tabs() {
 		n := 0
 		for _, a := range m.agents {
-			if a.Kind == t.kind {
+			if a.Kind == kind {
 				n++
 			}
 		}
-		label := fmt.Sprintf(" %s (%d) ", t.label, n)
+		label := fmt.Sprintf(" %s %d ", kind, n)
 		cell := tabStyle.Render(label)
 		if ti == m.tab {
 			cell = tabActiveStyle.Render(label)
@@ -145,6 +168,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agents = msg.agents
 		}
 		m.statuses = msg.statuses
+		if n := len(m.tabs()); m.tab >= n {
+			m.tab = n - 1
+		}
 		if n := len(m.filtered()); m.cursor >= n {
 			m.cursor = max(0, n-1)
 		}
@@ -191,9 +217,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			_ = Close(m.run, m.outer)
 			return m, tea.Quit
 		case "tab", "right", "l":
-			m.tab, m.cursor = (m.tab+1)%len(tabs), 0
+			m.tab, m.cursor = (m.tab+1)%len(m.tabs()), 0
 		case "shift+tab", "left", "h":
-			m.tab, m.cursor = (m.tab+len(tabs)-1)%len(tabs), 0
+			n := len(m.tabs())
+			m.tab, m.cursor = (m.tab+n-1)%n, 0
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -215,7 +242,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s":
 			// Quick shell agent in the outer session's dir.
 			if dir, err := CurrentPanePath(m.run); err == nil {
-				_, _ = Spawn(m.run, m.comp, "shell", dir, "", KindAgent)
+				_, _ = Spawn(m.run, m.comp, "shell", dir, "", KindShell)
 			}
 			return m, m.load
 		}
@@ -268,10 +295,13 @@ func (m watchModel) View() string {
 	b.WriteString(dimStyle.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 	idx := m.filtered()
 	if len(idx) == 0 {
-		if tabs[m.tab].kind == KindArtifact {
+		switch m.activeKind() {
+		case KindArtifact:
 			b.WriteString(dimStyle.Render("\n  no artifacts\n\n  duck preview <file|url>"))
-		} else {
-			b.WriteString(dimStyle.Render("\n  no agents\n\n  duck spawn <cmd>\n  or press s for a shell"))
+		case KindShell:
+			b.WriteString(dimStyle.Render("\n  no shells\n\n  press s for one"))
+		default:
+			b.WriteString(dimStyle.Render("\n  nothing here\n\n  duck spawn <cmd>"))
 		}
 	}
 	for row, i := range idx {

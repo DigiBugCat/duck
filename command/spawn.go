@@ -17,7 +17,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var spawnName string
+var (
+	spawnName string
+	spawnTab  string
+)
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn [flags] [--] [cmd args...]",
@@ -47,6 +50,7 @@ Examples:
 		}
 		line := strings.Join(quoted, " ")
 		name := spawnName
+		kind := spawnTab
 		if name == "" {
 			if len(args) > 0 {
 				name = filepath.Base(args[0])
@@ -54,7 +58,16 @@ Examples:
 				name = "shell"
 			}
 		}
-		if _, err := panel.Spawn(run, comp, name, dir, line, panel.KindAgent); err != nil {
+		if kind == "" {
+			// Default tab by shape: a bare `duck spawn` is a shell; anything
+			// running a command is an agent. --tab overrides (and mints new
+			// tabs on the fly — any name becomes a tab while windows carry it).
+			kind = panel.KindAgent
+			if len(args) == 0 {
+				kind = panel.KindShell
+			}
+		}
+		if _, err := panel.Spawn(run, comp, name, dir, line, kind); err != nil {
 			return err
 		}
 		bin, err := os.Executable()
@@ -99,5 +112,6 @@ func withCodexFullAccess(args []string) []string {
 
 func init() {
 	spawnCmd.Flags().StringVarP(&spawnName, "name", "n", "", "agent label in the sidebar (default: command name)")
+	spawnCmd.Flags().StringVar(&spawnTab, "tab", "", "sidebar tab to file this under (default: agents, or shells for a bare spawn; new names create new tabs)")
 	rootCmd.AddCommand(spawnCmd)
 }

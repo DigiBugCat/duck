@@ -158,7 +158,7 @@ func TestCompanionsNoServerIsQuietNoop(t *testing.T) {
 // initialize → tools/list → tools/call reply (routed to send-keys).
 func TestServeHandshakeAndReply(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
-		"list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}": "@7\t1\tcodex\t1\tcodex\t\tagent\t\n",
+		"list-windows -t work-agents -F #{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{pane_current_command}\t#{@duck_placeholder}\t#{@duck_kind}\t#{pane_title}": "@7\t1\tcodex\t1\tcodex\t\tagents\t\n",
 	}}
 	in := strings.NewReader(
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}` + "\n" +
