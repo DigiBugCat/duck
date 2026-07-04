@@ -108,12 +108,9 @@ func (m watchModel) tabs() []string {
 	for _, a := range m.agents {
 		count[a.Kind]++
 	}
-	var out []string
-	for _, k := range BaseKinds {
-		if count[k] > 0 || k == m.tabKind {
-			out = append(out, k)
-		}
-	}
+	// Base tabs ALWAYS show — they are the workspace's anatomy; hiding them
+	// reads as breakage. Only dynamic kinds come and go with their panes.
+	out := append([]string{}, BaseKinds...)
 	base := map[string]bool{}
 	for _, k := range BaseKinds {
 		base[k] = true
@@ -616,7 +613,10 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 		if kind == activeKind {
 			view = "▶"
 		}
-		label := fmt.Sprintf("%s%s %d ", view, kind, n)
+		label := view + kind + " "
+		if n > 0 {
+			label = fmt.Sprintf("%s%s %d ", view, kind, n)
+		}
 		cell := tabStyle.Render(label)
 		if kind == m.tabKind {
 			cell = tabActiveStyle.Render(label)
