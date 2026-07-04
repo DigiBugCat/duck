@@ -85,6 +85,10 @@ const placeholderWindow = "welcome"
 // Agents/Spawn identify it structurally rather than by its display name.
 const placeholderOption = "@duck_placeholder"
 
+// placeholderCmd is what the placeholder window runs: a friendly idle screen
+// that sleeps forever, keeping the companion session alive.
+const placeholderCmd = `sh -c 'printf "\n\n   no agent selected\n\n   spawn one:  duck spawn <cmd>\n"; while :; do sleep 3600; done'`
+
 // Companion returns the companion session name for an outer session.
 func Companion(outer string) string { return outer + "-agents" }
 
@@ -117,8 +121,7 @@ func EnsureCompanion(run Runner, outer, dir string) (string, error) {
 	if _, err := run("has-session", "-t", "="+comp); err == nil {
 		return comp, nil
 	}
-	placeholder := `sh -c 'printf "\n\n   no agent selected\n\n   spawn one:  duck spawn <cmd>\n"; while :; do sleep 3600; done'`
-	wid, err := run("new-session", "-d", "-s", comp, "-c", dir, "-n", placeholderWindow, "-P", "-F", "#{window_id}", placeholder)
+	wid, err := run("new-session", "-d", "-s", comp, "-c", dir, "-n", placeholderWindow, "-P", "-F", "#{window_id}", placeholderCmd)
 	if err != nil {
 		return "", err
 	}
@@ -298,10 +301,16 @@ func Spawn(run Runner, comp, name, dir, cmdline string) (windowID string, err er
 		// Keep the user/derived label; don't let tmux rename it to the running cmd.
 		_, _ = run("set-option", "-w", "-t", windowID, "automatic-rename", "off")
 	}
-	// Retire the placeholder unconditionally: the new-window above succeeded,
-	// so a real agent window exists and the companion can't die with it.
-	for _, id := range placeholders(run, comp) {
-		_, _ = run("kill-window", "-t", id)
+	// Make sure the placeholder EXISTS (it is never retired): a tmux session
+	// dies with its last window, so the placeholder is what keeps the
+	// companion — and the viewport's nested client — alive when the last
+	// agent exits, falling back to the "no agent selected" screen instead of
+	// tearing the pane out of the layout. It is hidden from the roster by its
+	// marker, so its only cost is one sleeping sh.
+	if len(placeholders(run, comp)) == 0 {
+		if wid, err := run("new-window", "-d", "-t", comp+":", "-n", placeholderWindow, "-P", "-F", "#{window_id}", placeholderCmd); err == nil {
+			_, _ = run("set-option", "-w", "-t", strings.TrimSpace(wid), placeholderOption, "1")
+		}
 	}
 	return windowID, nil
 }

@@ -104,8 +104,11 @@ func TestSpawnRetiresPlaceholderAndPinsName(t *testing.T) {
 	if !f.called("set-option -w -t @7 automatic-rename off") {
 		t.Error("named window should pin automatic-rename off")
 	}
-	if !f.called("kill-window -t @1") {
-		t.Errorf("placeholder should be retired by window id: %v", f.calls)
+	if f.called("kill-window") {
+		t.Errorf("placeholder must NOT be retired (it keeps the companion alive): %v", f.calls)
+	}
+	if f.called("new-window -d") {
+		t.Errorf("placeholder already exists; must not create another: %v", f.calls)
 	}
 }
 
@@ -139,5 +142,23 @@ func TestOpenCreatesViewportAndList(t *testing.T) {
 	}
 	if !f.called("set-option -p -t %9 @duck_panel_role list") {
 		t.Errorf("list pane not stamped: %v", f.calls)
+	}
+}
+
+// TestSpawnHealsMissingPlaceholder pins the keep-alive invariant: a companion
+// without a placeholder (legacy state) gets one back on the next spawn, so
+// the companion can never die with its last agent.
+func TestSpawnHealsMissingPlaceholder(t *testing.T) {
+	listKey := "list-windows -t work-agents -F " + agentsFormat
+	f := &fakeRunner{out: map[string]string{
+		"new-window -t work-agents: -P -F #{window_id} -n codex -c /d codex": "@7\n",
+		listKey: "@7\t1\tcodex\t1\tcodex\t\t\n", // no placeholder anywhere
+		"new-window -d -t work-agents: -n welcome -P -F #{window_id} " + placeholderCmd: "@9\n",
+	}}
+	if _, err := Spawn(f.run, "work-agents", "codex", "/d", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if !f.called("set-option -w -t @9 @duck_placeholder 1") {
+		t.Errorf("healed placeholder must be marker-stamped: %v", f.calls)
 	}
 }
