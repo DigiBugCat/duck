@@ -192,6 +192,10 @@ func EnsureScratch(run Runner, outer string) {
 	_, _ = run("select-layout", "-t", Companion(outer)+":lot", "tiled")
 }
 
+// rosterRows is the roster pane's height (the command box + hint need
+// breathing room under a useful list).
+const rosterRows = "15"
+
 // Companion returns the companion (lot) session name for an outer session.
 func Companion(outer string) string { return outer + "-agents" }
 
@@ -340,7 +344,7 @@ func Open(run Runner, outer, comp, duckBin string) error {
 	}
 	if roles["list"] == "" {
 		cmd := paths.Quote(duckBin) + " panel watch " + paths.Quote(outer)
-		id, err := run("split-window", "-v", "-d", "-l", "10", "-t", roles["viewport"], "-P", "-F", "#{pane_id}", cmd)
+		id, err := run("split-window", "-v", "-d", "-l", rosterRows, "-t", roles["viewport"], "-P", "-F", "#{pane_id}", cmd)
 		if err != nil {
 			return err
 		}
@@ -596,7 +600,7 @@ func EnsureSlot(run Runner, outer string) {
 		// the roster its 10 rows back.
 		holder, err = run("split-window", "-v", "-b", "-d", "-t", roles["list"], "-P", "-F", "#{pane_id}", anchorCmd)
 		if err == nil {
-			_, _ = run("resize-pane", "-t", roles["list"], "-y", "10")
+			_, _ = run("resize-pane", "-t", roles["list"], "-y", rosterRows)
 		}
 	} else {
 		holder, err = run("split-window", "-h", "-f", "-d", "-l", "34%", "-t", outer+":", "-P", "-F", "#{pane_id}", anchorCmd)
@@ -657,6 +661,6 @@ func Heal(run Runner, outer string) {
 	// window; the roster docks under it at 10 rows. join-pane moves panes
 	// even within the same window, so this is idempotent-by-outcome.
 	_, _ = run("join-pane", "-d", "-f", "-h", "-l", "34%", "-s", roles["viewport"], "-t", main)
-	_, _ = run("join-pane", "-d", "-v", "-l", "10", "-s", roles["list"], "-t", roles["viewport"])
-	_, _ = run("resize-pane", "-t", roles["list"], "-y", "10")
+	_, _ = run("join-pane", "-d", "-v", "-l", rosterRows, "-s", roles["list"], "-t", roles["viewport"])
+	_, _ = run("resize-pane", "-t", roles["list"], "-y", rosterRows)
 }

@@ -132,7 +132,7 @@ func TestOpenCreatesTerminalSlotAndRoster(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
 		rolesKey: "%0\t\n",
 		"split-window -h -f -d -l 34% -t work: -P -F #{pane_id} " + terminalCmd:          "%5\n",
-		"split-window -v -d -l 10 -t %5 -P -F #{pane_id} '/bin/duck' panel watch 'work'": "%6\n",
+		"split-window -v -d -l 15 -t %5 -P -F #{pane_id} '/bin/duck' panel watch 'work'": "%6\n",
 	}}
 	if err := Open(f.run, "work", "work-agents", "/bin/duck"); err != nil {
 		t.Fatal(err)
