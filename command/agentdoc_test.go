@@ -10,6 +10,7 @@ import (
 )
 
 func TestEnsureAgentNotesFreshHome(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	home := t.TempDir()
 	ensureAgentNotes(home)
 	got, err := os.ReadFile(filepath.Join(home, ".duck", "AGENT.md"))
@@ -23,6 +24,7 @@ func TestEnsureAgentNotesFreshHome(t *testing.T) {
 }
 
 func TestEnsureAgentNotesIdempotentAndPreserving(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	home := t.TempDir()
 	claudeMd := filepath.Join(home, ".claude", "CLAUDE.md")
 	if err := os.MkdirAll(filepath.Dir(claudeMd), 0o755); err != nil {
@@ -43,6 +45,7 @@ func TestEnsureAgentNotesIdempotentAndPreserving(t *testing.T) {
 }
 
 func TestEnsureAgentNotesRefreshesStaleNotes(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	home := t.TempDir()
 	notes := filepath.Join(home, ".duck", "AGENT.md")
 	if err := os.MkdirAll(filepath.Dir(notes), 0o755); err != nil {
@@ -55,5 +58,16 @@ func TestEnsureAgentNotesRefreshesStaleNotes(t *testing.T) {
 	got, _ := os.ReadFile(notes)
 	if string(got) != assets.AgentNotes {
 		t.Fatalf("stale AGENT.md not refreshed")
+	}
+}
+
+func TestEnsureAgentNotesHonorsConfigDir(t *testing.T) {
+	home := t.TempDir()
+	conf := filepath.Join(home, ".claude-custom")
+	t.Setenv("CLAUDE_CONFIG_DIR", conf)
+	ensureAgentNotes(home)
+	md, err := os.ReadFile(filepath.Join(conf, "CLAUDE.md"))
+	if err != nil || !strings.Contains(string(md), agentNotesImport) {
+		t.Fatalf("import not in CLAUDE_CONFIG_DIR: %v", err)
 	}
 }

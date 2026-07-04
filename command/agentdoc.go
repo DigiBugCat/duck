@@ -38,7 +38,13 @@ func ensureAgentNotes(home string) {
 			return
 		}
 	}
-	claudeMd := filepath.Join(home, ".claude", "CLAUDE.md")
+	// Honor a relocated Claude config dir (CLAUDE_CONFIG_DIR) — the import
+	// must land in the CLAUDE.md Claude actually loads.
+	confDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if confDir == "" {
+		confDir = filepath.Join(home, ".claude")
+	}
+	claudeMd := filepath.Join(confDir, "CLAUDE.md")
 	cur, err := os.ReadFile(claudeMd)
 	if err == nil && strings.Contains(string(cur), "duck:agent-notes") {
 		return
