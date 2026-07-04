@@ -131,6 +131,12 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 	var b strings.Builder
 	var spans []tabSpan
 	x := 0
+	activeKind := ""
+	for _, a := range m.agents {
+		if a.Active {
+			activeKind = a.Kind
+		}
+	}
 	for ti, kind := range m.tabs() {
 		n := 0
 		for _, a := range m.agents {
@@ -138,7 +144,14 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 				n++
 			}
 		}
-		label := fmt.Sprintf(" %s %d ", kind, n)
+		// ▶ on the tab whose window the viewport is SHOWING right now — the
+		// browse position (highlight) and the shown item live on different
+		// tabs often enough that both need a signal.
+		view := " "
+		if kind == activeKind {
+			view = "▶"
+		}
+		label := fmt.Sprintf("%s%s %d ", view, kind, n)
 		cell := tabStyle.Render(label)
 		if ti == m.tab {
 			cell = tabActiveStyle.Render(label)
@@ -324,7 +337,16 @@ func (m watchModel) View() string {
 		}
 		b.WriteString(truncate(line, m.width) + "\n")
 	}
+	viewing := ""
+	for _, a := range m.agents {
+		if a.Active {
+			viewing = a.Name
+		}
+	}
 	help := dimStyle.Render(" ⇥ tab · ↵ view · x kill · s shell · q close")
+	if viewing != "" {
+		help = activeStyle.Render(" ▶ viewing "+viewing) + dimStyle.Render(" · ⇥ tab · ↵ view · x kill · q close")
+	}
 	// Pin help to the bottom when we know the height.
 	body := b.String()
 	if m.height > 0 {
