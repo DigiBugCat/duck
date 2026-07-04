@@ -121,17 +121,25 @@ const anchorCmd = `sh -c 'while :; do sleep 3600; done'`
 // *scratch* idea, file-backed so it survives everything): one markdown note
 // per workspace under ~/.duck/scratch/.
 func ScratchPath(outer string) (string, error) {
+	return PadPath(outer)
+}
+
+// PadPath resolves a named pad in the scratchpad directory
+// (~/.duck/scratchpad/<name>.md — commonly a symlink into the user's synced
+// vault), creating it with a header on first touch. Workspace pads use the
+// session name; shared pads use whatever name the humans pick.
+func PadPath(name string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".duck", "scratch")
+	dir := filepath.Join(home, ".duck", "scratchpad")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, outer+".md")
+	path := filepath.Join(dir, name+".md")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		header := "# scratch — " + outer + "\n\n"
+		header := "# " + name + "\n\n"
 		if werr := os.WriteFile(path, []byte(header), 0o644); werr != nil {
 			return "", werr
 		}

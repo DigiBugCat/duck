@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/DigiBugCat/duck/internal/paths"
@@ -17,7 +18,7 @@ import (
 
 var editCmd = &cobra.Command{
 	Use:   "edit [file]",
-	Short: "Open a file as a buffer in the sidebar (no file: the scratch pad)",
+	Short: "Open a buffer: no arg = workspace pad, bare name = named pad, path = file",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
 		run := panel.ExecRunner
@@ -50,7 +51,22 @@ var editCmd = &cobra.Command{
 			}
 			return fmt.Errorf("scratch buffer did not come up")
 		}
-		abs, err := filepath.Abs(args[0])
+		arg := args[0]
+		// A bare name (no path separator, no extension, not an existing file)
+		// is a PAD: created on demand in ~/.duck/scratchpad/, immortal like the
+		// workspace scratch. Anything path-like is a regular one-shot buffer.
+		if !strings.ContainsAny(arg, "/.") {
+			if _, statErr := os.Stat(arg); statErr != nil {
+				path, err := panel.PadPath(arg)
+				if err != nil {
+					return err
+				}
+				line := fmt.Sprintf(`sh -c 'while :; do "${EDITOR:-vim}" %s; sleep 0.3; done'`, paths.Quote(path))
+				_, err = panel.Spawn(run, outer, arg, dir, line, panel.KindBuffer)
+				return err
+			}
+		}
+		abs, err := filepath.Abs(arg)
 		if err != nil {
 			return err
 		}
