@@ -107,6 +107,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 self.webView.evaluateJavaScript(js, completionHandler: nil)
             }
+            return
+        }
+        if let snapshot = command["snapshot"] as? [String: Any],
+           let id = command["id"] as? String {
+            DispatchQueue.main.async {
+                self.takeSnapshot(id: id, object: snapshot)
+            }
+        }
+    }
+
+    private func takeSnapshot(id: String, object: [String: Any]) {
+        guard let x = object["x"] as? Double,
+              let y = object["y"] as? Double,
+              let w = object["w"] as? Double,
+              let h = object["h"] as? Double,
+              w > 0,
+              h > 0 else {
+            out.write(["id": id, "snapshot": ""])
+            return
+        }
+        let config = WKSnapshotConfiguration()
+        config.rect = CGRect(x: x, y: y, width: w, height: h)
+        webView.takeSnapshot(with: config) { image, error in
+            guard error == nil,
+                  let tiff = image?.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) else {
+                self.out.write(["id": id, "snapshot": ""])
+                return
+            }
+            self.out.write(["id": id, "snapshot": png.base64EncodedString()])
         }
     }
 }

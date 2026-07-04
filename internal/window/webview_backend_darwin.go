@@ -5,12 +5,14 @@ package window
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +22,14 @@ type webviewBackend struct {
 	done   chan struct{}
 	write  sync.Mutex
 	cancel context.CancelFunc
+	nextID uint64
+	mu     sync.Mutex
+	wait   map[string]chan snapshotReply
+}
+
+type snapshotReply struct {
+	data []byte
+	err  error
 }
 
 func launchWebviewBackend(parent context.Context, sink markSink) (browserBackend, error) {
@@ -60,6 +70,7 @@ func launchWebviewBackend(parent context.Context, sink markSink) (browserBackend
 		stdin:  stdin,
 		done:   make(chan struct{}),
 		cancel: cancel,
+		wait:   make(map[string]chan snapshotReply),
 	}
 	ready := make(chan error, 1)
 	go b.readEvents(stdout, sink, ready)
@@ -99,8 +110,11 @@ func (b *webviewBackend) readEvents(stdout io.Reader, sink markSink, ready chan<
 		}
 		if ev.Mark != nil {
 			if m, err := DecodeWebviewMark(*ev.Mark); err == nil {
-				sink(m)
+				go sink(m)
 			}
+		}
+		if ev.ID != "" {
+			b.resolveSnapshot(ev.ID, ev.Snapshot)
 		}
 	}
 	if !sawReady {
@@ -126,6 +140,54 @@ func (b *webviewBackend) Eval(js string) error {
 		return err
 	}
 	return b.writeLine(line)
+}
+
+func (b *webviewBackend) Snapshot(rect Rect) ([]byte, error) {
+	id := fmt.Sprintf("snapshot-%d", atomic.AddUint64(&b.nextID, 1))
+	ch := make(chan snapshotReply, 1)
+	b.mu.Lock()
+	b.wait[id] = ch
+	b.mu.Unlock()
+	line, err := EncodeSnapshotCommand(id, rect)
+	if err != nil {
+		b.dropSnapshot(id)
+		return nil, err
+	}
+	if err := b.writeLine(line); err != nil {
+		b.dropSnapshot(id)
+		return nil, err
+	}
+	select {
+	case reply := <-ch:
+		return reply.data, reply.err
+	case <-time.After(5 * time.Second):
+		b.dropSnapshot(id)
+		return nil, fmt.Errorf("duck window: native snapshot timed out")
+	case <-b.done:
+		return nil, fmt.Errorf("duck window: native app exited before snapshot")
+	}
+}
+
+func (b *webviewBackend) resolveSnapshot(id string, encoded string) {
+	b.mu.Lock()
+	ch := b.wait[id]
+	delete(b.wait, id)
+	b.mu.Unlock()
+	if ch == nil {
+		return
+	}
+	if encoded == "" {
+		ch <- snapshotReply{err: fmt.Errorf("duck window: native snapshot failed")}
+		return
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	ch <- snapshotReply{data: data, err: err}
+}
+
+func (b *webviewBackend) dropSnapshot(id string) {
+	b.mu.Lock()
+	delete(b.wait, id)
+	b.mu.Unlock()
 }
 
 func (b *webviewBackend) writeLine(line []byte) error {

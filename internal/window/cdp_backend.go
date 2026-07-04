@@ -67,7 +67,7 @@ func launchCDPBackend(parent context.Context, headless bool, sink markSink) (bro
 	chromedp.ListenTarget(tab, func(ev interface{}) {
 		if e, ok := ev.(*cdpruntime.EventBindingCalled); ok && e.Name == "duckMark" {
 			if m, err := DecodeDuckMark(e.Payload); err == nil {
-				sink(m)
+				go sink(m)
 			}
 		}
 	})
@@ -117,6 +117,31 @@ func (b *cdpBackend) Navigate(url string) error {
 
 func (b *cdpBackend) Eval(js string) error {
 	return chromedp.Run(b.tab, chromedp.Evaluate(js, nil))
+}
+
+func (b *cdpBackend) Snapshot(rect Rect) ([]byte, error) {
+	if rect.W <= 0 || rect.H <= 0 {
+		return nil, fmt.Errorf("empty snapshot rect")
+	}
+	var png []byte
+	err := chromedp.Run(b.tab, chromedp.ActionFunc(func(ctx context.Context) error {
+		data, err := page.CaptureScreenshot().
+			WithFormat(page.CaptureScreenshotFormatPng).
+			WithClip(&page.Viewport{
+				X:      rect.X,
+				Y:      rect.Y,
+				Width:  rect.W,
+				Height: rect.H,
+				Scale:  1,
+			}).
+			Do(ctx)
+		if err != nil {
+			return err
+		}
+		png = data
+		return nil
+	}))
+	return png, err
 }
 
 func (b *cdpBackend) Close() {

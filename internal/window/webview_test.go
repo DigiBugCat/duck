@@ -25,6 +25,14 @@ func TestWebviewProtocolEncodeDecode(t *testing.T) {
 		t.Fatalf("eval command is not a JSON line: %q", eval)
 	}
 
+	snap, err := EncodeSnapshotCommand("snap-1", Rect{X: 1, Y: 2, W: 30, H: 40})
+	if err != nil {
+		t.Fatalf("EncodeSnapshotCommand: %v", err)
+	}
+	if got, want := string(snap), "{\"snapshot\":{\"x\":1,\"y\":2,\"w\":30,\"h\":40},\"id\":\"snap-1\"}\n"; got != want {
+		t.Fatalf("snapshot command = %q, want %q", got, want)
+	}
+
 	ev, err := DecodeWebviewEvent([]byte(`{"ready":true}`))
 	if err != nil {
 		t.Fatalf("DecodeWebviewEvent ready: %v", err)
@@ -47,6 +55,14 @@ func TestWebviewProtocolEncodeDecode(t *testing.T) {
 	if m.Text != "hello" || m.URL != "u" {
 		t.Fatalf("mark = %+v, want text/url decoded", m)
 	}
+
+	ev, err = DecodeWebviewEvent([]byte(`{"id":"snap-1","snapshot":"iVBORw0KGgo="}`))
+	if err != nil {
+		t.Fatalf("DecodeWebviewEvent snapshot: %v", err)
+	}
+	if ev.ID != "snap-1" || ev.Snapshot != "iVBORw0KGgo=" {
+		t.Fatalf("snapshot event = %+v, want id/base64 decoded", ev)
+	}
 }
 
 func TestWebviewRuntimeShim(t *testing.T) {
@@ -55,6 +71,10 @@ func TestWebviewRuntimeShim(t *testing.T) {
 		"window.duckMark = s => window.webkit.messageHandlers.duckMark.postMessage(s);",
 		"window.__duckAnnotate",
 		"window.__duckApplyMarks",
+		"data-duck-toolbar",
+		"data-duck-composer",
+		"data-duck-draw-canvas",
+		"Add a note…",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("runtime JS missing %q", want)

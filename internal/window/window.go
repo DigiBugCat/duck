@@ -2,9 +2,7 @@
 // browser surface (native WKWebView on macOS headful, chromium/CDP elsewhere),
 // injects an annotation runtime into every page, and stores the human's marks
 // so agents can query them.
-// See docs/WINDOW.md — this is the spike: host + CDP window + navigate +
-// highlight round-trip. Fetch interception, drawing, and screenshot crops
-// come later.
+// See docs/WINDOW.md.
 package window
 
 import (
@@ -25,17 +23,50 @@ import (
 // (loopback+tailnet; 73xx per fleet convention, hub never uses it).
 const DefaultPort = 7334
 
-// Mark is one human annotation. The spike supports text highlights with an
-// optional comment; Before/After carry surrounding context so a mark
-// degrades legibly when the underlying artifact is rewritten (anchor drift —
-// see docs/WINDOW.md).
+// Point is a viewport-coordinate drawing point in CSS pixels.
+type Point struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+// Rect is a viewport-coordinate rectangle in CSS pixels.
+type Rect struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+}
+
+// Mark is one human annotation. Highlights carry text and optional context;
+// drawings carry freehand strokes plus a screenshot crop path when available.
 type Mark struct {
-	URL     string `json:"url"`
-	Text    string `json:"text"`
-	Comment string `json:"comment,omitempty"`
-	Before  string `json:"before,omitempty"`
-	After   string `json:"after,omitempty"`
-	Stamp   string `json:"stamp"` // RFC3339, host-side arrival time
+	Type    string    `json:"type,omitempty"`
+	URL     string    `json:"url"`
+	Text    string    `json:"text,omitempty"`
+	Comment string    `json:"comment,omitempty"`
+	Before  string    `json:"before,omitempty"`
+	After   string    `json:"after,omitempty"`
+	Strokes [][]Point `json:"strokes,omitempty"`
+	Rect    *Rect     `json:"rect,omitempty"`
+	Shot    string    `json:"shot,omitempty"`
+	Stamp   string    `json:"stamp"` // RFC3339, host-side arrival time
+}
+
+func (m *Mark) UnmarshalJSON(b []byte) error {
+	type markAlias Mark
+	var a markAlias
+	if err := json.Unmarshal(b, &a); err != nil {
+		return err
+	}
+	*m = Mark(a)
+	m.defaultType()
+	return nil
+}
+
+func (m *Mark) defaultType() {
+	if m.Type == "" {
+		m.Type = "highlight"
+	}
 }
 
 // Store is the file-backed mark store (~/.duck/window-marks.json).
@@ -56,6 +87,7 @@ func NewStore(path string) (*Store, error) {
 func (s *Store) Add(m Mark) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	m.defaultType()
 	m.Stamp = time.Now().UTC().Format(time.RFC3339)
 	s.marks = append(s.marks, m)
 	s.persist()
@@ -97,6 +129,7 @@ type Host struct {
 type browserBackend interface {
 	Navigate(url string) error
 	Eval(js string) error
+	Snapshot(rect Rect) ([]byte, error)
 	Close()
 }
 
@@ -115,15 +148,57 @@ func (h *Host) startBrowser(parent context.Context) error {
 }
 
 func (h *Host) addMark(m Mark) {
-	if m.Text == "" {
+	m.defaultType()
+	if m.Type == "highlight" && m.Text == "" {
 		return
 	}
 	h.mu.Lock()
 	if m.URL == "" {
 		m.URL = h.curURL
 	}
+	backend := h.backend
 	h.mu.Unlock()
+	if m.Type == "drawing" && m.Rect != nil && backend != nil {
+		if shot, err := saveSnapshot(backend, paddedRect(*m.Rect, 20)); err == nil {
+			m.Shot = shot
+		}
+	}
 	h.Store.Add(m)
+}
+
+func paddedRect(r Rect, pad float64) Rect {
+	x := r.X - pad
+	y := r.Y - pad
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	return Rect{X: x, Y: y, W: r.W + pad*2, H: r.H + pad*2}
+}
+
+func saveSnapshot(backend browserBackend, rect Rect) (string, error) {
+	if rect.W <= 0 || rect.H <= 0 {
+		return "", fmt.Errorf("empty snapshot rect")
+	}
+	png, err := backend.Snapshot(rect)
+	if err != nil {
+		return "", err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".duck", "window-shots")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, time.Now().UTC().Format(time.RFC3339Nano)+".png")
+	if err := os.WriteFile(path, png, 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // Show navigates the window to url and re-applies any stored marks for it.

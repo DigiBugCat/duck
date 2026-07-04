@@ -8,11 +8,15 @@ import (
 type webviewCommand struct {
 	Navigate string `json:"navigate,omitempty"`
 	Eval     string `json:"eval,omitempty"`
+	Snapshot *Rect  `json:"snapshot,omitempty"`
+	ID       string `json:"id,omitempty"`
 }
 
 type webviewEvent struct {
-	Ready bool             `json:"ready,omitempty"`
-	Mark  *json.RawMessage `json:"mark,omitempty"`
+	Ready    bool             `json:"ready,omitempty"`
+	Mark     *json.RawMessage `json:"mark,omitempty"`
+	ID       string           `json:"id,omitempty"`
+	Snapshot string           `json:"snapshot,omitempty"`
 }
 
 func EncodeNavigateCommand(url string) ([]byte, error) {
@@ -21,6 +25,10 @@ func EncodeNavigateCommand(url string) ([]byte, error) {
 
 func EncodeEvalCommand(js string) ([]byte, error) {
 	return encodeWebviewCommand(webviewCommand{Eval: js})
+}
+
+func EncodeSnapshotCommand(id string, rect Rect) ([]byte, error) {
+	return encodeWebviewCommand(webviewCommand{ID: id, Snapshot: &rect})
 }
 
 func encodeWebviewCommand(cmd webviewCommand) ([]byte, error) {
@@ -44,8 +52,12 @@ func DecodeDuckMark(payload string) (Mark, error) {
 	if err := json.Unmarshal([]byte(payload), &m); err != nil {
 		return m, err
 	}
-	if m.Text == "" {
+	m.defaultType()
+	if m.Type == "highlight" && m.Text == "" {
 		return m, fmt.Errorf("mark has no text")
+	}
+	if m.Type == "drawing" && len(m.Strokes) == 0 {
+		return m, fmt.Errorf("drawing mark has no strokes")
 	}
 	return m, nil
 }

@@ -232,9 +232,20 @@ var windowMarksCmd = &cobra.Command{
 		}
 		const dim, reset = "\x1b[2m", "\x1b[0m"
 		for _, m := range marks {
-			fmt.Printf("%q\n", m.Text)
+			typ := m.Type
+			if typ == "" {
+				typ = "highlight"
+			}
+			if m.Text != "" {
+				fmt.Printf("%s: %q\n", typ, m.Text)
+			} else {
+				fmt.Printf("%s\n", typ)
+			}
 			if m.Comment != "" {
-				fmt.Printf("  %s\n", m.Comment)
+				fmt.Printf("  note: %s\n", m.Comment)
+			}
+			if m.Shot != "" {
+				fmt.Printf("  shot: %s\n", m.Shot)
 			}
 			if m.Before != "" || m.After != "" {
 				fmt.Printf("  %s...%s%s%s...%s\n", dim, m.Before, reset, dim, m.After+reset)
