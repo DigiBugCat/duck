@@ -49,18 +49,21 @@ var previewCmd = &cobra.Command{
 			abs, _ := filepath.Abs(args[0])
 			switch strings.ToLower(filepath.Ext(abs)) {
 			case ".html", ".htm":
-				// The boring way to live-update HTML: a wrapper page that
-				// self-refreshes (meta http-equiv) around an iframe of the
-				// target. ONE carbonyl runs for the window's lifetime — no
-				// process churn, no scroll pollution; edits appear within ~2s.
-				// (Verified: carbonyl allows file→file iframes; it has no
-				// reload keybinding and blocks file:// fetch, so page-driven
-				// refresh is the only in-place mechanism.)
+				// Live HTML without any visible churn: a wrapper page holds a
+				// visible iframe of the target plus a HIDDEN probe iframe. The
+				// probe reloads on a timer (display:none — never painted) and
+				// the visible frame reloads ONLY when the probe's content
+				// differs, so an unchanged file repaints exactly nothing. One
+				// carbonyl runs for the window's lifetime. Needs
+				// --allow-file-access-from-files (forwarded to Chromium) so
+				// the wrapper may read its same-file iframe; without it every
+				// file:// is its own origin and change-detection is impossible
+				// (fetch and DOM reads both blocked — verified).
 				wrap, err := writeRefreshWrapper(abs)
 				if err != nil {
 					return err
 				}
-				line = "carbonyl file://" + paths.Quote(wrap)
+				line = "carbonyl --allow-file-access-from-files file://" + paths.Quote(wrap)
 			default:
 				// Cheap renderers re-run on change; the loop holds the window.
 				line = watchWrap(abs, render)
@@ -164,8 +167,21 @@ func writeRefreshWrapper(target string) (string, error) {
 	}
 	sum := sha256.Sum256([]byte(target))
 	path := filepath.Join(dir, hex.EncodeToString(sum[:8])+".html")
-	body := fmt.Sprintf(`<meta http-equiv="refresh" content="2">
-<body style="margin:0;background:#111"><iframe src="file://%s" style="border:0;width:100vw;height:100vh"></iframe></body>
+	body := fmt.Sprintf(`<body style="margin:0;background:#111">
+<iframe id="view" src="file://%[1]s" style="border:0;width:100vw;height:100vh"></iframe>
+<iframe id="probe" src="file://%[1]s" style="display:none"></iframe>
+<script>
+const probe = document.getElementById("probe"), view = document.getElementById("view");
+let last = null;
+probe.onload = () => {
+  try {
+    const cur = probe.contentDocument.documentElement.outerHTML;
+    if (last !== null && cur !== last) view.contentWindow.location.reload();
+    last = cur;
+  } catch (e) {}
+};
+setInterval(() => probe.contentWindow.location.reload(), 1500);
+</script></body>
 `, target)
 	return path, os.WriteFile(path, []byte(body), 0o644)
 }
