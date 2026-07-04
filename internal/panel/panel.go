@@ -147,6 +147,19 @@ func PadPath(name string) (string, error) {
 	return path, nil
 }
 
+// PadCmd builds the in-pane command for a pad editor: a respawn loop (quit
+// reopens; the roster's x truly closes) around, in preference order,
+// $DUCK_PAD_EDITOR, micro (standard keybindings + autosave every second +
+// silent auto-reload of external edits — agents can write into a pad the
+// human is watching), else $EDITOR.
+func PadCmd(path string) string {
+	q := paths.Quote(path)
+	script := `while :; do if [ -n "$DUCK_PAD_EDITOR" ]; then $DUCK_PAD_EDITOR ` + q +
+		`; elif command -v micro >/dev/null 2>&1; then micro -autosave 1 -reload auto -savecursor true ` + q +
+		`; else "${EDITOR:-vim}" ` + q + `; fi; sleep 0.3; done`
+	return "sh -c " + paths.Quote(script)
+}
+
 // EnsureScratch guarantees the workspace's long-lived scratch buffer exists
 // as a PARKED pane (roster tab: buffers) — present from the first glance,
 // shown only when selected. The editor runs in a respawn loop so :q just
@@ -165,8 +178,7 @@ func EnsureScratch(run Runner, outer string) {
 	if err != nil {
 		return
 	}
-	cmd := fmt.Sprintf(`sh -c 'while :; do "${EDITOR:-vim}" %s; sleep 0.3; done'`, paths.Quote(path))
-	id, err := run("split-window", "-d", "-t", Companion(outer)+":lot", "-P", "-F", "#{pane_id}", cmd)
+	id, err := run("split-window", "-d", "-t", Companion(outer)+":lot", "-P", "-F", "#{pane_id}", PadCmd(path))
 	if err != nil {
 		return
 	}

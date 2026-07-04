@@ -61,8 +61,7 @@ var editCmd = &cobra.Command{
 				if err != nil {
 					return err
 				}
-				line := fmt.Sprintf(`sh -c 'while :; do "${EDITOR:-vim}" %s; sleep 0.3; done'`, paths.Quote(path))
-				_, err = panel.Spawn(run, outer, arg, dir, line, panel.KindBuffer)
+				_, err = panel.Spawn(run, outer, arg, dir, panel.PadCmd(path), panel.KindBuffer)
 				return err
 			}
 		}

@@ -18,8 +18,6 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/DigiBugCat/duck/internal/paths"
 )
 
 // pollEvery is the roster refresh cadence. Cheap: one local list-panes tick.
@@ -355,8 +353,7 @@ func (m *watchModel) runInput() string {
 			return err.Error()
 		}
 		dir, _ := CurrentPanePath(m.run)
-		cmd := `sh -c 'while :; do "${EDITOR:-vim}" ` + paths.Quote(path) + `; sleep 0.3; done'`
-		if _, err := Spawn(m.run, m.outer, name, dir, cmd, KindBuffer); err != nil {
+		if _, err := Spawn(m.run, m.outer, name, dir, PadCmd(path), KindBuffer); err != nil {
 			return err.Error()
 		}
 		return "pad " + name
