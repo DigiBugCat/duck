@@ -1,10 +1,16 @@
 // watch.go is the Bubble Tea program that runs INSIDE the panel's roster
-// pane (`duck panel watch <outer>`): the workspace's citizens as a list,
-// with an ALWAYS-VISIBLE command box underneath — no hidden modes, no
-// memorized chords. Typing filters and jumps (fuzzy, fzf-style); verbs
-// (spawn/edit/preview/render/kill/close) complete with ghost text and a hint
-// line that says what Enter will do. tmux stays the source of truth (2s
-// polls); selection drives swap-pane through Select.
+// pane (`duck panel watch <outer>`): the workspace's citizens as a list.
+//
+// Two modes, deliberately boring:
+//   - BROWSE (default): arrows pick, ←→/⇥ switch tabs, ↵ shows the selected
+//     item in the viewport, x (twice) kills it. Letters do nothing.
+//   - COMMAND: entered by typing `:` or clicking the box. The always-visible
+//     box at the bottom takes over: typing live-filters the list and jumps
+//     by name on ↵; verbs (spawn/edit/preview/render/kill/close/help/ws)
+//     ghost-complete with a hint line saying what ↵ will do. esc returns.
+//
+// The last tab is ⌂ ws — the hub's workspaces; ↵ on one switches your
+// terminal there (pure switch-client: the workspace you leave is untouched).
 package panel
 
 import (
@@ -20,23 +26,24 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// pollEvery is the roster refresh cadence. Cheap: one local list-panes tick.
+// pollEvery is the roster refresh cadence.
 const pollEvery = 2 * time.Second
+
+// wsTab is the pinned pseudo-tab showing hub workspaces.
+const wsTab = "⌂ ws"
 
 type tickMsg time.Time
 type agentsMsg struct {
-	agents   []Agent
-	statuses map[string]string
-	err      error
+	agents     []Agent
+	statuses   map[string]string
+	workspaces []Workspace
+	err        error
 }
 
 // StatusFn classifies an agent pane's state ("working", "done", "idle").
-// Injected by the command layer (internal/channel implements it over codex
-// rollouts) so panel stays free of the channel dependency.
 type StatusFn func(paneID string) string
 
-// verbs the command box understands, with the usage hint the suggestion
-// line shows. Order = suggestion priority.
+// verbs the command box understands. Order = suggestion priority.
 var verbs = []struct{ name, usage string }{
 	{"new", ""}, // contextual: usage depends on the active tab (see newUsage)
 	{"spawn", "spawn <cmd…>  — launch an agent"},
@@ -44,7 +51,7 @@ var verbs = []struct{ name, usage string }{
 	{"preview", "preview <file|url>  — render in the viewport"},
 	{"render", "render <file|url>  — open in your laptop browser"},
 	{"kill", "kill <name>  — kill an agent/buffer"},
-	{"workspaces", "workspaces  — list hub workspaces; ↵ switches you there"},
+	{"workspaces", "workspaces  — jump to the ⌂ ws tab"},
 	{"close", "close  — close this panel (everything keeps running)"},
 	{"help", "help  — how this panel works"},
 }
@@ -54,18 +61,19 @@ type watchModel struct {
 	outer    string
 	statusFn StatusFn
 
-	agents   []Agent
-	statuses map[string]string
-	tabKind  string // active tab BY NAME (hiding empty tabs must not scramble selection)
-	cursor   int    // index into visible() rows
-	width    int
-	height   int
+	agents     []Agent
+	statuses   map[string]string
+	workspaces []Workspace
+	tabKind    string // active tab BY NAME
+	cursor     int    // index into visible() rows
+	width      int
+	height     int
 
 	input       textinput.Model
-	helpMode    bool        // showing the cheat sheet instead of rows
-	wsMode      bool        // showing hub workspaces instead of this workspace's rows
-	workspaces  []Workspace // loaded when entering wsMode
-	lastMsg     string      // result/error of the last command, shown until next keypress
+	cmdFocus    bool   // command mode: the box owns the keyboard
+	helpMode    bool   // cheat sheet shown instead of rows
+	armedKill   string // pane armed by first x; second x kills
+	lastMsg     string // last command result/error, until next keypress
 	focused     bool
 	swallowNext bool // the click that focuses the pane must not also select
 }
@@ -74,8 +82,7 @@ type watchModel struct {
 func Watch(run Runner, outer string, status StatusFn) error {
 	ti := textinput.New()
 	ti.Prompt = "❯ "
-	ti.Placeholder = "type here — a name jumps to it · spawn <cmd> · help"
-	ti.Focus()
+	ti.Placeholder = ": for commands · ↵ view · x kill · ←→ tabs"
 	m := watchModel{run: run, outer: outer, statusFn: status, input: ti, tabKind: KindAgent}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus()).Run()
 	return err
@@ -95,21 +102,20 @@ func (m watchModel) load() tea.Msg {
 			statuses[a.PaneID] = m.statusFn(a.PaneID)
 		}
 	}
-	return agentsMsg{agents: agents, statuses: statuses, err: err}
+	ws, _ := Workspaces(m.run, m.outer)
+	return agentsMsg{agents: agents, statuses: statuses, workspaces: ws, err: err}
 }
 
 // headerLines: tab bar + rule, above the first row (mouse-mapping contract).
 const headerLines = 2
 
-// tabs: non-empty kinds only (plus the active one), base order first, then
-// dynamic kinds sorted — empty base tabs are noise, not navigation.
+// tabs: all base kinds (anatomy, always visible), dynamic kinds sorted, and
+// the pinned ⌂ ws tab last.
 func (m watchModel) tabs() []string {
 	count := map[string]int{}
 	for _, a := range m.agents {
 		count[a.Kind]++
 	}
-	// Base tabs ALWAYS show — they are the workspace's anatomy; hiding them
-	// reads as breakage. Only dynamic kinds come and go with their panes.
 	out := append([]string{}, BaseKinds...)
 	base := map[string]bool{}
 	for _, k := range BaseKinds {
@@ -123,16 +129,11 @@ func (m watchModel) tabs() []string {
 	}
 	sort.Strings(extra)
 	out = append(out, extra...)
-	if len(out) == 0 {
-		out = []string{KindAgent}
-	}
-	return out
+	return append(out, wsTab)
 }
 
 func (m watchModel) activeKind() string { return m.tabKind }
 
-// tabIndex locates the active tab in the visible bar (0 when hidden-edge
-// cases collapse it away).
 func (m watchModel) tabIndex() int {
 	for i, k := range m.tabs() {
 		if k == m.tabKind {
@@ -145,20 +146,33 @@ func (m watchModel) tabIndex() int {
 func (m *watchModel) cycleTab(delta int) {
 	t := m.tabs()
 	i := (m.tabIndex() + delta + len(t)) % len(t)
-	m.tabKind, m.cursor = t[i], 0
+	m.tabKind, m.cursor, m.armedKill = t[i], 0, ""
 }
 
-// visible returns the rows on screen: the active tab's items, live-filtered
-// by the command box whenever its text isn't a verb command.
-func (m watchModel) visible() []int {
-	kind := m.activeKind()
-	q := strings.ToLower(strings.TrimSpace(m.input.Value()))
-	if m.isVerb() {
-		q = ""
+// filterText is the box content when it should act as a live filter.
+func (m watchModel) filterText() string {
+	if !m.cmdFocus || m.isVerb() {
+		return ""
 	}
+	return strings.ToLower(strings.TrimSpace(m.input.Value()))
+}
+
+// visible returns the row indexes for the active tab: agent indexes, or
+// workspace indexes on the ⌂ ws tab — both honoring the live filter.
+func (m watchModel) visible() []int {
+	q := m.filterText()
 	var idx []int
+	if m.tabKind == wsTab {
+		for i, w := range m.workspaces {
+			if q != "" && !isSubseq(strings.ToLower(w.Name), q) {
+				continue
+			}
+			idx = append(idx, i)
+		}
+		return idx
+	}
 	for i, a := range m.agents {
-		if a.Kind != kind {
+		if a.Kind != m.tabKind {
 			continue
 		}
 		if q != "" && !isSubseq(strings.ToLower(a.Name), q) {
@@ -169,12 +183,13 @@ func (m watchModel) visible() []int {
 	return idx
 }
 
-// isVerb reports whether the box currently holds a verb command (vs a jump/
-// filter query).
 func (m watchModel) isVerb() bool {
 	f := strings.Fields(m.input.Value())
 	if len(f) == 0 {
 		return false
+	}
+	if f[0] == "ws" {
+		return true
 	}
 	for _, v := range verbs {
 		if f[0] == v.name || (len(f) > 1 && strings.HasPrefix(v.name, f[0])) {
@@ -195,13 +210,14 @@ func (m watchModel) newUsage() string {
 		return "new <file|url>  — preview something"
 	case KindAgent:
 		return "new <cmd…>  — launch an agent"
+	case wsTab:
+		return "new  — (workspaces are made by `duck` in a directory)"
 	default:
 		return "new <cmd…>  — launch into the " + m.activeKind() + " tab"
 	}
 }
 
-// suggest computes the ghost completion and the hint line for the current
-// input. ghost is the REMAINDER to display after the typed text.
+// suggest computes ghost completion + hint for the current input.
 func (m watchModel) suggest() (ghost, hint string) {
 	val := m.input.Value()
 	f := strings.Fields(val)
@@ -220,9 +236,8 @@ func (m watchModel) suggest() (ghost, hint string) {
 		return ""
 	}
 	if f[0] == "ws" {
-		return "", "workspaces  — list hub workspaces; ↵ switches you there"
+		return "", usage("workspaces")
 	}
-	// Verb completion (first token only).
 	if len(f) == 1 && !strings.HasSuffix(val, " ") {
 		for _, v := range verbs {
 			if strings.HasPrefix(v.name, f[0]) && v.name != f[0] {
@@ -235,7 +250,6 @@ func (m watchModel) suggest() (ghost, hint string) {
 			return "", usage(v.name)
 		}
 	}
-	// Jump: best fuzzy match across ALL agents (any tab).
 	if a := m.fuzzyAgent(strings.ToLower(strings.TrimSpace(val))); a != nil {
 		g := ""
 		if strings.HasPrefix(strings.ToLower(a.Name), strings.ToLower(val)) {
@@ -280,22 +294,40 @@ func isSubseq(hay, needle string) bool {
 	return i == len(needle)
 }
 
-// runInput executes the command box's content. Empty + a selected row →
-// view it. Returns a footer message ("" for silent success, "__quit__" to
-// exit).
-func (m *watchModel) runInput() string {
-	line := strings.TrimSpace(m.input.Value())
-	if line == "" {
-		if idx := m.visible(); m.cursor < len(idx) {
-			_ = Select(m.run, m.outer, m.agents[idx[m.cursor]].PaneID)
+// viewSelected shows the selected row: swap an agent into the viewport, or
+// switch the terminal to a workspace on the ⌂ ws tab.
+func (m *watchModel) viewSelected() string {
+	idx := m.visible()
+	if m.cursor >= len(idx) {
+		return ""
+	}
+	if m.tabKind == wsTab {
+		w := m.workspaces[idx[m.cursor]]
+		if w.Current {
+			return "already here"
+		}
+		self, _ := os.Executable()
+		if err := SwitchTo(m.run, m.outer, w.Name, self); err != nil {
+			return err.Error()
 		}
 		return ""
 	}
+	wid := m.agents[idx[m.cursor]].PaneID
+	_ = Select(m.run, m.outer, wid) // swap first: previews respawn at slot geometry
+	RefreshIfStale(m.run, wid, FileMtime)
+	return ""
+}
+
+// runInput executes the command box's content.
+func (m *watchModel) runInput() string {
+	line := strings.TrimSpace(m.input.Value())
+	if line == "" {
+		return m.viewSelected()
+	}
 	f := strings.Fields(line)
-	if f[0] == "ws" { // natural abbreviation, not a prefix of "workspaces"
+	if f[0] == "ws" {
 		f[0] = "workspaces"
 	}
-	// Accept unambiguous verb prefixes ("sp cargo…" == spawn).
 	verb := ""
 	for _, v := range verbs {
 		if f[0] == v.name {
@@ -334,7 +366,9 @@ func (m *watchModel) runInput() string {
 				return "new <file|url>"
 			}
 			return m.duckExec("preview", f[1])
-		default: // agents + any custom tab: spawn INTO this tab
+		case wsTab:
+			return "workspaces are made by running `duck` in a directory"
+		default:
 			if len(f) < 2 {
 				return "new <cmd…>"
 			}
@@ -368,7 +402,7 @@ func (m *watchModel) runInput() string {
 		}
 		return "spawned " + name
 	case "edit":
-		name := m.outer
+		name := "scratch"
 		if len(f) > 1 {
 			name = f[1]
 		}
@@ -378,7 +412,7 @@ func (m *watchModel) runInput() string {
 				return ""
 			}
 		}
-		path, err := PadPath(name)
+		path, err := PadPath(ProjectName(m.run, m.outer), name)
 		if err != nil {
 			return err.Error()
 		}
@@ -401,21 +435,16 @@ func (m *watchModel) runInput() string {
 			return "killed " + a.Name
 		}
 		return "no match: " + f[1]
+	case "workspaces":
+		m.tabKind, m.cursor = wsTab, 0
+		return ""
 	case "close":
 		_ = Close(m.run, m.outer)
 		return "__quit__"
 	case "help":
 		m.helpMode = true
 		return ""
-	case "workspaces":
-		ws, err := Workspaces(m.run, m.outer)
-		if err != nil {
-			return err.Error()
-		}
-		m.workspaces, m.wsMode, m.cursor = ws, true, 0
-		return ""
 	}
-	// Bare words: jump.
 	if a := m.fuzzyAgent(strings.ToLower(line)); a != nil {
 		_ = Select(m.run, m.outer, a.PaneID)
 		return ""
@@ -423,9 +452,7 @@ func (m *watchModel) runInput() string {
 	return "no match: " + line
 }
 
-// duckExec shells out to this same duck binary for verbs whose logic lives
-// in the command layer (preview/render). Context is safe: panel context is
-// pane-anchored via TMUX_PANE.
+// duckExec shells out to this duck binary for command-layer verbs.
 func (m *watchModel) duckExec(args ...string) string {
 	self, err := os.Executable()
 	if err != nil {
@@ -466,7 +493,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agents = msg.agents
 		}
 		m.statuses = msg.statuses
-
+		m.workspaces = msg.workspaces
 		if n := len(m.visible()); m.cursor >= n {
 			m.cursor = max(0, n-1)
 		}
@@ -484,7 +511,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, spans := m.renderTabs()
 				for _, sp := range spans {
 					if msg.X >= sp.start && msg.X < sp.end {
-						m.tabKind, m.cursor = m.tabs()[sp.tab], 0
+						m.tabKind, m.cursor, m.armedKill = m.tabs()[sp.tab], 0, ""
 						return m, nil
 					}
 				}
@@ -494,95 +521,104 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			row := msg.Y - headerLines
 			if row >= 0 && row < len(idx) {
 				m.cursor = row
-				wid := m.agents[idx[row]].PaneID
-				_ = Select(m.run, m.outer, wid) // swap first: previews respawn at slot geometry
-				RefreshIfStale(m.run, wid, FileMtime)
+				m.lastMsg = m.viewSelected()
 				return m, m.load
+			}
+			// Click at/below the box line: enter command mode.
+			if msg.Y >= m.height-2 {
+				m.cmdFocus = true
+				return m, m.input.Focus()
 			}
 		}
 	case tea.KeyMsg:
 		m.lastMsg = ""
 		if m.helpMode {
-			m.helpMode = false // any key returns from help
+			m.helpMode = false // any key returns
 			return m, nil
 		}
-		if m.wsMode {
+		if m.cmdFocus {
 			switch msg.String() {
-			case "esc", "ctrl+c":
-				m.wsMode = false
+			case "esc":
+				m.cmdFocus = false
+				m.input.SetValue("")
+				m.input.Blur()
+			case "ctrl+c":
+				_ = Close(m.run, m.outer)
+				return m, tea.Quit
+			case "enter":
+				res := m.runInput()
+				if res == "__quit__" {
+					return m, tea.Quit
+				}
+				m.lastMsg = res
+				m.cmdFocus = false
+				m.input.SetValue("")
+				m.input.Blur()
+				return m, m.load
 			case "up":
 				if m.cursor > 0 {
 					m.cursor--
 				}
 			case "down":
-				if m.cursor < len(m.workspaces)-1 {
+				if m.cursor < len(m.visible())-1 {
 					m.cursor++
 				}
-			case "enter":
-				if m.cursor < len(m.workspaces) {
-					target := m.workspaces[m.cursor]
-					if target.Current {
-						m.wsMode = false
-						return m, nil
-					}
-					self, _ := os.Executable()
-					if err := SwitchTo(m.run, m.outer, target.Name, self); err != nil {
-						m.lastMsg = err.Error()
-					}
-					m.wsMode = false
+			case "tab":
+				if g, _ := m.suggest(); g != "" && m.input.Value() != "" {
+					m.input.SetValue(m.input.Value() + g)
+					m.input.CursorEnd()
 				}
+			default:
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(msg)
+				m.cursor = 0
+				return m, cmd
 			}
 			return m, nil
 		}
+		// BROWSE mode.
 		switch msg.String() {
-		case "left":
-			if m.input.Value() == "" {
-				m.cycleTab(-1)
-				return m, nil
-			}
-		case "right":
-			if m.input.Value() == "" {
-				m.cycleTab(1)
-				return m, nil
-			}
-		}
-		switch msg.String() {
-		case "ctrl+c":
+		case ":":
+			m.cmdFocus = true
+			return m, m.input.Focus()
+		case "ctrl+c", "q":
 			_ = Close(m.run, m.outer)
 			return m, tea.Quit
-		case "esc":
-			m.input.SetValue("")
-		case "enter":
-			res := m.runInput()
-			if res == "__quit__" {
-				return m, tea.Quit
-			}
-			m.lastMsg = res
-			m.input.SetValue("")
-			return m, m.load
-		case "up":
+		case "up", "k":
+			m.armedKill = ""
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case "down":
+		case "down", "j":
+			m.armedKill = ""
 			if m.cursor < len(m.visible())-1 {
 				m.cursor++
 			}
-		case "tab":
-			// With a suggestion pending, tab completes; otherwise it cycles tabs.
-			if g, _ := m.suggest(); g != "" && m.input.Value() != "" {
-				m.input.SetValue(m.input.Value() + g)
-				m.input.CursorEnd()
-			} else {
-				m.cycleTab(1)
-			}
-		case "shift+tab":
+		case "left", "shift+tab", "h":
 			m.cycleTab(-1)
-		default:
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			m.cursor = 0 // typing re-anchors the filter selection
-			return m, cmd
+		case "right", "tab", "l":
+			m.cycleTab(1)
+		case "enter":
+			m.lastMsg = m.viewSelected()
+			return m, m.load
+		case "x":
+			if m.tabKind == wsTab {
+				m.lastMsg = "workspaces aren't killed from here"
+				return m, nil
+			}
+			if idx := m.visible(); m.cursor < len(idx) {
+				wid := m.agents[idx[m.cursor]].PaneID
+				if m.armedKill == wid {
+					m.armedKill = ""
+					wasActive := m.agents[idx[m.cursor]].Active
+					_ = Kill(m.run, wid)
+					if wasActive {
+						EnsureSlot(m.run, m.outer)
+					}
+					return m, m.load
+				}
+				m.armedKill = wid
+			}
 		}
 	}
 	var cmd tea.Cmd
@@ -604,9 +640,13 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 	}
 	for ti, kind := range m.tabs() {
 		n := 0
-		for _, a := range m.agents {
-			if a.Kind == kind {
-				n++
+		if kind == wsTab {
+			n = len(m.workspaces)
+		} else {
+			for _, a := range m.agents {
+				if a.Kind == kind {
+					n++
+				}
 			}
 		}
 		view := " "
@@ -614,7 +654,7 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 			view = "▶"
 		}
 		label := view + kind + " "
-		if n > 0 {
+		if n > 0 && kind != wsTab {
 			label = fmt.Sprintf("%s%s %d ", view, kind, n)
 		}
 		cell := tabStyle.Render(label)
@@ -653,6 +693,32 @@ func statusGlyph(status string) string {
 	}
 }
 
+// helpLines is the cheat sheet the help verb shows.
+func helpLines(m watchModel) []string {
+	h := []string{
+		activeStyle.Render(" this panel = your workspace"),
+		dimStyle.Render(" tabs group what's running; ▶ marks what the big pane shows;"),
+		dimStyle.Render(" ● working  ✔ done  ○ idle · ⌂ ws lists hub workspaces (↵ switches)"),
+		"",
+		activeStyle.Render(" browsing (default):"),
+		" ↑↓ pick · ←→/⇥ tabs · ↵ view/switch · x x kill · q close",
+		"",
+		activeStyle.Render(" commands — press : (or click the box), then type:"),
+	}
+	for _, v := range verbs {
+		u := v.usage
+		if v.name == "new" {
+			u = m.newUsage()
+		}
+		if u != "" {
+			h = append(h, " "+dimStyle.Render(u))
+		}
+	}
+	h = append(h, " "+dimStyle.Render("or type any name — fuzzy-jumps to it"))
+	h = append(h, "", dimStyle.Render(" from any shell: duck spawn · duck edit · duck preview · duck render"))
+	return h
+}
+
 func (m watchModel) View() string {
 	var b strings.Builder
 	bar, _ := m.renderTabs()
@@ -674,33 +740,8 @@ func (m watchModel) View() string {
 	b.WriteString(truncate(bar, m.width) + "\n")
 	b.WriteString(dimStyle.Render(strings.Repeat("─", max(1, m.width))) + "\n")
 
-	if m.wsMode {
-		b.WriteString(activeStyle.Render(" workspaces on this hub") + "\n")
-		for i, w := range m.workspaces {
-			mark := "  "
-			label := w.Name
-			if w.Current {
-				label += dimStyle.Render(" · here")
-			} else if w.Attached {
-				label += dimStyle.Render(" · attached")
-			}
-			line := mark + label
-			if i == m.cursor {
-				line = mark + selectedStyle.Render(" "+w.Name+" ")
-			}
-			b.WriteString(truncate(line, m.width) + "\n")
-		}
-		body := b.String()
-		if m.height > 0 {
-			lines := strings.Count(body, "\n") + 1
-			for i := lines; i < m.height-1; i++ {
-				body += "\n"
-			}
-		}
-		return body + dimStyle.Render(" ↵ switch there · esc back")
-	}
 	if m.helpMode {
-		for _, line := range helpLines() {
+		for _, line := range helpLines(m) {
 			b.WriteString(truncate(line, m.width) + "\n")
 		}
 		body := b.String()
@@ -712,77 +753,79 @@ func (m watchModel) View() string {
 		}
 		return body + dimStyle.Render(" any key to return")
 	}
+
 	idx := m.visible()
 	if len(idx) == 0 {
-		b.WriteString(dimStyle.Render("  nothing here — try the box below") + "\n")
+		b.WriteString(dimStyle.Render("  nothing here — press : and try `new`") + "\n")
 	}
 	for row, i := range idx {
-		a := m.agents[i]
-		marker := "  "
-		if a.Active {
-			marker = activeStyle.Render("▶ ")
-		}
-		label := a.Name
-		if a.Command != "" && !strings.EqualFold(a.Command, a.Name) {
-			label += dimStyle.Render(" · " + a.Command)
-		}
-		line := marker + statusGlyph(m.statuses[a.PaneID]) + " " + label
-		if row == m.cursor {
-			line = marker + statusGlyph(m.statuses[a.PaneID]) + " " + selectedStyle.Render(" "+a.Name+" ")
+		var line string
+		if m.tabKind == wsTab {
+			w := m.workspaces[i]
+			label := w.Name
+			if w.Current {
+				label += dimStyle.Render(" · here")
+			} else if w.Attached {
+				label += dimStyle.Render(" · attached")
+			}
+			line = "  " + label
+			if row == m.cursor {
+				line = "  " + selectedStyle.Render(" "+w.Name+" ")
+			}
+		} else {
+			a := m.agents[i]
+			marker := "  "
+			if a.Active {
+				marker = activeStyle.Render("▶ ")
+			}
+			label := a.Name
+			if a.Command != "" && !strings.EqualFold(a.Command, a.Name) {
+				label += dimStyle.Render(" · " + a.Command)
+			}
+			line = marker + statusGlyph(m.statuses[a.PaneID]) + " " + label
+			if row == m.cursor {
+				line = marker + statusGlyph(m.statuses[a.PaneID]) + " " + selectedStyle.Render(" "+a.Name+" ")
+			}
 		}
 		b.WriteString(truncate(line, m.width) + "\n")
 	}
 
-	// Bottom: the command box + its hint, pinned.
-	ghost, hint := m.suggest()
+	ghost, hint := "", ""
+	if m.cmdFocus {
+		ghost, hint = m.suggest()
+	}
 	inputLine := " " + m.input.View()
 	if ghost != "" {
 		inputLine += ghostStyle.Render(ghost)
 	}
 	var hintLine string
 	switch {
+	case m.armedKill != "":
+		name := ""
+		for _, a := range m.agents {
+			if a.PaneID == m.armedKill {
+				name = a.Name
+			}
+		}
+		hintLine = workingStyle.Render(" x again to kill " + name)
 	case m.lastMsg != "":
 		hintLine = workingStyle.Render(" " + m.lastMsg)
-	case hint != "":
+	case m.cmdFocus && hint != "":
 		hintLine = dimStyle.Render(" " + hint)
+	case m.cmdFocus:
+		hintLine = dimStyle.Render(" type a name or a verb · esc back · help for the guide")
 	default:
-		hintLine = dimStyle.Render(" ↵ view · ←→ tabs · type to filter/command · help for the full guide")
+		hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
 	}
 
 	body := b.String()
 	if m.height > 0 {
-		lines := strings.Count(body, "\n") + 2 // + input + hint
+		lines := strings.Count(body, "\n") + 2
 		for i := lines; i < m.height-1; i++ {
 			body += "\n"
 		}
 	}
 	return body + truncate(inputLine, m.width) + "\n" + truncate(hintLine, m.width)
-}
-
-// helpLines is the cheat sheet the help verb shows.
-func helpLines() []string {
-	h := []string{
-		activeStyle.Render(" this panel = your workspace"),
-		dimStyle.Render(" tabs group what's running; ▶ marks what the big pane shows;"),
-		dimStyle.Render(" ● working  ✔ done  ○ idle"),
-		"",
-		activeStyle.Render(" the box at the bottom is the whole interface:"),
-		" type letters   " + dimStyle.Render("filter the list / jump to a name on ↵"),
-		" ↑ ↓            " + dimStyle.Render("pick a row (↵ shows it in the big pane)"),
-		" ← → / ⇥        " + dimStyle.Render("switch tabs (when the box is empty)"),
-		" ⇥              " + dimStyle.Render("accept a grey suggestion while typing"),
-		" esc            " + dimStyle.Render("clear the box · ctrl+c closes the panel"),
-		"",
-		activeStyle.Render(" commands (type them in the box):"),
-	}
-	for _, v := range verbs {
-		if v.usage != "" {
-			h = append(h, " "+dimStyle.Render(v.usage))
-		}
-	}
-	h = append(h, " "+dimStyle.Render("new  — context verb: shell/pad/preview/agent depending on the tab"))
-	h = append(h, "", dimStyle.Render(" from any shell: duck spawn · duck edit · duck preview · duck render"))
-	return h
 }
 
 func truncate(s string, w int) string {

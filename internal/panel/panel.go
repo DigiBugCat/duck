@@ -95,6 +95,22 @@ const (
 // BaseKinds is the always-visible tab order; dynamic kinds append after.
 var BaseKinds = []string{KindAgent, KindShell, KindArtifact, KindBuffer}
 
+// KindEmoji is a tab's collapsed glyph — inactive tabs render as just the
+// emoji so the bar stays narrow; only the active tab spells its name.
+func KindEmoji(kind string) string {
+	switch kind {
+	case KindAgent:
+		return "🤖"
+	case KindShell:
+		return "🐚"
+	case KindArtifact:
+		return "🖼"
+	case KindBuffer:
+		return "📝"
+	}
+	return "📦"
+}
+
 // normalizeKind maps stamps to tab names: empty → agents, singular legacy
 // stamps → their tabs.
 func normalizeKind(k string) string {
@@ -117,34 +133,63 @@ const terminalCmd = `sh -c 'while :; do "${SHELL:-sh}" -l || true; sleep 0.5; do
 // anchorCmd keeps the lot window alive forever; hidden from the roster.
 const anchorCmd = `sh -c 'while :; do sleep 3600; done'`
 
-// ScratchPath is the workspace's persistent scratch file (the emacs
-// *scratch* idea, file-backed so it survives everything): one markdown note
-// per workspace under ~/.duck/scratch/.
-func ScratchPath(outer string) (string, error) {
-	return PadPath(outer)
+// ProjectName identifies the PROJECT a workspace belongs to: the basename of
+// its main pane's working directory. Every workspace rooted in the same
+// folder resolves to the same project, so they share one pad set. Falls back
+// to the session name when the cwd can't be read.
+func ProjectName(run Runner, outer string) string {
+	// Prefer the main (non-panel) pane's cwd — the viewport occupant could be
+	// an agent that wandered elsewhere.
+	if out, err := run("list-panes", "-t", outer+":", "-F", "#{pane_current_path}\t#{"+roleOption+"}"); err == nil {
+		for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			f := strings.SplitN(line, "\t", 2)
+			if len(f) == 2 && strings.TrimSpace(f[1]) == "" && strings.TrimSpace(f[0]) != "" {
+				return filepath.Base(strings.TrimSpace(f[0]))
+			}
+		}
+	}
+	if p, err := SessionPath(run, outer); err == nil && p != "" {
+		return filepath.Base(p)
+	}
+	return outer
 }
 
-// PadPath resolves a named pad in the scratchpad directory
-// (~/.duck/scratchpad/<name>.md — commonly a symlink into the user's synced
-// vault), creating it with a header on first touch. Workspace pads use the
-// session name; shared pads use whatever name the humans pick.
-func PadPath(name string) (string, error) {
+// PadPath resolves a named pad. Pads are PROJECT-scoped: every workspace
+// rooted in the same folder shares the pad set under
+// ~/.duck/scratchpad/<project>/ (the scratchpad dir is commonly a symlink
+// into the user's synced vault). A pad that already exists at the flat top
+// level (shared pads like shared.md, pre-project-era pads) wins over the
+// project dir, so nothing already written goes dark. Created with a header
+// on first touch.
+func PadPath(project, name string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, ".duck", "scratchpad")
+	root := filepath.Join(home, ".duck", "scratchpad")
+	if flat := filepath.Join(root, name+".md"); fileExists(flat) {
+		return flat, nil
+	}
+	dir := root
+	if project != "" {
+		dir = filepath.Join(root, project)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, name+".md")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if !fileExists(path) {
 		header := "# " + name + "\n\n"
 		if werr := os.WriteFile(path, []byte(header), 0o644); werr != nil {
 			return "", werr
 		}
 	}
 	return path, nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // PadCmd builds the in-pane command for a pad editor: a respawn loop (quit
@@ -160,7 +205,7 @@ func PadCmd(path string) string {
 	return "sh -c " + paths.Quote(script)
 }
 
-// EnsureScratch guarantees the workspace's long-lived scratch buffer exists
+// EnsureScratch guarantees the project's long-lived scratch buffer exists
 // as a PARKED pane (roster tab: buffers) — present from the first glance,
 // shown only when selected. The editor runs in a respawn loop so :q just
 // reopens it; killing it for real is the roster's two-press x.
@@ -174,7 +219,7 @@ func EnsureScratch(run Runner, outer string) {
 			return
 		}
 	}
-	path, err := ScratchPath(outer)
+	path, err := PadPath(ProjectName(run, outer), "scratch")
 	if err != nil {
 		return
 	}

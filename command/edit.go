@@ -57,7 +57,7 @@ var editCmd = &cobra.Command{
 		// workspace scratch. Anything path-like is a regular one-shot buffer.
 		if !strings.ContainsAny(arg, "/.") {
 			if _, statErr := os.Stat(arg); statErr != nil {
-				path, err := panel.PadPath(arg)
+				path, err := panel.PadPath(filepath.Base(dir), arg)
 				if err != nil {
 					return err
 				}
