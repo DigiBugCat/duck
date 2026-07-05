@@ -213,6 +213,50 @@ func TestCourierDeliversBatchedDigest(t *testing.T) {
 	}
 }
 
+func TestManagerPaneUsesValidDuckManagerWithoutSniff(t *testing.T) {
+	f := &fakeRunner{responder: func(args []string) (string, bool) {
+		switch args[0] {
+		case "show-options":
+			return "%9\n", true
+		case "display-message":
+			if args[len(args)-1] != "#{pane_id}\t#{pane_current_command}" {
+				t.Fatalf("unexpected display-message args: %v", args)
+			}
+			return "%9\tclaude\n", true
+		case "list-panes":
+			t.Fatal("valid @duck_manager must avoid sniffing list-panes")
+		}
+		return "", false
+	}}
+	pane, ok := managerPane(f.run, "work")
+	if !ok || pane != "%9" {
+		t.Fatalf("managerPane = %q, %v; calls=%v", pane, ok, f.calls)
+	}
+}
+
+func TestManagerPaneFallsBackAndRestampsStaleDuckManager(t *testing.T) {
+	f := &fakeRunner{responder: func(args []string) (string, bool) {
+		switch args[0] {
+		case "show-options":
+			return "%1\n", true
+		case "display-message":
+			return "%1\tzsh\n", true
+		case "list-panes":
+			return "%2\tviewport\tzsh\n%3\t\tclaude\n", true
+		case "set-option":
+			return "", true
+		}
+		return "", false
+	}}
+	pane, ok := managerPane(f.run, "work")
+	if !ok || pane != "%3" {
+		t.Fatalf("managerPane = %q, %v; calls=%v", pane, ok, f.calls)
+	}
+	if !f.called("set-option -t work @duck_manager %3") {
+		t.Fatalf("fallback must restamp @duck_manager; calls=%v", f.calls)
+	}
+}
+
 // TestFireManagerPaths: target=manager delivers via the publish spool when
 // the sidecar is alive, else types into the main claude pane, else drops the
 // beat (recorded, logged).
@@ -369,5 +413,55 @@ func TestTickHealsPersistentWorkspace(t *testing.T) {
 	}
 	if !f.called("set-option -t duck-9 @duck_parent motherduck") {
 		t.Fatalf("heal must restamp @duck_parent from the record; calls=%v", f.calls)
+	}
+}
+
+func TestTickHealsDeadManagerInLivePersistentWorkspace(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+
+	base := t.TempDir()
+	prev := wsStore
+	wsStore = func() *workspaces.Store {
+		s := workspaces.NewStore(workspaces.LocalRunner{})
+		s.SetBase(base)
+		return s
+	}
+	defer func() { wsStore = prev }()
+
+	rec := workspaces.Record{Name: "duck-9", Dir: "~/dev/persistent", Persistent: true}
+	if err := wsStore().Save(rec); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	f := &fakeRunner{responder: func(args []string) (string, bool) {
+		switch args[0] {
+		case "list-sessions":
+			return "duck-9\n", true
+		case "show-options":
+			return "%1\n", true
+		case "display-message":
+			if args[len(args)-1] == "#{pane_id}\t#{pane_current_command}" {
+				return "%1\tzsh\n", true
+			}
+			return "%8\n", true
+		case "list-panes":
+			return "%1\t\tzsh\n", true
+		case "send-keys", "set-option":
+			return "", true
+		}
+		return "", false
+	}}
+	var log bytes.Buffer
+	if err := Tick(f.run, time.Now(), &log); err != nil {
+		t.Fatalf("tick: %v\nlog=%s", err, log.String())
+	}
+	joined := strings.Join(f.calls, "\n")
+	for _, want := range []string{"send-keys -t duck-9", "claude", "--dangerously-load-development-channels", "server:duck-agents"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("persistent dead manager relaunch missing %q; calls=%v\nlog=%s", want, f.calls, log.String())
+		}
+	}
+	if !f.called("set-option -t duck-9 @duck_manager %8") {
+		t.Fatalf("relaunched manager must restamp @duck_manager; calls=%v", f.calls)
 	}
 }

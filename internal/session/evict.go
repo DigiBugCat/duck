@@ -19,7 +19,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DigiBugCat/duck/internal/manager"
 	"github.com/DigiBugCat/duck/internal/paths"
+	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
 // evictedPath is the hub-side breadcrumb file: one tab-separated line per
@@ -113,6 +115,18 @@ claude_pane() {
   esac
   return 1
 }
+persistent_workspace() {
+  [ -n "$1" ] && [ -n "$2" ] || return 1
+  case "$1" in
+    "~") pdir="$HOME" ;;
+    "~/"*) pdir="$HOME/${1#\~/}" ;;
+    *) pdir="$1" ;;
+  esac
+  pslug=$(printf '%s' "$pdir" | sed 's/[^a-zA-Z0-9]/-/g')
+  prec="$HOME/.claude/projects/$pslug/duck/$2.json"
+  [ -f "$prec" ] || return 1
+  grep -Eq '"persistent"[[:space:]]*:[[:space:]]*true' "$prec"
+}
 # nudge_rename <session>: type /rename (no args — Claude regenerates the name
 # from the conversation history) and stamp @duck_renamed_at so the session is
 # not re-nudged until it sees new activity.
@@ -145,6 +159,7 @@ while IFS="$SEP" read -r name dir attached activity loop cid rargs renamed panel
   # detached by design (only the nested viewport client attaches them) —
   # evicting one would SIGHUP every agent. Never sweep them.
   [ -n "$panelof" ] && continue
+  persistent_workspace "$dir" "$name" && continue
   [ -z "$activity" ] && continue
   [ $((now - activity)) -lt "$AGE_SECS" ] && continue
   stamped=$cid
@@ -279,25 +294,50 @@ func (m *Manager) Revive(e Evicted) error {
 		if dir == "" {
 			dir = "~"
 		}
+		rec, ok, err := workspaces.NewStore(m.run).Load(dir, e.Name)
+		if err != nil {
+			return err
+		}
 		if err := m.New(e.Name, dir); err != nil {
 			return err
 		}
-		if e.ClaudeID != "" {
-			resume := "claude --resume " + e.ClaudeID
-			if e.ResumeArgs != "" {
-				// Replay the allowlisted launch flags the hook captured (--model,
-				// --permission-mode, --dangerously-skip-permissions) so the revived
-				// session runs the way it was originally launched.
-				resume += " " + e.ResumeArgs
+		if ok && rec.Parent != "" {
+			if err := m.SetOption(e.Name, "@duck_parent", rec.Parent); err != nil {
+				return err
 			}
+		}
+		if e.ClaudeID != "" {
+			// Replay the allowlisted launch flags the hook captured (--model,
+			// --permission-mode, --dangerously-skip-permissions) so the revived
+			// session runs the way it was originally launched. manager.Line appends
+			// duck's channel flags unless the captured flags already opted in/out.
+			args := append([]string{"--resume", e.ClaudeID}, strings.Fields(e.ResumeArgs)...)
+			resume := manager.Line(args)
 			cmd := fmt.Sprintf("tmux send-keys -t %s %s Enter",
 				paths.Quote(e.Name), paths.Quote(resume))
 			if _, err := m.run.Run(cmd); err != nil {
 				return err
 			}
+			if err := m.StampManager(e.Name); err != nil {
+				return err
+			}
 		}
 	}
 	return m.ForgetEvicted(e.Name)
+}
+
+// StampManager records session id's active pane as the workspace manager. It is
+// used after duck has just sent the manager launch line into a recreated session.
+func (m *Manager) StampManager(id string) error {
+	out, err := m.run.Run(fmt.Sprintf("tmux display-message -p -t %s '#{pane_id}'", paths.Quote(id)))
+	if err != nil {
+		return err
+	}
+	pane := strings.TrimSpace(out)
+	if pane == "" {
+		return fmt.Errorf("no pane id for %s", id)
+	}
+	return m.SetOption(id, "@duck_manager", pane)
 }
 
 // IsNoSessionErr reports whether err is tmux's "can't find session" failure —
