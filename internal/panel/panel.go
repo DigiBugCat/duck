@@ -181,13 +181,48 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-// PadCmd builds the in-pane command for a pad editor: a respawn loop (quit
-// reopens; the roster's x truly closes) around, in preference order,
-// $DUCK_PAD_EDITOR, micro (standard keybindings + autosave every second +
-// silent auto-reload of external edits — agents can write into a pad the
-// human is watching), else $EDITOR.
+// PadCmd builds the in-pane command for a pad: a VIEWER by default (glow-
+// rendered, styled, live) with an explicit EDIT affordance. A pad is a live
+// human⇄agent surface — an agent rewrites the file, and the viewer repaints on
+// its own (disk-as-truth: the render owns no buffer, so a write clobbers cleanly
+// with nothing to reconcile). Press `e` to drop into the editor (micro etc. —
+// see editorScript); on quit the rendered view returns. Press `q` to close the
+// pad. The outer respawn loop means the pad reopens if the view loop ever exits
+// unexpectedly; the roster's `x` truly closes it.
+//
+// The view loop polls one keypress per second (read -t 1 -n 1): a keystroke
+// drives edit/close, and between keystrokes it re-renders whenever the file's
+// mtime changes — so an idle pad the human is only watching still repaints when
+// an agent writes underneath it. Falls back to `cat` when glow is absent.
 func PadCmd(path string) string {
-	return "sh -c " + paths.Quote(`while :; do `+editorScript(path)+`; sleep 0.3; done`)
+	q := paths.Quote(path)
+	// The view loop polls one key per second AND the file mtime — that needs
+	// `read -t/-s/-n`, which are bash builtins (dash, Debian's /bin/sh, lacks
+	// them). So the viewer runs under bash; without bash, or without glow, we
+	// fall back to the plain editor loop (the pre-viewer behaviour) so a pad is
+	// never broken — it just isn't rendered.
+	_, hasBash := exec.LookPath("bash")
+	_, hasGlow := exec.LookPath("glow")
+	if hasBash != nil || hasGlow != nil {
+		return "sh -c " + paths.Quote(`while :; do `+editorScript(path)+`; sleep 0.3; done`)
+	}
+	render := `glow -w "$(tput cols 2>/dev/null || echo 100)" ` + q
+	// Outer respawn loop → view loop (render + key/mtime poll) → edit on `e`.
+	// `clear` scrubs the pane each frame; the hint line shows the affordances.
+	view := `while :; do ` +
+		`clear; ` + render + `; ` +
+		`printf '\n\033[2m[e edit · q close]\033[0m'; ` +
+		`m=$(stat -c %Y ` + q + ` 2>/dev/null); k=; ` +
+		`while :; do ` +
+		`if IFS= read -t 1 -rsn 1 k; then ` +
+		`[ "$k" = e ] && break; ` +
+		`[ "$k" = q ] && exit 0; ` +
+		`fi; ` +
+		`[ "$(stat -c %Y ` + q + ` 2>/dev/null)" != "$m" ] && break; ` +
+		`done; ` +
+		`if [ "$k" = e ]; then ` + editorScript(path) + `; fi; ` +
+		`done`
+	return "bash -c " + paths.Quote(view)
 }
 
 // EditorCmd is the ONE-SHOT editor invocation for a file: the same editor
