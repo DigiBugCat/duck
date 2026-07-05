@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -54,7 +55,11 @@ var previewCmd = &cobra.Command{
 		// live agent⇄human surface (agents rewrite them in place). The watch
 		// wrapper repaints only on real change, so an idle page costs nothing.
 		if !isURL {
-			if ext := strings.ToLower(filepath.Ext(args[0])); ext == ".html" || ext == ".htm" {
+			switch strings.ToLower(filepath.Ext(args[0])) {
+			case ".html", ".htm", ".md", ".markdown":
+				// Live agent⇄human surfaces: always watch so a write repaints the
+				// pane. html uses the iframe-probe path below; md/markdown fall to
+				// the watchWrap default (kill+re-render glow on mtime change).
 				previewWatch = true
 			}
 		}
@@ -133,6 +138,26 @@ func htmlRenderer() string {
 	return "carbonyl"
 }
 
+// mdRenderer is the markdown viewer line for watchWrap: render the file with
+// glow (styled, wrapped to the pane width), then HOLD with `sleep infinity` so
+// the pane keeps showing it until watchWrap kills the process on an mtime change
+// and re-renders. This is what makes the pad's viewer face LIVE — an agent
+// write repaints with no buffer to reconcile (disk-as-truth).
+//
+// Deliberately NOT `glow -p`: the pager holds an alternate screen watchWrap
+// can't kill+re-render (verified — the edit never repaints under -p, does under
+// plain glow). The render-then-hold shape is the same one watchWrap gives static
+// image renderers. Without glow, fall back to `cat` (unstyled but buffer-free).
+func mdRenderer(quotedPath string) string {
+	body := "cat " + quotedPath
+	if _, err := exec.LookPath("glow"); err == nil {
+		body = `glow -w "$(tput cols 2>/dev/null || echo 100)" ` + quotedPath
+	}
+	// Render, then hold so watchWrap keeps the frame until an mtime change kills
+	// it. `exec sleep` so the sleep IS the process watchWrap signals.
+	return "sh -c " + paths.Quote(body+"; exec sleep infinity")
+}
+
 func previewRender(target string) (render string, hold bool, err error) {
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
 		return htmlRenderer() + " " + paths.Quote(target), false, nil
@@ -149,11 +174,11 @@ func previewRender(target string) (render string, hold bool, err error) {
 	case ".html", ".htm":
 		return htmlRenderer() + " file://" + q, false, nil
 	case ".md", ".markdown":
-		// Markdown opens the way pads do — micro: softwrapped, editable,
-		// autosaving, live-reloading — the treatment Andrew standardized on.
-		// (glow stays installed for anyone wanting a styled read: `spawn
-		// glow -p <file>`.)
-		return panel.EditorCmd(abs), false, nil
+		// Markdown renders with glow — a styled, paged READ-ONLY view (the pad's
+		// viewer face). It is disk-as-truth: the caller always watch-wraps it
+		// (like local html), so an agent writing the file live re-renders the
+		// pane with zero buffer to reconcile. `duck edit` is the EDIT face (micro).
+		return mdRenderer(q), false, nil
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp":
 		// Pixels first (kitty via tmux passthrough — one layer in the swap
 		// design), cells as the universal fallback if the forced mode errors.
