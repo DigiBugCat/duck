@@ -40,16 +40,17 @@ type Rect struct {
 // Mark is one human annotation. Highlights carry text and optional context;
 // drawings carry freehand strokes plus a screenshot crop path when available.
 type Mark struct {
-	Type    string    `json:"type,omitempty"`
-	URL     string    `json:"url"`
-	Text    string    `json:"text,omitempty"`
-	Comment string    `json:"comment,omitempty"`
-	Before  string    `json:"before,omitempty"`
-	After   string    `json:"after,omitempty"`
-	Strokes [][]Point `json:"strokes,omitempty"`
-	Rect    *Rect     `json:"rect,omitempty"`
-	Shot    string    `json:"shot,omitempty"`
-	Stamp   string    `json:"stamp"` // RFC3339, host-side arrival time
+	Type      string    `json:"type,omitempty"`
+	URL       string    `json:"url"`
+	Workspace string    `json:"workspace,omitempty"` // hub workspace that opened the URL
+	Text      string    `json:"text,omitempty"`
+	Comment   string    `json:"comment,omitempty"`
+	Before    string    `json:"before,omitempty"`
+	After     string    `json:"after,omitempty"`
+	Strokes   [][]Point `json:"strokes,omitempty"`
+	Rect      *Rect     `json:"rect,omitempty"`
+	Shot      string    `json:"shot,omitempty"`
+	Stamp     string    `json:"stamp"` // RFC3339, host-side arrival time
 }
 
 func (m *Mark) UnmarshalJSON(b []byte) error {
@@ -95,11 +96,17 @@ func (s *Store) Add(m Mark) {
 
 // Marks returns annotations, newest last; url == "" means all.
 func (s *Store) Marks(url string) []Mark {
+	return s.MarksFor(url, "")
+}
+
+// MarksFor returns annotations matching url/workspace, newest last; empty
+// filters mean all.
+func (s *Store) MarksFor(url, workspace string) []Mark {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []Mark
 	for _, m := range s.marks {
-		if url == "" || m.URL == url {
+		if (url == "" || m.URL == url) && (workspace == "" || m.Workspace == workspace) {
 			out = append(out, m)
 		}
 	}
@@ -124,6 +131,7 @@ type Host struct {
 	mu      sync.Mutex
 	backend browserBackend
 	curURL  string
+	curWork string
 }
 
 type browserBackend interface {
@@ -155,6 +163,9 @@ func (h *Host) addMark(m Mark) {
 	h.mu.Lock()
 	if m.URL == "" {
 		m.URL = h.curURL
+	}
+	if m.Workspace == "" {
+		m.Workspace = h.curWork
 	}
 	backend := h.backend
 	h.mu.Unlock()
@@ -202,10 +213,11 @@ func saveSnapshot(backend browserBackend, rect Rect) (string, error) {
 }
 
 // Show navigates the window to url and re-applies any stored marks for it.
-func (h *Host) Show(url string) error {
+func (h *Host) Show(url, workspace string) error {
 	h.mu.Lock()
 	backend := h.backend
 	h.curURL = url
+	h.curWork = workspace
 	h.mu.Unlock()
 	if backend == nil {
 		return fmt.Errorf("browser not started")
@@ -213,7 +225,7 @@ func (h *Host) Show(url string) error {
 	if err := backend.Navigate(url); err != nil {
 		return err
 	}
-	marks := h.Store.Marks(url)
+	marks := h.Store.MarksFor(url, workspace)
 	if len(marks) == 0 {
 		return nil
 	}
@@ -250,7 +262,7 @@ func (h *Host) Serve(ctx context.Context, ln net.Listener) error {
 			http.Error(w, "missing url", http.StatusBadRequest)
 			return
 		}
-		if err := h.Show(u); err != nil {
+		if err := h.Show(u, strings.TrimSpace(r.FormValue("workspace"))); err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
@@ -258,7 +270,7 @@ func (h *Host) Serve(ctx context.Context, ln net.Listener) error {
 	})
 	mux.HandleFunc("GET /marks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		marks := h.Store.Marks(r.URL.Query().Get("url"))
+		marks := h.Store.MarksFor(r.URL.Query().Get("url"), r.URL.Query().Get("workspace"))
 		if marks == nil {
 			marks = []Mark{}
 		}

@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/DigiBugCat/duck/internal/window"
 )
 
 // fakeRunner mirrors panel's test fake: scripted argv → output.
@@ -295,35 +299,35 @@ func TestTailFiltersAndReturnsOffset(t *testing.T) {
 }
 
 func TestSendTypesThenEnter(t *testing.T) {
-	// Empty capture → composer clear → exactly one Enter, verified once.
+	// No rollout pairing + empty capture → composer clear (double-checked)
+	// → exactly one Enter.
 	f := &fakeRunner{out: map[string]string{}}
 	if err := Send(f.run, AgentRef{WindowID: "%3"}, "fix the tests"); err != nil {
 		t.Fatal(err)
 	}
-	sentLiteral, sentEnter, captures := false, false, 0
+	enters, captures := 0, 0
 	for _, c := range f.calls {
-		switch c {
-		case "send-keys -t %3 -l -- fix the tests":
-			sentLiteral = true
-		case "send-keys -t %3 Enter":
-			sentEnter = true
-		case "capture-pane -p -t %3":
+		if c == "send-keys -t %3 Enter" {
+			enters++
+		}
+		if strings.HasPrefix(c, "capture-pane") {
 			captures++
 		}
 	}
-	if !sentLiteral || !sentEnter || captures != 2 {
-		t.Fatalf("send should paste, press Enter, and double-check a clear composer; calls: %v", f.calls)
+	if enters != 1 || captures != 2 {
+		t.Fatalf("want 1 Enter + 2 confirming captures, calls: %v", f.calls)
 	}
 }
 
 func TestSendRetriesEnterWhilePasteSitsInComposer(t *testing.T) {
-	// The composer still shows a pending paste after the first Enter (a big
-	// paste eats it) — Send must press Enter again rather than give up.
+	// The composer NEVER clears in this fake — Send must keep retrying and
+	// then report failure honestly instead of claiming success.
 	f := &fakeRunner{out: map[string]string{
 		"capture-pane -p -t %3": "transcript above\n› [Pasted Content 1018 chars]\nfooter",
 	}}
-	if err := Send(f.run, AgentRef{WindowID: "%3"}, "a long prompt"); err == nil {
-		t.Fatal("persistent paste marker should fail without submit confirmation")
+	err := Send(f.run, AgentRef{WindowID: "%3"}, "a long prompt")
+	if err == nil {
+		t.Fatal("a stuck composer must surface as an error")
 	}
 	enters := 0
 	for _, c := range f.calls {
@@ -332,7 +336,7 @@ func TestSendRetriesEnterWhilePasteSitsInComposer(t *testing.T) {
 		}
 	}
 	if enters != 6 {
-		t.Fatalf("want 6 Enter retries, got %d (calls: %v)", enters, f.calls)
+		t.Fatalf("want 6 Enter attempts, got %d", enters)
 	}
 }
 
@@ -448,6 +452,146 @@ func TestServeDrainsPublishSpool(t *testing.T) {
 	// The sidecar marked the workspace alive.
 	if !AliveWithin("work", time.Minute) {
 		t.Fatal("sidecar should have touched the alive marker")
+	}
+}
+
+func TestServeSweepsWindowMarksOnceWithWorkspaceAttribution(t *testing.T) {
+	oldHome := spoolHome
+	spoolHome = t.TempDir()
+	defer func() { spoolHome = oldHome }()
+	oldSweep := sweepEvery
+	sweepEvery = 5 * time.Millisecond
+	defer func() { sweepEvery = oldSweep }()
+	oldHost := windowMarksHost
+	oldClient := windowMarksHTTPClient
+	defer func() {
+		windowMarksHost = oldHost
+		windowMarksHTTPClient = oldClient
+	}()
+
+	var queried []string
+	marks := []map[string]any{{
+		"type":      "highlight",
+		"workspace": "work",
+		"url":       "http://artifact.test/report",
+		"text":      "Q3 revenue",
+		"comment":   "off by 10x",
+		"stamp":     "2026-07-05T12:00:00Z",
+	}}
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/marks" {
+			http.NotFound(w, r)
+			return
+		}
+		queried = append(queried, r.URL.Query().Get("workspace"))
+		_ = json.NewEncoder(w).Encode(marks)
+	}))
+	defer host.Close()
+	windowMarksHost = func() string { return strings.TrimPrefix(host.URL, "http://") }
+	windowMarksHTTPClient = host.Client()
+
+	f := &fakeRunner{out: map[string]string{}}
+	pr, pw := io.Pipe()
+	var out lockedBuffer
+	done := make(chan error, 1)
+	go func() { done <- Serve(f.run, "work", pr, &out) }()
+	io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
+	io.WriteString(pw, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
+
+	deadline := time.Now().Add(3 * time.Second)
+	var got []map[string]any
+	for time.Now().Before(deadline) {
+		got = got[:0]
+		for _, m := range parseLines(out.String()) {
+			if m["method"] == "notifications/claude/channel" {
+				got = append(got, m)
+			}
+		}
+		if len(got) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(40 * time.Millisecond) // allow extra sweeps that would double-deliver
+	pw.Close()
+	<-done
+
+	if len(queried) == 0 || queried[0] != "work" {
+		t.Fatalf("host queried with workspace %v, want work", queried)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want exactly one mark notification, got %d; output:\n%s", len(got), out.String())
+	}
+	params := got[0]["params"].(map[string]any)
+	if params["source"] != "duck-window" {
+		t.Fatalf("source = %v, want duck-window", params["source"])
+	}
+	if content := params["content"].(string); !strings.Contains(content, "mark highlight") || !strings.Contains(content, "off by 10x") || !strings.Contains(content, "Q3 revenue") {
+		t.Fatalf("content did not summarize mark: %q", content)
+	}
+	meta := params["meta"].(map[string]any)
+	if meta["session"] != "work" || meta["source"] != "duck-window" || meta["type"] != "mark" {
+		t.Fatalf("meta wrong: %v", meta)
+	}
+	attachments := params["attachments"].([]any)
+	attached := attachments[0].(map[string]any)
+	if attached["type"] != "json" || attached["name"] != "mark" {
+		t.Fatalf("attachment header wrong: %v", attached)
+	}
+	full := attached["content"].(map[string]any)
+	if full["workspace"] != "work" || full["text"] != "Q3 revenue" {
+		t.Fatalf("full mark JSON not attached: %v", full)
+	}
+	if cursor := readWindowMarkCursor("work"); cursor != 1 {
+		t.Fatalf("cursor = %d, want 1", cursor)
+	}
+
+	var out2 lockedBuffer
+	pr2, pw2 := io.Pipe()
+	done2 := make(chan error, 1)
+	go func() { done2 <- Serve(f.run, "work", pr2, &out2) }()
+	io.WriteString(pw2, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
+	io.WriteString(pw2, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
+	time.Sleep(40 * time.Millisecond)
+	pw2.Close()
+	<-done2
+	for _, m := range parseLines(out2.String()) {
+		if m["method"] == "notifications/claude/channel" {
+			t.Fatalf("persisted cursor must suppress replay after restart: %v", m)
+		}
+	}
+}
+
+func TestWindowMarkMessageIncludesRectShotAndFullJSON(t *testing.T) {
+	raw := json.RawMessage(`{"type":"drawing","workspace":"work","url":"http://artifact.test/chart","comment":"look here","rect":{"x":10,"y":20,"w":30,"h":40},"shot":"/tmp/shot.png","stamp":"2026-07-05T12:00:00Z"}`)
+	var m struct {
+		Params struct {
+			Source      string `json:"source"`
+			Content     string `json:"content"`
+			Attachments []struct {
+				Content map[string]any `json:"content"`
+			} `json:"attachments"`
+		} `json:"params"`
+	}
+	var out bytes.Buffer
+	s := &server{out: &out}
+	var mark window.Mark
+	if err := json.Unmarshal(raw, &mark); err != nil {
+		t.Fatal(err)
+	}
+	s.emitWindowMark("work", mark, raw)
+	line := strings.TrimSpace(out.String())
+	if err := json.Unmarshal([]byte(line), &m); err != nil {
+		t.Fatalf("event is not JSON: %v\n%s", err, line)
+	}
+	if m.Params.Source != "duck-window" {
+		t.Fatalf("source = %q", m.Params.Source)
+	}
+	if !strings.Contains(m.Params.Content, "rect: 10,20 30x40") || !strings.Contains(m.Params.Content, "shot: /tmp/shot.png") {
+		t.Fatalf("drawing summary missing rect/shot: %q", m.Params.Content)
+	}
+	if m.Params.Attachments[0].Content["type"] != "drawing" || m.Params.Attachments[0].Content["shot"] != "/tmp/shot.png" {
+		t.Fatalf("full mark JSON missing: %+v", m.Params.Attachments[0].Content)
 	}
 }
 
@@ -591,4 +735,39 @@ func parseLines(s string) []map[string]any {
 		}
 	}
 	return out
+}
+
+// TestSendConfirmsViaRollout: with a paired rollout, Send trusts ONLY the
+// rollout — it keeps pressing Enter until a task_started event appears past
+// the pre-send offset, ignoring the composer heuristic entirely.
+func TestSendConfirmsViaRollout(t *testing.T) {
+	rollout := filepath.Join(t.TempDir(), "r.jsonl")
+	if err := os.WriteFile(rollout, []byte(`{"type":"event_msg","payload":{"type":"task_started"}}`+"\n"), 0o644); err != nil {
+		t.Fatal(err) // pre-existing event BEFORE the send offset — must not count
+	}
+	enters := 0
+	run := func(args ...string) (string, error) {
+		key := strings.Join(args, " ")
+		if key == "send-keys -t %3 Enter" {
+			enters++
+			if enters == 2 { // paste ingested on the second Enter: turn begins
+				f, _ := os.OpenFile(rollout, os.O_APPEND|os.O_WRONLY, 0o644)
+				fmt.Fprintln(f, `{"type":"event_msg","payload":{"type":"task_started"}}`)
+				f.Close()
+			}
+		}
+		if strings.HasPrefix(key, "show-options") {
+			return rollout + "\n", nil // cached pairing
+		}
+		if strings.HasPrefix(key, "capture-pane") {
+			t.Fatal("rollout is authoritative — composer must not be consulted")
+		}
+		return "", nil
+	}
+	if err := Send(run, AgentRef{WindowID: "%3"}, "a long brief"); err != nil {
+		t.Fatal(err)
+	}
+	if enters != 2 {
+		t.Fatalf("want 2 Enters (retry until rollout confirms), got %d", enters)
+	}
 }

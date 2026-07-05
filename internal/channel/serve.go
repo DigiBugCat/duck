@@ -95,7 +95,9 @@ func (s *server) instructions() string {
 		scope = "YOUR sidebar agents (workspace " + s.workspace + " — you are its manager)"
 	}
 	return "Events from " + scope + " arrive as <channel source=\"duck-agents\"> " +
-		"with meta {session, agent, type}. task_complete means the agent finished a turn. " +
+		"with meta {session, agent, type}. Window annotations arrive as <channel source=\"duck-window\"> " +
+		"with meta {session, source, type=mark}; they mean the human pointed at or commented on the current artifact. " +
+		"task_complete means the agent finished a turn. " +
 		"To answer or give the agent its next instruction, call the reply tool with that session+agent."
 }
 
@@ -217,6 +219,7 @@ func (s *server) watch() {
 		// event is delivered even when the lot is empty or a list errors —
 		// publishes are independent of whether any agent exists.
 		if s.workspace != "" {
+			s.drainWindowMarks(s.workspace)
 			s.drainPublish(s.workspace)
 		}
 		owners, err := Companions(s.run)
@@ -227,6 +230,7 @@ func (s *server) watch() {
 		// workspace, so touch+drain every workspace that exists.
 		if s.workspace == "" {
 			for _, outer := range owners {
+				s.drainWindowMarks(outer)
 				s.drainPublish(outer)
 			}
 		}

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/DigiBugCat/duck/internal/config"
+	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/DigiBugCat/duck/internal/window"
 	"github.com/spf13/cobra"
 )
@@ -142,6 +143,9 @@ terminal cells.`,
 			return err
 		}
 		form := url.Values{"url": {u}}
+		if ws, err := panel.CurrentSession(panel.ExecRunner); err == nil && ws != "" {
+			form.Set("workspace", ws)
+		}
 		resp, err := http.PostForm("http://"+host+"/open", form)
 		if err != nil {
 			return fmt.Errorf("window host at %s: %w", host, err)

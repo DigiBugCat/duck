@@ -80,3 +80,26 @@ func TestMarkJSONRoundTripNewFields(t *testing.T) {
 		t.Fatalf("old mark Type = %q, want highlight", old.Type)
 	}
 }
+
+func TestHostTagsMarksWithCurrentWorkspace(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "marks.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	h := &Host{Store: store}
+	h.curURL = "http://example.test/report"
+	h.curWork = "work"
+
+	h.addMark(Mark{Text: "revenue"})
+
+	marks := store.MarksFor("", "work")
+	if len(marks) != 1 {
+		t.Fatalf("MarksFor workspace = %d, want 1", len(marks))
+	}
+	if marks[0].Workspace != "work" || marks[0].URL != "http://example.test/report" {
+		t.Fatalf("mark attribution wrong: %+v", marks[0])
+	}
+	if got := store.MarksFor("", "other"); len(got) != 0 {
+		t.Fatalf("wrong workspace should not match: %+v", got)
+	}
+}
