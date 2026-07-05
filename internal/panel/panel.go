@@ -82,6 +82,7 @@ const (
 	SpawnedAtOption = "@duck_spawned_at" // unix epoch of spawn (channel pairing)
 	RolloutOption   = "@duck_rollout"    // cached codex rollout path
 	SessionOption   = "@duck_session"    // codex session id (durable resume/fork handle)
+	PromptOption    = "@duck_last_prompt" // codex turn id of the last submitted prompt (Send submit-confirm)
 	CmdOption       = "@duck_cmd"        // spawn cmdline (channel pairing eligibility)
 	anchorOption    = "@duck_anchor"     // the lot's immortal keep-alive pane
 )
@@ -144,35 +145,90 @@ func ProjectName(run Runner, outer string) string {
 	return outer
 }
 
-// PadPath resolves a named pad. Pads are PROJECT-scoped: every workspace
-// rooted in the same folder shares the pad set under
-// ~/.duck/scratchpad/<project>/ (the scratchpad dir is commonly a symlink
-// into the user's synced vault). A pad that already exists at the flat top
-// level (shared pads like shared.md, pre-project-era pads) wins over the
-// project dir, so nothing already written goes dark. Created with a header
-// on first touch.
-func PadPath(project, name string) (string, error) {
+// SyncRootFn resolves the longest mutagen sync root covering a workspace's dir
+// (tilde-form) — where its project content (pads) belongs. Injected by command
+// (flow.CoveringSyncRoot) so low-level panel needn't import flow/mutagen. The
+// default returns "" (no sync info) → PadRoot falls back to the workspace dir.
+var SyncRootFn = func(dir string) string { return "" }
+
+// PadRoot is the project root a workspace's pads live under: the covering sync
+// root when the workspace is synced, else the workspace's own dir (@duck_dir).
+// "" only if neither resolves (→ global/flat pad).
+func PadRoot(run Runner, outer string) string {
+	dir, err := SessionPath(run, outer)
+	if err != nil || dir == "" {
+		return ""
+	}
+	tilde := paths.Contract(dir)
+	if root := SyncRootFn(tilde); root != "" {
+		return root
+	}
+	return tilde
+}
+
+// PadPath RESOLVES a pad's path — pure, no I/O, no side effects (use EnsurePad
+// to create it). syncRoot is the project's sync boundary (flow.CoveringSyncRoot,
+// or the workspace dir as fallback); pads live at
+// `<syncRoot>/.duck/scratchpad/<name>.md` so they ride the project sync and are
+// shared by every workspace within the project — keyed by PATH, not a basename
+// (basename keying silently collided unrelated same-named projects).
+//
+// A global pad (no project home — e.g. shared.md) is signalled by an empty
+// syncRoot; it resolves to the flat legacy path `~/.duck/scratchpad/<name>.md`.
+// An existing flat pad ALSO wins (legacy pads written before the project scheme),
+// so nothing already on disk goes dark.
+func PadPath(syncRoot, name string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	root := filepath.Join(home, ".duck", "scratchpad")
-	if flat := filepath.Join(root, name+".md"); fileExists(flat) {
+	flat := filepath.Join(home, ".duck", "scratchpad", name+".md")
+	if syncRoot == "" || fileExists(flat) {
 		return flat, nil
 	}
-	dir := root
-	if project != "" {
-		dir = filepath.Join(root, project)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	root, err := paths.Expand(syncRoot)
+	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, name+".md")
-	if !fileExists(path) {
-		header := "# " + name + "\n\n"
-		if werr := os.WriteFile(path, []byte(header), 0o644); werr != nil {
-			return "", werr
+	return filepath.Join(root, ".duck", "scratchpad", name+".md"), nil
+}
+
+// EnsurePad resolves a pad path and CREATES it (mkdir + header) if absent,
+// migrating a legacy pad's content in on first touch. Returns the path. This is
+// the side-effecting counterpart to PadPath — callers that open/edit a pad call
+// this; callers that merely need the path call PadPath.
+func EnsurePad(syncRoot, name string) (string, error) {
+	path, err := PadPath(syncRoot, name)
+	if err != nil {
+		return "", err
+	}
+	if fileExists(path) {
+		return path, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	// Migrate a legacy pad in (copy, never move — a global doc may still be read
+	// from the old location): the flat pad, then the old per-basename pad.
+	if home, herr := os.UserHomeDir(); herr == nil && syncRoot != "" {
+		legacy := []string{
+			filepath.Join(home, ".duck", "scratchpad", name+".md"),
+			filepath.Join(home, ".duck", "scratchpad", filepath.Base(syncRoot), name+".md"),
 		}
+		for _, old := range legacy {
+			if old == path {
+				continue
+			}
+			if b, rerr := os.ReadFile(old); rerr == nil {
+				if werr := os.WriteFile(path, b, 0o644); werr == nil {
+					return path, nil
+				}
+			}
+		}
+	}
+	header := "# " + name + "\n\n"
+	if werr := os.WriteFile(path, []byte(header), 0o644); werr != nil {
+		return "", werr
 	}
 	return path, nil
 }
@@ -257,7 +313,7 @@ func EnsureScratch(run Runner, outer string) {
 			return
 		}
 	}
-	path, err := PadPath(ProjectName(run, outer), "scratch")
+	path, err := EnsurePad(PadRoot(run, outer), "scratch")
 	if err != nil {
 		return
 	}

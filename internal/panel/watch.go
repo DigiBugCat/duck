@@ -78,8 +78,9 @@ type watchModel struct {
 	statuses   map[string]string
 	workspaces []Workspace
 	routines   []routineRow
-	tabKind    string // active tab BY NAME
-	cursor     int    // index into visible() rows
+	tabKind    string         // active tab BY NAME
+	cursor     int            // index into visible() rows
+	tabCursor  map[string]int // last cursor per tab, so switching back restores it
 	width      int
 	height     int
 
@@ -97,7 +98,7 @@ func Watch(run Runner, outer string, status StatusFn) error {
 	ti := textinput.New()
 	ti.Prompt = "❯ "
 	ti.Placeholder = ": for commands · ↵ view · x kill · ←→ tabs"
-	m := watchModel{run: run, outer: outer, statusFn: status, input: ti, tabKind: KindAgent}
+	m := watchModel{run: run, outer: outer, statusFn: status, input: ti, tabKind: KindAgent, tabCursor: map[string]int{}}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus()).Run()
 	return err
 }
@@ -194,7 +195,26 @@ func (m watchModel) tabIndex() int {
 func (m *watchModel) cycleTab(delta int) {
 	t := m.tabs()
 	i := (m.tabIndex() + delta + len(t)) % len(t)
-	m.tabKind, m.cursor, m.armedKill = t[i], 0, ""
+	m.switchTab(t[i])
+}
+
+// switchTab makes `kind` the active tab, restoring the cursor to the item that
+// was selected there last (0 if never visited), and swaps the viewport to it —
+// no ↵ needed. The old tab's cursor is saved first so returning restores it.
+// Item tabs (agents/shells/artifacts/scratchpad) auto-view; the routines tab
+// has no viewport action and the workspaces tab would teleport the terminal to
+// another workspace, so a mere tab-switch must never trigger either.
+func (m *watchModel) switchTab(kind string) {
+	m.tabCursor[m.tabKind] = m.cursor
+	m.tabKind, m.armedKill = kind, ""
+	m.cursor = m.tabCursor[kind]
+	if n := len(m.visible()); m.cursor >= n { // list shrank while we were away
+		m.cursor = 0
+	}
+	if m.tabKind == schedTab || m.tabKind == wsTab || len(m.visible()) == 0 {
+		return
+	}
+	m.viewSelected()
 }
 
 // filterText is the box content when it should act as a live filter.
@@ -508,7 +528,7 @@ func (m *watchModel) runInput() string {
 				return ""
 			}
 		}
-		path, err := PadPath(ProjectName(m.run, m.outer), name)
+		path, err := EnsurePad(PadRoot(m.run, m.outer), name)
 		if err != nil {
 			return err.Error()
 		}
@@ -532,7 +552,7 @@ func (m *watchModel) runInput() string {
 		}
 		return "no match: " + f[1]
 	case "workspaces":
-		m.tabKind, m.cursor = wsTab, 0
+		m.switchTab(wsTab)
 		return ""
 	case "close":
 		_ = Close(m.run, m.outer)
@@ -632,7 +652,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, spans := m.renderTabs()
 				for _, sp := range spans {
 					if msg.X >= sp.start && msg.X < sp.end {
-						m.tabKind, m.cursor, m.armedKill = m.tabs()[sp.tab], 0, ""
+						m.switchTab(m.tabs()[sp.tab])
 						return m, nil
 					}
 				}

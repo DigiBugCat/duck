@@ -2,6 +2,8 @@ package panel
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -216,5 +218,30 @@ func TestEnsureCompanionMigratesOldDesign(t *testing.T) {
 	}}
 	if _, err := EnsureCompanion(f2.run, "work", "/d"); err != nil || f2.called("new-window") {
 		t.Fatal("modern companion must not be modified")
+	}
+}
+
+// TestPadPathRelocation: pads resolve to <syncRoot>/.duck/scratchpad/, PadPath is
+// pure (no I/O on resolve), EnsurePad creates+headers, global pads (empty root)
+// go to the flat legacy path.
+func TestPadPathRelocation(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	if p, _ := PadPath("", "shared"); p != filepath.Join(home, ".duck", "scratchpad", "shared.md") {
+		t.Errorf("global pad should be flat: %s", p)
+	}
+	if p, _ := PadPath("~/dev/myproj", "notes"); !strings.HasSuffix(p, "/dev/myproj/.duck/scratchpad/notes.md") {
+		t.Errorf("project pad wrong location: %s", p)
+	}
+	tmp := t.TempDir()
+	p, _ := PadPath(tmp, "fresh")
+	if _, err := os.Stat(p); err == nil {
+		t.Errorf("PadPath must not create the file")
+	}
+	if _, err := os.Stat(filepath.Join(tmp, ".duck")); err == nil {
+		t.Errorf("PadPath must not mkdir .duck/")
+	}
+	p2, _ := EnsurePad(tmp, "fresh")
+	if b, _ := os.ReadFile(p2); !strings.Contains(string(b), "# fresh") {
+		t.Errorf("EnsurePad should write header, got: %q", b)
 	}
 }

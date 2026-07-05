@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/DigiBugCat/duck/internal/flow"
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/spf13/cobra"
 )
@@ -56,7 +57,7 @@ var editCmd = &cobra.Command{
 		// workspace scratch. Anything path-like is a regular one-shot buffer.
 		if !strings.ContainsAny(arg, "/.") {
 			if _, statErr := os.Stat(arg); statErr != nil {
-				path, err := panel.PadPath(filepath.Base(dir), arg)
+				path, err := panel.EnsurePad(panel.PadRoot(run, outer), arg)
 				if err != nil {
 					return err
 				}
@@ -77,4 +78,7 @@ var editCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(editCmd)
+	// Inject the sync-root resolver so panel (low-level, no flow/mutagen dep) can
+	// place pads under the covering project sync root.
+	panel.SyncRootFn = flow.CoveringSyncRoot
 }
