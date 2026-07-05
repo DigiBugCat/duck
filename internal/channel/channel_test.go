@@ -300,13 +300,19 @@ func TestSendTypesThenEnter(t *testing.T) {
 	if err := Send(f.run, AgentRef{WindowID: "%3"}, "fix the tests"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		"send-keys -t %3 -l -- fix the tests",
-		"send-keys -t %3 Enter",
-		"capture-pane -p -t %3",
+	sentLiteral, sentEnter, captures := false, false, 0
+	for _, c := range f.calls {
+		switch c {
+		case "send-keys -t %3 -l -- fix the tests":
+			sentLiteral = true
+		case "send-keys -t %3 Enter":
+			sentEnter = true
+		case "capture-pane -p -t %3":
+			captures++
+		}
 	}
-	if len(f.calls) != 3 || f.calls[0] != want[0] || f.calls[1] != want[1] || f.calls[2] != want[2] {
-		t.Fatalf("calls: %v", f.calls)
+	if !sentLiteral || !sentEnter || captures != 2 {
+		t.Fatalf("send should paste, press Enter, and double-check a clear composer; calls: %v", f.calls)
 	}
 }
 
@@ -316,8 +322,8 @@ func TestSendRetriesEnterWhilePasteSitsInComposer(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
 		"capture-pane -p -t %3": "transcript above\n› [Pasted Content 1018 chars]\nfooter",
 	}}
-	if err := Send(f.run, AgentRef{WindowID: "%3"}, "a long prompt"); err != nil {
-		t.Fatal(err)
+	if err := Send(f.run, AgentRef{WindowID: "%3"}, "a long prompt"); err == nil {
+		t.Fatal("persistent paste marker should fail without submit confirmation")
 	}
 	enters := 0
 	for _, c := range f.calls {
@@ -325,8 +331,8 @@ func TestSendRetriesEnterWhilePasteSitsInComposer(t *testing.T) {
 			enters++
 		}
 	}
-	if enters != 3 { // initial + 2 retries, then stop guessing
-		t.Fatalf("want 3 Enters, got %d (calls: %v)", enters, f.calls)
+	if enters != 6 {
+		t.Fatalf("want 6 Enter retries, got %d (calls: %v)", enters, f.calls)
 	}
 }
 

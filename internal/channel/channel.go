@@ -398,6 +398,11 @@ func Tail(w io.Writer, path string, from int64, follow, raw bool) (int64, error)
 // Send types message into the agent's pane and presses Enter — visible in the
 // viewport, queued by codex's composer if a turn is mid-flight.
 func Send(run panel.Runner, ref AgentRef, message string) error {
+	// Pair with the rollout up front (best-effort): it is the authoritative
+	// submit-confirmation signal below. Callers mostly pass unresolved refs.
+	if ref.Rollout == "" {
+		_ = Resolve(run, &ref)
+	}
 	// "--" ends flag parsing: a message starting with "-" must reach the pane
 	// as literal text, not be eaten as a send-keys flag.
 	if _, err := run("send-keys", "-t", ref.WindowID, "-l", "--", message); err != nil {
@@ -415,18 +420,63 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 		beat = 750 * time.Millisecond
 	}
 	time.Sleep(beat)
-	for attempt := 0; ; attempt++ {
+	// The sanity loop: press Enter until the submit is CONFIRMED. A multi-KB
+	// paste can take codex seconds to ingest — during that window Enters are
+	// swallowed while the pane looks momentarily clean, so a quick composer
+	// glance false-positives (observed live). Ground truth, when the pane has
+	// a paired rollout, is the rollout itself: a task_started event appears
+	// past the pre-send offset the moment the prompt actually submits.
+	// Composer inspection stays as the fallback for un-paired panes. Extra
+	// Enters on an empty composer are no-ops, so repetition is safe.
+	var rolloutFrom int64 = -1
+	if ref.Rollout != "" {
+		if fi, err := os.Stat(ref.Rollout); err == nil {
+			rolloutFrom = fi.Size()
+		}
+	}
+	for attempt := 0; attempt < 6; attempt++ {
 		if _, err := run("send-keys", "-t", ref.WindowID, "Enter"); err != nil {
 			return err
 		}
-		if attempt >= 2 {
-			return nil // three Enters sent; stop guessing
+		time.Sleep(time.Duration(500+attempt*500) * time.Millisecond)
+		if rolloutFrom >= 0 {
+			if taskStartedSince(ref.Rollout, rolloutFrom) {
+				return nil
+			}
+			continue // rollout is authoritative — don't trust the composer
 		}
-		time.Sleep(500 * time.Millisecond)
 		if submitted(run, ref.WindowID, message) {
-			return nil
+			// Re-check after a beat: a composer that is REALLY clear stays
+			// clear; mid-ingest it only looks clear.
+			time.Sleep(400 * time.Millisecond)
+			if submitted(run, ref.WindowID, message) {
+				return nil
+			}
 		}
 	}
+	return fmt.Errorf("no submit confirmation after retries (pane %s)", ref.WindowID)
+}
+
+// taskStartedSince reports whether the rollout gained a task_started event
+// past the given byte offset — the authoritative "the prompt submitted"
+// signal (codex writes it the instant a turn begins).
+func taskStartedSince(path string, from int64) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if _, err := f.Seek(from, io.SeekStart); err != nil {
+		return false
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		if ev, ok := ParseEvent(sc.Bytes()); ok && ev.Type == "task_started" {
+			return true
+		}
+	}
+	return false
 }
 
 // submitted reports whether the composer no longer holds the message: it
