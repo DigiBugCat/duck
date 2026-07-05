@@ -220,9 +220,16 @@ func TestCorruptFileSkippedNotFatal(t *testing.T) {
 type captureRunner struct {
 	cmds   []string
 	inputs []string
+	home   string
 }
 
-func (c *captureRunner) Run(cmd string) (string, error) { c.cmds = append(c.cmds, cmd); return "", nil }
+func (c *captureRunner) Run(cmd string) (string, error) {
+	c.cmds = append(c.cmds, cmd)
+	if cmd == `printf %s "$HOME"` && c.home != "" {
+		return c.home, nil
+	}
+	return "", nil
+}
 func (c *captureRunner) RunInput(cmd string, stdin io.Reader) (string, error) {
 	c.cmds = append(c.cmds, cmd)
 	if stdin != nil {
@@ -232,20 +239,49 @@ func (c *captureRunner) RunInput(cmd string, stdin io.Reader) (string, error) {
 	return "", nil
 }
 
+func TestStorePathExpandsTildeWithHubHome(t *testing.T) {
+	t.Setenv("HOME", "/Users/andrew.sulistio")
+	c := &captureRunner{home: "/home/andrew\n"}
+	s := NewStore(c)
+
+	fromTilde := s.encodeDir("~/Obsidian/aviary/duck")
+	fromHubAbs := s.encodeDir("/home/andrew/Obsidian/aviary/duck")
+
+	if fromTilde != "-home-andrew-Obsidian-aviary-duck" {
+		t.Fatalf("Store encodeDir used local home: got %q", fromTilde)
+	}
+	if fromTilde != fromHubAbs {
+		t.Fatalf("tilde dir and hub-absolute dir must share the hub slug: %q vs %q", fromTilde, fromHubAbs)
+	}
+	if local := EncodeDir("~/Obsidian/aviary/duck"); local == fromTilde {
+		t.Fatalf("test setup failed: stateless EncodeDir should still reflect local HOME, got %q", local)
+	}
+	homeCalls := 0
+	for _, cmd := range c.cmds {
+		if cmd == `printf %s "$HOME"` {
+			homeCalls++
+		}
+	}
+	if homeCalls != 1 {
+		t.Fatalf("hub home should be resolved once, got %d calls: %v", homeCalls, c.cmds)
+	}
+}
+
 func TestSaveUsesUniqueTempAndAtomicRename(t *testing.T) {
-	c := &captureRunner{}
+	c := &captureRunner{home: "/home/hub"}
 	s := NewStore(c)
 	if err := s.Save(Record{Name: "w", Dir: "~/repo"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.cmds) != 1 {
-		t.Fatalf("Save should be one Runner call, got %d: %v", len(c.cmds), c.cmds)
+	if len(c.cmds) != 2 {
+		t.Fatalf("Save should resolve home once then write once, got %d: %v", len(c.cmds), c.cmds)
 	}
-	cmd := c.cmds[0]
+	cmd := c.cmds[1]
 	// Paths are shell-quoted with the leading ~/ left outside the quotes so
 	// the remote shell still tilde-expands (see shq).
-	group := shq(DefaultBase + "/" + EncodeDir("~/repo") + "/duck")
-	rec := shq(DefaultBase + "/" + EncodeDir("~/repo") + "/duck/w.json")
+	hubSlug := claude.Slug("/home/hub/repo")
+	group := shq(DefaultBase + "/" + hubSlug + "/duck")
+	rec := shq(DefaultBase + "/" + hubSlug + "/duck/w.json")
 	// Per-record unique temp ($$) + mkdir -p + atomic mv into the duck/ subdir.
 	if !strings.Contains(cmd, "mkdir -p "+group) {
 		t.Errorf("Save must mkdir the group dir: %q", cmd)

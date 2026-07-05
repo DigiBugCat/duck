@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DigiBugCat/duck/internal/claude"
@@ -75,8 +76,13 @@ type Runner interface {
 // Store reads and writes the workspace ledger through an injected Runner. The
 // zero value is not usable; construct with NewStore.
 type Store struct {
-	run  Runner
+	run Runner
+
 	base string
+
+	homeOnce sync.Once
+	home     string
+	homeOK   bool
 }
 
 // NewStore returns a Store backed by run, rooted at DefaultBase.
@@ -106,10 +112,57 @@ func EncodeDir(dir string) string {
 	return claude.Slug(abs)
 }
 
+func expandWithHome(dir, home string) string {
+	home = strings.TrimRight(home, "/")
+	if home == "" {
+		return dir
+	}
+	switch {
+	case dir == "~":
+		return home
+	case strings.HasPrefix(dir, "~/"):
+		return home + dir[1:]
+	default:
+		return dir
+	}
+}
+
+// hubHome returns the hub's $HOME through the Runner seam. It is cached because
+// every workspace path needs the same value, and failures deliberately fall back
+// to EncodeDir's local expansion so launches do not block on a ledger nicety.
+func (s *Store) hubHome() (string, bool) {
+	s.homeOnce.Do(func() {
+		if s.run == nil {
+			return
+		}
+		out, err := s.run.Run(`printf %s "$HOME"`)
+		if err != nil {
+			return
+		}
+		home := strings.TrimSpace(out)
+		if home == "" {
+			return
+		}
+		s.home = home
+		s.homeOK = true
+	})
+	return s.home, s.homeOK
+}
+
+// encodeDir is the Store-aware directory-group key. For tilde-form dirs it
+// expands ~ against the hub's $HOME, not this process's local $HOME, because the
+// ledger physically lives on the hub.
+func (s *Store) encodeDir(dir string) string {
+	if home, ok := s.hubHome(); ok {
+		return claude.Slug(expandWithHome(dir, home))
+	}
+	return EncodeDir(dir)
+}
+
 // dirPath is duck's record directory for a project dir: the <slug> group dir
 // plus the duck/ subdir that keeps our files out of Claude's own session tree.
 func (s *Store) dirPath(dir string) string {
-	return s.base + "/" + EncodeDir(dir) + "/" + duckSubdir
+	return s.base + "/" + s.encodeDir(dir) + "/" + duckSubdir
 }
 
 // shq shell-quotes a path for the Runner while keeping a leading ~/ unquoted so
