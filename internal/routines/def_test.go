@@ -8,11 +8,15 @@ import (
 	"time"
 )
 
-// writeRoutine writes <dir>/.duck/routines/<name>.toml (and, unless md=="",
-// a sibling <name>.md) for test setup.
-func writeRoutine(t *testing.T, projectDir, name, tomlBody, md string) {
+// writeRoutine writes $DUCK_HOME/routines/<ws>/<name>.toml (and, unless
+// md=="", a sibling <name>.md) for test setup. Callers must have pointed
+// DUCK_HOME at a scratch dir (t.Setenv) first.
+func writeRoutine(t *testing.T, ws, name, tomlBody, md string) {
 	t.Helper()
-	dir := filepath.Join(projectDir, ".duck", "routines")
+	dir, err := WorkspaceDir(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -26,9 +30,9 @@ func writeRoutine(t *testing.T, projectDir, name, tomlBody, md string) {
 	}
 }
 
-func TestLoad_MissingDir(t *testing.T) {
-	dir := t.TempDir()
-	defs, err := Load(dir)
+func TestLoadWorkspace_MissingDir(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	defs, err := LoadWorkspace("nowhere")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,24 +41,26 @@ func TestLoad_MissingDir(t *testing.T) {
 	}
 }
 
-func TestLoad_HappyPath(t *testing.T) {
-	dir := t.TempDir()
-	writeRoutine(t, dir, "b-heartbeat", `
+func TestLoadWorkspace_HappyPath(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	writeRoutine(t, "work", "b-heartbeat", `
 trigger = "heartbeat"
 interval = "15m"
 target = "run"
 report = "none"
 `, "beat the drum")
-	writeRoutine(t, dir, "a-cron", `
+	writeRoutine(t, "work", "a-cron", `
 trigger = "cron"
 schedule = "0 9 * * *"
 `, "good morning")
-	writeRoutine(t, dir, "c-manual", `
+	writeRoutine(t, "work", "c-manual", `
 trigger = "manual"
 target = "manager"
 `, "manual job")
+	// Another workspace's routine must not leak into work's list.
+	writeRoutine(t, "elsewhere", "z-other", `trigger = "manual"`, "other")
 
-	defs, err := Load(dir)
+	defs, err := LoadWorkspace("work")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,8 +80,8 @@ target = "manager"
 	if a.Trigger != TriggerCron || a.Schedule != "0 9 * * *" || a.Target != TargetRun || a.Report != "digest" {
 		t.Fatalf("unexpected a-cron def: %+v", a)
 	}
-	if a.Dir != dir {
-		t.Fatalf("Dir = %q, want %q", a.Dir, dir)
+	if a.Workspace != "work" {
+		t.Fatalf("Workspace = %q, want work", a.Workspace)
 	}
 	if a.Prompt != "good morning" {
 		t.Fatalf("Prompt = %q", a.Prompt)
@@ -92,10 +98,26 @@ target = "manager"
 	}
 }
 
-func TestLoad_PromptTrimmed(t *testing.T) {
-	dir := t.TempDir()
-	writeRoutine(t, dir, "r", `trigger = "manual"`, "\n\n  hello world  \n\n")
-	defs, err := Load(dir)
+func TestListWorkspaces(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	if wss, err := ListWorkspaces(); err != nil || wss != nil {
+		t.Fatalf("missing root should be (nil, nil), got %v %v", wss, err)
+	}
+	writeRoutine(t, "beta", "r", `trigger = "manual"`, "p")
+	writeRoutine(t, "alpha", "r", `trigger = "manual"`, "p")
+	wss, err := ListWorkspaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(wss, ",") != "alpha,beta" {
+		t.Fatalf("got %v want [alpha beta]", wss)
+	}
+}
+
+func TestLoadWorkspace_PromptTrimmed(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	writeRoutine(t, "w", "r", `trigger = "manual"`, "\n\n  hello world  \n\n")
+	defs, err := LoadWorkspace("w")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +126,10 @@ func TestLoad_PromptTrimmed(t *testing.T) {
 	}
 }
 
-func TestLoad_MissingMd(t *testing.T) {
-	dir := t.TempDir()
-	writeRoutine(t, dir, "r", `trigger = "manual"`, "")
-	_, err := Load(dir)
+func TestLoadWorkspace_MissingMd(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	writeRoutine(t, "w", "r", `trigger = "manual"`, "")
+	_, err := LoadWorkspace("w")
 	if err == nil {
 		t.Fatal("expected error for missing .md")
 	}
@@ -116,7 +138,7 @@ func TestLoad_MissingMd(t *testing.T) {
 	}
 }
 
-func TestLoad_ValidationErrors(t *testing.T) {
+func TestLoadWorkspace_ValidationErrors(t *testing.T) {
 	cases := []struct {
 		name string
 		toml string
@@ -143,9 +165,9 @@ frobnicate = true`},
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			writeRoutine(t, dir, "r", tc.toml, "prompt")
-			_, err := Load(dir)
+			t.Setenv("DUCK_HOME", t.TempDir())
+			writeRoutine(t, "w", "r", tc.toml, "prompt")
+			_, err := LoadWorkspace("w")
 			if err == nil {
 				t.Fatalf("expected error for case %q", tc.name)
 			}
@@ -156,10 +178,10 @@ frobnicate = true`},
 	}
 }
 
-func TestLoad_MalformedToml(t *testing.T) {
-	dir := t.TempDir()
-	writeRoutine(t, dir, "r", `trigger = "manual`, "prompt") // unterminated string
-	_, err := Load(dir)
+func TestLoadWorkspace_MalformedToml(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	writeRoutine(t, "w", "r", `trigger = "manual`, "prompt") // unterminated string
+	_, err := LoadWorkspace("w")
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
@@ -168,18 +190,18 @@ func TestLoad_MalformedToml(t *testing.T) {
 	}
 }
 
-func TestLoad_IgnoresNonTomlFiles(t *testing.T) {
-	dir := t.TempDir()
-	writeRoutine(t, dir, "r", `trigger = "manual"`, "prompt")
-	routinesDir := filepath.Join(dir, ".duck", "routines")
-	if err := os.WriteFile(filepath.Join(routinesDir, "README.txt"), []byte("hi"), 0o644); err != nil {
+func TestLoadWorkspace_IgnoresNonTomlFiles(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	writeRoutine(t, "w", "r", `trigger = "manual"`, "prompt")
+	dir, _ := WorkspaceDir("w")
+	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(routinesDir, "subdir.toml"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "subdir.toml"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	defs, err := Load(dir)
+	defs, err := LoadWorkspace("w")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,11 +240,11 @@ func TestDue_Heartbeat(t *testing.T) {
 }
 
 func TestDue_Cron(t *testing.T) {
-	dir := t.TempDir()
+	t.Setenv("DUCK_HOME", t.TempDir())
 	// every day at 09:00
-	writeRoutine(t, dir, "r", `trigger = "cron"
+	writeRoutine(t, "w", "r", `trigger = "cron"
 schedule = "0 9 * * *"`, "prompt")
-	defs, err := Load(dir)
+	defs, err := LoadWorkspace("w")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,13 +255,6 @@ schedule = "0 9 * * *"`, "prompt")
 	now := time.Date(2026, 7, 4, 9, 0, 0, 0, time.Local) // exactly a fire instant
 	if d.Due(time.Time{}, now) {
 		t.Fatal("cron with zero last should not fire immediately (waits for next slot after now)")
-	}
-
-	// A zero last is never due, whatever "now" is — the tick seeds
-	// LastFire=now on first sight, and the routine fires at its next slot
-	// after that seed.
-	if d.Due(time.Time{}, now) {
-		t.Fatal("cron with zero last should never be due (tick seeds last-fire on first sight)")
 	}
 	if d.Due(time.Time{}, now.Add(24*time.Hour)) {
 		t.Fatal("cron with zero last should never be due even a day later (seeding is the tick's job)")

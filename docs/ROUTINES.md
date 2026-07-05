@@ -9,14 +9,17 @@ with channels IS remote control.
 
 ## The organizational model (the actual point)
 
-A workspace is an EMPLOYEE, not furniture: **claude in the main pane is the
+A workspace is a MANAGER with a team: **claude in the main pane is the
 manager; the sidebar is its flock of executors** (codex runs, shells,
 artifacts), pads are team memory, channels are how the manager tasks and
-reads its reports, and routines are the workspace's JOB DESCRIPTION. Each
-duck manages its flock and reports up; the ⌂ workspaces tab is the org
-chart; the human (or one day a chief-of-staff workspace consuming
-`duck channel serve`) sits at the top. This was implicit in the original
-main-pane-is-claude design — routines just make it official.
+reads its reports, and routines are what the employees DO — the team's
+standing duties, owned by the WORKSPACE (v5 correction: not by the project
+dir — several workspaces on one repo each keep their own duties, and fires
+and reports land exactly where they were scheduled). Each duck manages its
+flock and reports up; the ⌂ workspaces tab is the org chart; the human (or
+one day a chief-of-staff workspace consuming `duck channel serve`) sits at
+the top. This was implicit in the original main-pane-is-claude design —
+routines just make it official.
 
 Consequence (v3, Andrew's correction): **schedules drive EXECUTORS; events
 drive the MANAGER.** Routines launch/continue codex runs on the clock; the
@@ -56,15 +59,22 @@ set composes them freely; trust is merely the default.
   already render it). Status dots / kill / channel send all work today.
 - Run history = codex rollouts (~/.codex/sessions) — codex already persists
   every thread; duck reads, never writes a second ledger.
-- Definitions are FILES in the project (self-modifiable by agents, synced by
-  duck, reviewable in git). tmux + files stay the only databases.
+- Definitions are FILES on the hub, owned by the workspace
+  (~/.duck/routines/<workspace>/ — self-modifiable by agents via
+  `duck routines add`). tmux + files stay the only databases. `add` marks
+  the workspace Persistent in the ledger, so its schedule (and the
+  workspace itself) survives hub reboots.
 
 ## Routine format — duck-native (flock never shipped; no compat debt)
 
 ```
-<project>/.duck/routines/<name>.toml   ← trigger + target + overrides
-<project>/.duck/routines/<name>.md     ← the prompt (the job description)
+~/.duck/routines/<workspace>/<name>.toml   ← trigger + target + overrides
+~/.duck/routines/<workspace>/<name>.md     ← the prompt (the job description)
 ```
+
+Created with `duck routines add <name> [--cron "…" | --every 15m | --manual]
+[--manager] [--report none] <prompt…>` from inside the workspace (or by
+writing the files directly).
 
 Fields (v1): `trigger = "cron" | "heartbeat" | "manual"`,
 `schedule`/`interval`, `target = "run" (default) | "manager"` (run = codex
@@ -102,20 +112,20 @@ default.
 
 ## Tick algorithm (`duck routines tick`, hidden verb, runs every minute)
 
-1. Projects: union of (a) live workspaces' @duck_dir, (b) ~/.duck/routines-projects
-   (dirs registered by `duck routines enable`, so automation survives all
-   workspaces being closed).
-2. Per project: parse `.flock/*/routine.toml`; compute due-ness from
-   last-fire state in ~/.duck/routines-state.json (one small JSON, like
-   names.json).
-3. Fire due routines per semantics above. Workspace missing → create it
-   headless (session.New + panel arm — same path as attach arming) so runs
-   are always inspectable later.
+1. Heal: every Persistent ledger record whose session is gone is recreated
+   headless under its own name (manager relaunched) — so scheduled
+   workspaces survive reboots.
+2. Workspaces: subdirectories of ~/.duck/routines/. One not live after the
+   heal (no Persistent record) is DORMANT — logged, skipped, never fired.
+3. Per live workspace: parse its *.toml; compute due-ness from last-fire
+   state in ~/.duck/routines-state.json (keyed workspace+name); fire due
+   routines per semantics above, INTO that workspace.
 
 ## Verbs
 
-- `duck routines` — list (project, routine, trigger, last fire, live status)
-- `duck routines enable|disable` — register/unregister the current project
+- `duck routines` — list this workspace's routines (`--all`: every workspace)
+- `duck routines add <name> …` — create one here (writes files, marks the
+  workspace persistent); `rm <name>` deletes
 - `duck routines fire <name>` — manual trigger (also from roster: `new`/fire)
 - `duck routines install` — systemd timer, evict-install pattern
 - `duck routines tick` — hidden; the timer's entrypoint

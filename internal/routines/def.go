@@ -1,10 +1,15 @@
-// Package routines parses duck's routine definitions — the workspace's job
+// Package routines parses duck's routine definitions — the WORKSPACE's job
 // description (DESIGN: docs/ROUTINES.md) — and computes due-ness against the
-// clock. A routine is a pair of files under <project>/.duck/routines/:
+// clock. A workspace is a manager (claude in the main pane) with a flock of
+// executors; its routines are what those employees do on a schedule. A
+// routine is a pair of files under ~/.duck/routines/<workspace>/:
 // <name>.toml (trigger + target + overrides) and <name>.md (the prompt, the
-// actual job description). Parsing and firing are deliberately split: this
-// package only owns Load (files -> Def) and Due (Def + clock -> bool); the
-// tick loop, state persistence, and pane creation live elsewhere.
+// actual job description). Stored hub-side, owned by the workspace — NOT the
+// project dir — so several workspaces on one repo each keep their own duties,
+// and fires/reports land exactly where they were scheduled. Parsing and
+// firing are deliberately split: this file owns LoadWorkspace (files -> Def)
+// and Due (Def + clock -> bool); the tick loop, state persistence, and pane
+// creation live elsewhere.
 package routines
 
 import (
@@ -38,14 +43,14 @@ const (
 
 // Def is one parsed routine definition.
 type Def struct {
-	Name     string // file basename without .toml
-	Dir      string // absolute project root it was loaded from
-	Trigger  Trigger
-	Schedule string        // cron expression, required when Trigger==cron
-	Interval time.Duration // required when Trigger==heartbeat (toml value is a Go duration string like "15m")
-	Target   Target        // defaults to "run"
-	Report   string        // "digest" (default) | "none"
-	Prompt   string        // contents of the sibling <name>.md, trimmed
+	Name      string // file basename without .toml
+	Workspace string // owning workspace (tmux session name) it was loaded from
+	Trigger   Trigger
+	Schedule  string        // cron expression, required when Trigger==cron
+	Interval  time.Duration // required when Trigger==heartbeat (toml value is a Go duration string like "15m")
+	Target    Target        // defaults to "run"
+	Report    string        // "digest" (default) | "none"
+	Prompt    string        // contents of the sibling <name>.md, trimmed
 
 	schedule cron.Schedule // parsed at Load time so bad cron exprs fail early
 }
@@ -61,15 +66,58 @@ type rawDef struct {
 	Report   string `toml:"report"`
 }
 
-// routinesSubdir is where routine definitions live under a project root.
-const routinesSubdir = ".duck/routines"
+// Home returns the workspace-routines root: $DUCK_HOME/routines (or
+// ~/.duck/routines). Each subdirectory is one workspace's job description.
+func Home() (string, error) {
+	d, err := dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(d, "routines"), nil
+}
 
-// Load parses every *.toml under <projectDir>/.duck/routines. Missing
-// routines dir => (nil, nil). A malformed routine returns an error naming the
-// file. A .toml without a sibling .md is an error (the prompt is the job
-// description; a routine without one is meaningless).
-func Load(projectDir string) ([]Def, error) {
-	dir := filepath.Join(projectDir, routinesSubdir)
+// WorkspaceDir returns the routines dir for one workspace.
+func WorkspaceDir(ws string) (string, error) {
+	root, err := Home()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, ws), nil
+}
+
+// ListWorkspaces returns the workspaces that have routine definitions (the
+// subdirectories of Home()). Missing root => (nil, nil).
+func ListWorkspaces() ([]string, error) {
+	root, err := Home()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// LoadWorkspace parses every *.toml under ~/.duck/routines/<ws>/. Missing
+// dir => (nil, nil). A malformed routine returns an error naming the file. A
+// .toml without a sibling .md is an error (the prompt is the job description;
+// a routine without one is meaningless).
+func LoadWorkspace(ws string) ([]Def, error) {
+	dir, err := WorkspaceDir(ws)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -87,7 +135,7 @@ func Load(projectDir string) ([]Def, error) {
 		tomlPath := filepath.Join(dir, e.Name())
 		mdPath := filepath.Join(dir, name+".md")
 
-		d, err := loadOne(name, projectDir, tomlPath, mdPath)
+		d, err := loadOne(name, ws, tomlPath, mdPath)
 		if err != nil {
 			return nil, fmt.Errorf("routine %s: %w", e.Name(), err)
 		}
@@ -98,7 +146,7 @@ func Load(projectDir string) ([]Def, error) {
 	return defs, nil
 }
 
-func loadOne(name, projectDir, tomlPath, mdPath string) (Def, error) {
+func loadOne(name, ws, tomlPath, mdPath string) (Def, error) {
 	var raw rawDef
 	meta, err := toml.DecodeFile(tomlPath, &raw)
 	if err != nil {
@@ -113,12 +161,12 @@ func loadOne(name, projectDir, tomlPath, mdPath string) (Def, error) {
 	}
 
 	d := Def{
-		Name:     name,
-		Dir:      projectDir,
-		Trigger:  Trigger(raw.Trigger),
-		Schedule: raw.Schedule,
-		Target:   Target(raw.Target),
-		Report:   raw.Report,
+		Name:      name,
+		Workspace: ws,
+		Trigger:   Trigger(raw.Trigger),
+		Schedule:  raw.Schedule,
+		Target:    Target(raw.Target),
+		Report:    raw.Report,
 	}
 
 	switch d.Trigger {

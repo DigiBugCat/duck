@@ -2,8 +2,6 @@ package routines
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +11,7 @@ import (
 )
 
 // fakeRunner scripts tmux responses by argv-prefix and records calls, so the
-// tmux-free logic (project sweep, workspace reuse/create) is unit-testable.
+// tmux-free logic (workspace sweep, firing) is unit-testable.
 type fakeRunner struct {
 	calls []string
 	// responder returns (output, matched) for a joined argv; unmatched calls
@@ -40,137 +38,15 @@ func (f *fakeRunner) called(prefix string) bool {
 	return false
 }
 
-func TestWorkspaceDirsSkipsCompanions(t *testing.T) {
-	f := &fakeRunner{responder: func(args []string) (string, bool) {
-		if args[0] == "list-sessions" {
-			// name-less format: dir \t panel_of. A companion has panel_of set;
-			// a bare non-duck session has an empty dir.
-			return "~/dev/app\t\n~/dev/app\twork\n\t\n~/dev/other\t\n", true
-		}
-		return "", false
-	}}
-	dirs, err := workspaceDirs(f.run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"~/dev/app", "~/dev/other"}
-	if strings.Join(dirs, ",") != strings.Join(want, ",") {
-		t.Fatalf("got %v want %v", dirs, want)
-	}
-}
-
-func TestSweepProjectsUnionAndDedup(t *testing.T) {
-	home, _ := os.UserHomeDir()
-	duckHome := t.TempDir()
-	t.Setenv("DUCK_HOME", duckHome)
-
-	// Register two projects, one of which also has a live workspace.
-	if err := Enable(filepath.Join(home, "dev/app")); err != nil {
-		t.Fatal(err)
-	}
-	if err := Enable(filepath.Join(home, "dev/reg-only")); err != nil {
-		t.Fatal(err)
-	}
-
-	f := &fakeRunner{responder: func(args []string) (string, bool) {
-		if args[0] == "list-sessions" {
-			return "~/dev/app\t\n", true
-		}
-		return "", false
-	}}
-	got, err := SweepProjects(f.run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Expect absolute, deduped: app (live+registered → once) and reg-only.
-	want := map[string]bool{
-		filepath.Join(home, "dev/app"):      true,
-		filepath.Join(home, "dev/reg-only"): true,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("got %v want keys %v", got, want)
-	}
-	for _, g := range got {
-		if !want[g] {
-			t.Fatalf("unexpected project %q in %v", g, got)
-		}
-	}
-}
-
-func TestEnsureWorkspaceReuse(t *testing.T) {
-	home, _ := os.UserHomeDir()
-	absDir := filepath.Join(home, "dev/app")
-	f := &fakeRunner{responder: func(args []string) (string, bool) {
-		if args[0] == "list-sessions" {
-			return "app\t~/dev/app\t\nother\t~/dev/other\t\n", true
-		}
-		return "", false
-	}}
-	name, err := ensureWorkspace(f.run, absDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if name != "app" {
-		t.Fatalf("got %q want app", name)
-	}
-	if f.called("new-session") {
-		t.Fatal("reuse must not create a session")
-	}
-}
-
-func TestEnsureWorkspaceCreatesWhenMissing(t *testing.T) {
-	home, _ := os.UserHomeDir()
-	absDir := filepath.Join(home, "dev/fresh")
-	f := &fakeRunner{responder: func(args []string) (string, bool) {
-		if args[0] == "list-sessions" {
-			return "", true // no sessions live
-		}
-		return "", false
-	}}
-	name, err := ensureWorkspace(f.run, absDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if name != "fresh" {
-		t.Fatalf("got %q want fresh (DeriveID of dir)", name)
-	}
-	if !f.called("new-session -d -s fresh -c " + absDir) {
-		t.Fatalf("missing new-session call; calls=%v", f.calls)
-	}
-	// @duck_dir stamped tilde-form.
-	if !f.called("set-option -t fresh @duck_dir ~/dev/fresh") {
-		t.Fatalf("missing @duck_dir stamp; calls=%v", f.calls)
-	}
-}
-
-func TestFreshSessionIDAvoidsCollision(t *testing.T) {
-	home, _ := os.UserHomeDir()
-	f := &fakeRunner{responder: func(args []string) (string, bool) {
-		if args[0] == "list-sessions" {
-			return "app\napp-2\n", true
-		}
-		return "", false
-	}}
-	got := freshSessionID(f.run, filepath.Join(home, "dev/app"))
-	if got != "app-3" {
-		t.Fatalf("got %q want app-3", got)
-	}
-}
-
-// TestTickIgnoresManual: manual routines never auto-fire — no session
-// creation, no state change.
+// TestTickIgnoresManual: manual routines never auto-fire — no spawn, no
+// state change.
 func TestTickIgnoresManual(t *testing.T) {
-	duckHome := t.TempDir()
-	t.Setenv("DUCK_HOME", duckHome)
-	proj := t.TempDir()
-	writeRoutine(t, proj, "manualjob", "trigger = \"manual\"\n", "do a thing")
-	if err := Enable(proj); err != nil {
-		t.Fatal(err)
-	}
+	t.Setenv("DUCK_HOME", t.TempDir())
+	writeRoutine(t, "work", "manualjob", "trigger = \"manual\"\n", "do a thing")
 
 	f := &fakeRunner{responder: func(args []string) (string, bool) {
 		if args[0] == "list-sessions" {
-			return "", true
+			return "work\n", true // the workspace is live
 		}
 		return "", false
 	}}
@@ -178,7 +54,7 @@ func TestTickIgnoresManual(t *testing.T) {
 	if err := Tick(f.run, time.Now(), &log); err != nil {
 		t.Fatal(err)
 	}
-	if f.called("new-session") {
+	if f.called("split-window") {
 		t.Fatalf("tick must not fire manual routines; calls=%v", f.calls)
 	}
 	st, _ := LoadState()
@@ -187,36 +63,47 @@ func TestTickIgnoresManual(t *testing.T) {
 	}
 }
 
-// TestTickFiresHeartbeat: a fresh heartbeat is due on the FIRST tick (no cron
-// seed) — its persistent codex TUI pane spawns, the composer is awaited, and
-// the prompt is typed in. The spawned cmdline is the TUI (no `exec`) with the
-// notify hook wired.
-func TestTickFiresHeartbeat(t *testing.T) {
-	duckHome := t.TempDir()
-	t.Setenv("DUCK_HOME", duckHome)
-	t.Setenv("DUCK_CODEX_BIN", "echo-codex")
-	oldSleep := sleepFn
-	sleepFn = func(time.Duration) {}
-	defer func() { sleepFn = oldSleep }()
-	proj := t.TempDir()
-	writeRoutine(t, proj, "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "report status")
-	if err := Enable(proj); err != nil {
+// TestTickSkipsDormantWorkspace: a routine whose workspace session is gone
+// (and not healable) fires nothing — its duties sleep, logged.
+func TestTickSkipsDormantWorkspace(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	writeRoutine(t, "ghost", "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "p")
+
+	f := &fakeRunner{responder: func(args []string) (string, bool) {
+		if args[0] == "list-sessions" {
+			return "", true // nothing live
+		}
+		return "", false
+	}}
+	var log bytes.Buffer
+	if err := Tick(f.run, time.Now(), &log); err != nil {
 		t.Fatal(err)
 	}
+	if f.called("split-window") {
+		t.Fatalf("dormant workspace must not fire; calls=%v", f.calls)
+	}
+	if !strings.Contains(log.String(), "ghost gone") {
+		t.Fatalf("dormancy must be logged: %s", log.String())
+	}
+}
 
-	var spawnCmd string
-	f := &fakeRunner{responder: func(args []string) (string, bool) {
+// heartbeatResponder scripts a live workspace "work" with an empty lot and
+// captures the spawn cmdline.
+func heartbeatResponder(spawnCmd *string) func(args []string) (string, bool) {
+	return func(args []string) (string, bool) {
 		switch args[0] {
 		case "list-sessions":
-			return "", true
+			return "work\n", true
+		case "show-options":
+			return "~/dev/work\n", true // @duck_dir
 		case "has-session":
 			return "", true
 		case "list-windows":
 			return "lot\n", true
 		case "list-panes":
-			return "", true // no existing pane named beat
+			return "", true // no existing pane by this name
 		case "split-window":
-			spawnCmd = strings.Join(args, " ")
+			*spawnCmd = strings.Join(args, " ")
 			return "%42\n", true
 		case "new-window":
 			return "%2\n", true
@@ -224,7 +111,23 @@ func TestTickFiresHeartbeat(t *testing.T) {
 			return "codex ready\n› \n", true // composer on screen
 		}
 		return "", false
-	}}
+	}
+}
+
+// TestTickFiresHeartbeat: a fresh heartbeat is due on the FIRST tick (no cron
+// seed) — its persistent codex TUI pane spawns IN ITS OWN WORKSPACE, the
+// composer is awaited, and the prompt is typed in. The spawned cmdline is the
+// TUI (no `exec`) with the notify hook wired.
+func TestTickFiresHeartbeat(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir())
+	t.Setenv("DUCK_CODEX_BIN", "echo-codex")
+	oldSleep := sleepFn
+	sleepFn = func(time.Duration) {}
+	defer func() { sleepFn = oldSleep }()
+	writeRoutine(t, "work", "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "report status")
+
+	var spawnCmd string
+	f := &fakeRunner{responder: heartbeatResponder(&spawnCmd)}
 	var log bytes.Buffer
 	if err := Tick(f.run, time.Now(), &log); err != nil {
 		t.Fatalf("tick: %v\nlog=%s", err, log.String())
@@ -235,10 +138,11 @@ func TestTickFiresHeartbeat(t *testing.T) {
 	if !strings.Contains(spawnCmd, `,"channel","notify"]`) {
 		t.Fatalf("notify hook not wired on heartbeat pane; spawnCmd=%q", spawnCmd)
 	}
-	// The beat itself was typed into the new pane.
-	if !f.called("send-keys") {
-		t.Fatalf("beat prompt must be sent; calls=%v", f.calls)
+	// The pane lands in the routine's OWN workspace's lot.
+	if !strings.Contains(spawnCmd, "-t work-agents:lot") {
+		t.Fatalf("heartbeat pane must land in the owning workspace; spawnCmd=%q", spawnCmd)
 	}
+	// The beat itself was typed into the new pane.
 	sent := false
 	for _, c := range f.calls {
 		if strings.Contains(c, "send-keys -t %42 -l -- report status") {
@@ -248,9 +152,9 @@ func TestTickFiresHeartbeat(t *testing.T) {
 	if !sent {
 		t.Fatalf("prompt not delivered to the heartbeat pane; calls=%v", f.calls)
 	}
-	// And the beat was recorded.
+	// And the beat was recorded under the workspace key.
 	st, _ := LoadState()
-	if st.LastFire[Key(proj, "beat")].IsZero() {
+	if st.LastFire[Key("work", "beat")].IsZero() {
 		t.Fatalf("heartbeat beat not recorded: %v", st.LastFire)
 	}
 }
@@ -259,11 +163,9 @@ func TestTickFiresHeartbeat(t *testing.T) {
 // send-keys digest into the main claude pane (no sidecar alive in this test),
 // with report="none" routines filtered out.
 func TestCourierDeliversBatchedDigest(t *testing.T) {
-	duckHome := t.TempDir()
-	t.Setenv("DUCK_HOME", duckHome)
-	proj := t.TempDir()
-	writeRoutine(t, proj, "loud", "trigger = \"manual\"\n", "p")
-	writeRoutine(t, proj, "quiet", "trigger = \"manual\"\nreport = \"none\"\n", "p")
+	t.Setenv("DUCK_HOME", t.TempDir())
+	writeRoutine(t, "work", "loud", "trigger = \"manual\"\n", "p")
+	writeRoutine(t, "work", "quiet", "trigger = \"manual\"\nreport = \"none\"\n", "p")
 
 	for _, r := range []channel.RunReport{
 		{Routine: "loud", Message: "42 tests passed\nlong detail", At: time.Now()},
@@ -278,8 +180,6 @@ func TestCourierDeliversBatchedDigest(t *testing.T) {
 	var sent []string
 	f := &fakeRunner{responder: func(args []string) (string, bool) {
 		switch args[0] {
-		case "show-options":
-			return proj + "\n", true
 		case "list-panes":
 			return "%1\t\tclaude\n", true
 		case "send-keys":
@@ -313,19 +213,18 @@ func TestCourierDeliversBatchedDigest(t *testing.T) {
 	}
 }
 
-// TestFireManagerPrefersPublishThenSendKeys: target=manager delivers via the
-// publish spool when the sidecar is alive, else types into the main claude
-// pane, else drops the beat (recorded, logged).
+// TestFireManagerPaths: target=manager delivers via the publish spool when
+// the sidecar is alive, else types into the main claude pane, else drops the
+// beat (recorded, logged).
 func TestFireManagerPaths(t *testing.T) {
-	duckHome := t.TempDir()
-	t.Setenv("DUCK_HOME", duckHome)
-	d := Def{Name: "digest", Dir: "/w", Trigger: TriggerCron, Target: TargetManager, Prompt: "daily digest please"}
+	t.Setenv("DUCK_HOME", t.TempDir())
+	d := Def{Name: "digest", Workspace: "work", Trigger: TriggerCron, Target: TargetManager, Prompt: "daily digest please"}
 
 	// Path 1: no sidecar, main pane runs claude → send-keys.
 	f := &fakeRunner{responder: func(args []string) (string, bool) {
 		switch args[0] {
 		case "list-sessions":
-			return "work\t/w\t1\t1\t1\n", true
+			return "work\n", true
 		case "has-session":
 			return "", true
 		case "list-windows":
@@ -366,47 +265,38 @@ func TestFireManagerPaths(t *testing.T) {
 }
 
 // TestTickFiresDueCron drives a due cron routine end to end against the fake
-// runner and asserts the executor pane spawn + last-fire recording.
+// runner and asserts the executor pane spawn + last-fire recording — all in
+// the routine's owning workspace.
 func TestTickFiresDueCron(t *testing.T) {
-	duckHome := t.TempDir()
-	t.Setenv("DUCK_HOME", duckHome)
+	t.Setenv("DUCK_HOME", t.TempDir())
 	// No codex on the test box; the cmdline is inspected, never run.
 	t.Setenv("DUCK_CODEX_BIN", "echo-codex")
-	proj := t.TempDir()
-	writeRoutine(t, proj, "nightly", "trigger = \"cron\"\nschedule = \"* * * * *\"\n", "run the nightly job")
-	if err := Enable(proj); err != nil {
-		t.Fatal(err)
-	}
+	writeRoutine(t, "work", "nightly", "trigger = \"cron\"\nschedule = \"* * * * *\"\n", "run the nightly job")
 
 	// Seed a last-fire well in the past so "* * * * *" is due now.
 	st, _ := LoadState()
-	st.LastFire[Key(proj, "nightly")] = time.Now().Add(-time.Hour)
+	st.LastFire[Key("work", "nightly")] = time.Now().Add(-time.Hour)
 	if err := SaveState(st); err != nil {
 		t.Fatal(err)
 	}
 
 	var spawnCmd string
 	f := &fakeRunner{responder: func(args []string) (string, bool) {
-		joined := strings.Join(args, " ")
-		switch {
-		case args[0] == "list-sessions":
-			return "", true // nothing live → ensureWorkspace creates
-		case args[0] == "has-session":
+		switch args[0] {
+		case "list-sessions":
+			return "work\n", true // the workspace is live
+		case "show-options":
+			return "~/dev/work\n", true // @duck_dir
+		case "has-session":
 			return "", true // companion "exists" so EnsureCompanion is cheap
-		case args[0] == "list-windows":
+		case "list-windows":
 			return "lot\n", true // companion already has a lot window
-		case args[0] == "list-panes":
+		case "list-panes":
 			return "", true // no existing run pane, no viewport
-		case args[0] == "split-window":
-			// capture the spawned cmdline (last arg after `sh -c`)
-			for i, a := range args {
-				if a == "-P" && i+2 < len(args) {
-					// pane id is returned; capture full argv for cmdline check
-				}
-			}
-			spawnCmd = joined
+		case "split-window":
+			spawnCmd = strings.Join(args, " ")
 			return "%99\n", true
-		case args[0] == "new-window":
+		case "new-window":
 			return "%2\n", true
 		}
 		return "", false
@@ -427,9 +317,9 @@ func TestTickFiresDueCron(t *testing.T) {
 	if !strings.Contains(spawnCmd, `,"channel","notify"]`) {
 		t.Fatalf("notify hook not wired; spawnCmd=%q", spawnCmd)
 	}
-	// last-fire advanced to ~now.
+	// last-fire advanced to ~now, under the workspace key.
 	st2, _ := LoadState()
-	if got := st2.LastFire[Key(proj, "nightly")]; time.Since(got) > time.Minute {
+	if got := st2.LastFire[Key("work", "nightly")]; time.Since(got) > time.Minute {
 		t.Fatalf("last-fire not advanced: %v", got)
 	}
 }
@@ -440,8 +330,7 @@ func TestTickFiresDueCron(t *testing.T) {
 // firing. Uses a scratch ledger over the local sh runner so the real
 // ~/.claude/projects is never touched.
 func TestTickHealsPersistentWorkspace(t *testing.T) {
-	duckHome := t.TempDir()
-	t.Setenv("DUCK_HOME", duckHome) // isolate routines-state/-projects
+	t.Setenv("DUCK_HOME", t.TempDir()) // isolate routines state/defs
 
 	// Point the ledger at a scratch base and seed one persistent record with a
 	// parent. Restore the package seam after the test.

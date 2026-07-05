@@ -1,22 +1,21 @@
 // `duck routines` — the workspace's job description (DESIGN: docs/ROUTINES.md).
-// A routine is a pair of files under <project>/.duck/routines/ (<name>.toml +
-// <name>.md); the hub fires the due ones on a systemd/launchd timer, each fire
-// landing as a codex executor pane in the project workspace's `runs` tab.
+// A workspace is a manager (claude in the main pane) with a flock of
+// executors; routines are what those employees do on a schedule. Definitions
+// are pairs of files under ~/.duck/routines/<workspace>/ (<name>.toml +
+// <name>.md), owned by the WORKSPACE — the hub fires the due ones on a
+// systemd/launchd timer, each fire landing in that workspace's `runs` tab.
 //
-//	duck routines                 list routines across live + registered projects
-//	duck routines enable|disable  register/unregister the current project
-//	duck routines fire <name>     manually trigger a routine of the current project
+//	duck routines                 list this workspace's routines (--all: every workspace)
+//	duck routines add <name> …    create a routine here (writes the files, marks the workspace persistent)
+//	duck routines rm <name>       delete a routine here
+//	duck routines fire <name>     manually trigger a routine of this workspace
 //	duck routines install         put the tick on the hub's native timer
 //	duck routines tick            hidden: the timer's entrypoint (one sweep)
-//
-// Phase 1: trigger=cron/manual, target=run. Heartbeats and target=manager are
-// recognized but not yet fired.
 package command
 
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -33,6 +32,11 @@ import (
 
 const routinesSystemdUnit = "duck-routines"
 
+var (
+	routinesAll bool
+	routinesTSV bool
+)
+
 var routinesCmd = &cobra.Command{
 	Use:   "routines",
 	Short: "The workspace's job description: scheduled + manual codex runs",
@@ -41,32 +45,32 @@ var routinesCmd = &cobra.Command{
 	},
 }
 
-// currentProject resolves the project root for enable/disable/fire: the git
-// toplevel of the CWD if inside a repo, else the cleaned CWD. Absolute.
-func currentProject() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
+// currentWorkspace resolves the workspace whose routines we operate on: the
+// enclosing tmux session. Routines are workspace-owned, so outside tmux there
+// is no answer.
+func currentWorkspace(run panel.Runner) (string, error) {
+	if !panel.InsideTmux() {
+		return "", fmt.Errorf("not inside a duck workspace — routines belong to a workspace; run this inside one")
 	}
-	if out, gerr := exec.Command("git", "-C", cwd, "rev-parse", "--show-toplevel").Output(); gerr == nil {
-		if root := strings.TrimSpace(string(out)); root != "" {
-			return filepath.Clean(root), nil
-		}
-	}
-	return filepath.Clean(cwd), nil
+	return panel.CurrentSession(run)
 }
 
 func listRoutines(c *cobra.Command) error {
 	run := panel.ExecRunner
 
-	projects, err := routines.SweepProjects(run)
-	if err != nil {
-		return err
-	}
-	// Always include the current project so `duck routines` in an unregistered
-	// repo still shows its (as-yet-unscheduled) definitions.
-	if proj, perr := currentProject(); perr == nil {
-		projects = appendUnique(projects, proj)
+	var wss []string
+	if routinesAll {
+		all, err := routines.ListWorkspaces()
+		if err != nil {
+			return err
+		}
+		wss = all
+	} else {
+		ws, err := currentWorkspace(run)
+		if err != nil {
+			return err
+		}
+		wss = []string{ws}
 	}
 
 	state, err := routines.LoadState()
@@ -74,13 +78,16 @@ func listRoutines(c *cobra.Command) error {
 		return err
 	}
 
-	tw := tabwriter.NewWriter(c.OutOrStdout(), 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "PROJECT\tROUTINE\tTRIGGER\tSCHEDULE\tLAST FIRE\tSTATUS")
+	var tw *tabwriter.Writer
+	if !routinesTSV {
+		tw = tabwriter.NewWriter(c.OutOrStdout(), 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "WORKSPACE\tROUTINE\tTRIGGER\tSCHEDULE\tLAST FIRE\tSTATUS")
+	}
 	any := false
-	for _, proj := range projects {
-		defs, lerr := routines.Load(proj)
+	for _, ws := range wss {
+		defs, lerr := routines.LoadWorkspace(ws)
 		if lerr != nil {
-			fmt.Fprintf(c.ErrOrStderr(), "routines: skip %s: %v\n", proj, lerr)
+			fmt.Fprintf(c.ErrOrStderr(), "routines: skip %s: %v\n", ws, lerr)
 			continue
 		}
 		for _, d := range defs {
@@ -93,156 +100,219 @@ func listRoutines(c *cobra.Command) error {
 				sched = "—"
 			}
 			last := "never"
-			if t, ok := state.LastFire[routines.Key(d.Dir, d.Name)]; ok && !t.IsZero() {
+			if t, ok := state.LastFire[routines.Key(ws, d.Name)]; ok && !t.IsZero() {
 				last = t.Local().Format("Jan 2 15:04")
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				filepath.Base(proj), d.Name, d.Trigger, sched, last, routineStatus(run, proj, d.Name))
+			status := routineStatus(run, ws, d.Name)
+			if routinesTSV {
+				fmt.Fprintf(c.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, last, status)
+			} else {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, last, status)
+			}
 		}
 	}
-	if err := tw.Flush(); err != nil {
-		return err
-	}
-	if !any {
-		fmt.Fprintln(c.OutOrStdout(), "no routines (add .duck/routines/<name>.toml + <name>.md, then: duck routines enable)")
+	if tw != nil {
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+		if !any {
+			fmt.Fprintln(c.OutOrStdout(), "no routines here (create one: duck routines add <name> --cron '0 9 * * *' <prompt…>)")
+		}
 	}
 	return nil
 }
 
 // routineStatus reports the live state of a routine's most recent run pane:
-// the channel status ("working"/"done"/"idle") if a pane by that name exists in
-// the project's workspace, else "—" (no run yet / workspace closed).
-func routineStatus(run panel.Runner, proj, name string) string {
-	outer, ok := liveWorkspace(run, proj)
-	if !ok {
-		return "—"
-	}
-	ref, err := channel.FindAgent(run, outer, name)
+// the channel status ("working"/"done"/"idle") if a pane by that name exists
+// in the workspace, else "—" (no run yet / workspace closed).
+func routineStatus(run panel.Runner, ws, name string) string {
+	ref, err := channel.FindAgent(run, ws, name)
 	if err != nil {
 		return "—"
 	}
 	return channel.StatusByWindow(run, ref.WindowID)
 }
 
-// liveWorkspace finds the live tmux session for a project dir (by @duck_dir),
-// or ok=false. Both tilde and absolute forms are matched.
-func liveWorkspace(run panel.Runner, absDir string) (string, bool) {
-	tilde := paths.Contract(absDir)
-	out, err := run("list-sessions", "-F", "#{session_name}\t#{@duck_dir}\t#{@duck_panel_of}")
-	if err != nil {
-		return "", false
-	}
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 3)
-		if len(f) < 2 {
-			continue
+var (
+	addCron    string
+	addEvery   time.Duration
+	addManual  bool
+	addManager bool
+	addReport  string
+)
+
+var routinesAddCmd = &cobra.Command{
+	Use:   "add <name> [flags] <prompt…>",
+	Short: "Create a routine in this workspace (a standing duty for its executor flock)",
+	Long: `Create a routine owned by the current workspace: writes
+~/.duck/routines/<workspace>/<name>.toml + <name>.md and marks the workspace
+persistent in the ledger so its schedule survives hub reboots.
+
+Pick exactly one trigger (default --manual):
+  --cron "0 9 * * *"   fire on a cron schedule (waits for its next slot)
+  --every 15m          heartbeat: ONE persistent codex thread, a beat per interval
+  --manual             fire only on demand (duck routines fire <name>)
+
+  --manager            deliver the prompt to this workspace's manager claude
+                       instead of spawning a codex executor
+  --report none        don't include this routine's completions in digests`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(c *cobra.Command, args []string) error {
+		run := panel.ExecRunner
+		ws, err := currentWorkspace(run)
+		if err != nil {
+			return err
 		}
-		if len(f) == 3 && strings.TrimSpace(f[2]) != "" {
-			continue // companion
+		name := args[0]
+		prompt := strings.TrimSpace(strings.Join(args[1:], " "))
+		if prompt == "" {
+			return fmt.Errorf("empty prompt — the .md is the job description")
 		}
-		dir := strings.TrimSpace(f[1])
-		if dir == tilde || dir == absDir {
-			return strings.TrimSpace(f[0]), true
+
+		triggers := 0
+		var body strings.Builder
+		switch {
+		case addCron != "":
+			triggers++
+			fmt.Fprintf(&body, "trigger = %q\nschedule = %q\n", "cron", addCron)
 		}
-	}
-	return "", false
+		if addEvery > 0 {
+			triggers++
+			fmt.Fprintf(&body, "trigger = %q\ninterval = %q\n", "heartbeat", addEvery.String())
+		}
+		if addManual {
+			triggers++
+			fmt.Fprintf(&body, "trigger = %q\n", "manual")
+		}
+		if triggers == 0 {
+			fmt.Fprintf(&body, "trigger = %q\n", "manual")
+		}
+		if triggers > 1 {
+			return fmt.Errorf("pick ONE trigger: --cron, --every, or --manual")
+		}
+		if addManager {
+			fmt.Fprintf(&body, "target = %q\n", "manager")
+		}
+		if addReport != "" {
+			fmt.Fprintf(&body, "report = %q\n", addReport)
+		}
+
+		dir, err := routines.WorkspaceDir(ws)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		tomlPath := filepath.Join(dir, name+".toml")
+		mdPath := filepath.Join(dir, name+".md")
+		if _, err := os.Stat(tomlPath); err == nil {
+			return fmt.Errorf("routine %q already exists here (duck routines rm %s first)", name, name)
+		}
+		if err := os.WriteFile(tomlPath, []byte(body.String()), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(mdPath, []byte(prompt+"\n"), 0o644); err != nil {
+			os.Remove(tomlPath)
+			return err
+		}
+		// Validate by parsing exactly as the tick will; a bad definition must
+		// not survive on disk.
+		if _, err := routines.LoadWorkspace(ws); err != nil {
+			os.Remove(tomlPath)
+			os.Remove(mdPath)
+			return err
+		}
+
+		markWorkspacePersistent(c, run, ws)
+
+		switch {
+		case addCron != "":
+			fmt.Fprintf(c.OutOrStdout(), "added %s (cron %q) — first fire at its next slot\n", name, addCron)
+		case addEvery > 0:
+			fmt.Fprintf(c.OutOrStdout(), "added %s (heartbeat every %s) — its executor thread starts within a minute\n", name, addEvery)
+		default:
+			fmt.Fprintf(c.OutOrStdout(), "added %s (manual) — fires only on: duck routines fire %s\n", name, name)
+		}
+		return nil
+	},
 }
 
-func appendUnique(xs []string, x string) []string {
-	for _, e := range xs {
-		if e == x {
-			return xs
+// markWorkspacePersistent stamps Persistent on the workspace's ledger record
+// (creating one if needed) so the tick heals it back after a reboot — a
+// workspace with standing duties must outlive the tmux server. Best-effort
+// and reported, never fatal: the routine files are already written.
+func markWorkspacePersistent(c *cobra.Command, run panel.Runner, ws string) {
+	dirOut, err := run("show-options", "-t", ws, "-v", "@duck_dir")
+	if err != nil {
+		fmt.Fprintf(c.ErrOrStderr(), "routines: could not read @duck_dir: %v\n", err)
+		return
+	}
+	tilde := strings.TrimSpace(dirOut)
+	if tilde == "" {
+		if out, derr := run("display-message", "-p", "-t", ws+":", "#{pane_current_path}"); derr == nil {
+			tilde = paths.Contract(strings.TrimSpace(out))
 		}
 	}
-	return append(xs, x)
-}
-
-// setPersistentForCurrentDir marks (or clears) Persistent on the live
-// workspace's durable record for proj, so a persistent workspace is healed back
-// after a reboot and the tick's sweep sees the dir even with no file-registry
-// entry. It is the DURABLE half of enable/disable, in ADDITION to the file
-// registry. When no live workspace exists in proj there is nothing to stamp — we
-// fall back to the file registry alone (exactly the old behavior), so enabling
-// still works with every workspace closed. Best-effort and reported, never
-// fatal: a hub/ledger failure must not fail the enable/disable the user asked
-// for (the file registry write has already succeeded by the time this runs).
-func setPersistentForCurrentDir(c *cobra.Command, proj string, persistent bool) {
-	w, err := build()
-	if err != nil {
-		return // no hub configured: file registry alone (the pre-ledger behavior).
+	if tilde == "" {
+		fmt.Fprintf(c.ErrOrStderr(), "routines: workspace %s has no directory — not marked persistent\n", ws)
+		return
 	}
-	tilde := paths.Contract(proj)
-	s, ok, err := w.sessions.Recent(tilde)
-	if err != nil || !ok {
-		return // no live workspace in this dir: nothing to stamp.
-	}
-	store := workspaces.NewStore(w.client)
-	rec, found, err := store.Load(tilde, s.Name)
+	store := workspaces.NewStore(workspaces.LocalRunner{})
+	rec, found, err := store.Load(tilde, ws)
 	if err != nil {
 		fmt.Fprintf(c.ErrOrStderr(), "routines: could not read workspace record: %v\n", err)
 		return
 	}
 	if !found {
-		rec = workspaces.Record{Name: s.Name, Dir: tilde}
+		rec = workspaces.Record{Name: ws, Dir: tilde, Created: time.Now()}
 	}
-	if rec.Persistent == persistent {
-		return // already in the desired state.
+	if rec.Persistent {
+		return
 	}
-	rec.Persistent = persistent
+	rec.Persistent = true
+	rec.Updated = time.Now()
 	if err := store.Save(rec); err != nil {
 		fmt.Fprintf(c.ErrOrStderr(), "routines: could not update workspace record: %v\n", err)
 	}
 }
 
-var routinesEnableCmd = &cobra.Command{
-	Use:   "enable",
-	Short: "Register the current project so its routines fire even with no workspace open",
-	Args:  cobra.NoArgs,
+var routinesRmCmd = &cobra.Command{
+	Use:   "rm <name>",
+	Short: "Delete a routine of this workspace",
+	Args:  cobra.ExactArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		proj, err := currentProject()
+		ws, err := currentWorkspace(panel.ExecRunner)
 		if err != nil {
 			return err
 		}
-		if err := routines.Enable(proj); err != nil {
-			return err
-		}
-		// Durable form: if a live workspace exists here, mark its record Persistent
-		// so it heals back after a reboot (the file registry is legacy — see
-		// routines.SweepProjects).
-		setPersistentForCurrentDir(c, proj, true)
-		fmt.Fprintf(c.OutOrStdout(), "enabled routines for %s\n", proj)
-		return nil
-	},
-}
-
-var routinesDisableCmd = &cobra.Command{
-	Use:   "disable",
-	Short: "Unregister the current project (its files stay; the tick stops sweeping it)",
-	Args:  cobra.NoArgs,
-	RunE: func(c *cobra.Command, args []string) error {
-		proj, err := currentProject()
+		dir, err := routines.WorkspaceDir(ws)
 		if err != nil {
 			return err
 		}
-		if err := routines.Disable(proj); err != nil {
+		tomlPath := filepath.Join(dir, args[0]+".toml")
+		if _, err := os.Stat(tomlPath); err != nil {
+			return fmt.Errorf("no routine %q in workspace %s", args[0], ws)
+		}
+		if err := os.Remove(tomlPath); err != nil {
 			return err
 		}
-		setPersistentForCurrentDir(c, proj, false)
-		fmt.Fprintf(c.OutOrStdout(), "disabled routines for %s\n", proj)
+		_ = os.Remove(filepath.Join(dir, args[0]+".md"))
+		fmt.Fprintf(c.OutOrStdout(), "removed %s from %s\n", args[0], ws)
 		return nil
 	},
 }
 
 var routinesFireCmd = &cobra.Command{
 	Use:   "fire <name>",
-	Short: "Manually trigger a routine of the current project (also forces a cron one)",
+	Short: "Manually trigger a routine of this workspace (also forces a cron one)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		proj, err := currentProject()
+		ws, err := currentWorkspace(panel.ExecRunner)
 		if err != nil {
 			return err
 		}
-		defs, err := routines.Load(proj)
+		defs, err := routines.LoadWorkspace(ws)
 		if err != nil {
 			return err
 		}
@@ -256,7 +326,7 @@ var routinesFireCmd = &cobra.Command{
 				// doesn't double-fire at its next slot.
 				state, serr := routines.LoadState()
 				if serr == nil {
-					state.LastFire[routines.Key(d.Dir, d.Name)] = now
+					state.LastFire[routines.Key(ws, d.Name)] = now
 					serr = routines.SaveState(state)
 				}
 				if serr != nil {
@@ -265,7 +335,7 @@ var routinesFireCmd = &cobra.Command{
 				return nil
 			}
 		}
-		return fmt.Errorf("no routine %q in %s (looked in %s)", args[0], filepath.Base(proj), filepath.Join(proj, ".duck/routines"))
+		return fmt.Errorf("no routine %q in workspace %s (see: duck routines)", args[0], ws)
 	},
 }
 
@@ -444,8 +514,16 @@ func uninstallRoutinesTimer(r evictRunner) error {
 }
 
 func init() {
+	routinesCmd.Flags().BoolVar(&routinesAll, "all", false, "list every workspace's routines, not just this one's")
+	routinesCmd.Flags().BoolVar(&routinesTSV, "tsv", false, "machine-readable tab-separated output (no header)")
+	_ = routinesCmd.Flags().MarkHidden("tsv")
+	routinesAddCmd.Flags().StringVar(&addCron, "cron", "", "cron schedule (standard 5-field expression)")
+	routinesAddCmd.Flags().DurationVar(&addEvery, "every", 0, "heartbeat interval (e.g. 15m)")
+	routinesAddCmd.Flags().BoolVar(&addManual, "manual", false, "fire only on demand (the default)")
+	routinesAddCmd.Flags().BoolVar(&addManager, "manager", false, "deliver to this workspace's manager claude instead of a codex executor")
+	routinesAddCmd.Flags().StringVar(&addReport, "report", "", `completion reporting: "digest" (default) or "none"`)
 	routinesInstallCmd.Flags().BoolVar(&routinesUninstall, "uninstall", false, "remove the hub routines timer")
 	routinesInstallCmd.Flags().DurationVar(&routinesEvery, "every", time.Minute, "tick interval for the installed hub timer")
-	routinesCmd.AddCommand(routinesEnableCmd, routinesDisableCmd, routinesFireCmd, routinesTickCmd, routinesInstallCmd)
+	routinesCmd.AddCommand(routinesAddCmd, routinesRmCmd, routinesFireCmd, routinesTickCmd, routinesInstallCmd)
 	rootCmd.AddCommand(routinesCmd)
 }

@@ -32,11 +32,23 @@ const pollEvery = 2 * time.Second
 // wsTab is the pinned pseudo-tab showing hub workspaces.
 const wsTab = "workspaces"
 
+// schedTab is the pinned pseudo-tab showing this workspace's routines (its
+// standing schedules). Rows come from `duck routines --tsv` — the roster
+// can't import internal/routines (it imports panel), so it shells out to its
+// own binary like the other command-layer verbs.
+const schedTab = "routines"
+
+// routineRow is one schedule as shown on the ⏰ routines tab.
+type routineRow struct {
+	Name, Trigger, Sched, Last, Status string
+}
+
 type tickMsg time.Time
 type agentsMsg struct {
 	agents     []Agent
 	statuses   map[string]string
 	workspaces []Workspace
+	routines   []routineRow
 	err        error
 }
 
@@ -65,6 +77,7 @@ type watchModel struct {
 	agents     []Agent
 	statuses   map[string]string
 	workspaces []Workspace
+	routines   []routineRow
 	tabKind    string // active tab BY NAME
 	cursor     int    // index into visible() rows
 	width      int
@@ -114,7 +127,31 @@ func (m watchModel) load() tea.Msg {
 		}
 	}
 	ws, _ := Workspaces(m.run, m.outer)
-	return agentsMsg{agents: agents, statuses: statuses, workspaces: ws, err: err}
+	return agentsMsg{agents: agents, statuses: statuses, workspaces: ws, routines: loadRoutines(), err: err}
+}
+
+// loadRoutines fetches this workspace's schedules for the ⏰ routines tab by
+// shelling out to `duck routines --tsv` (the roster can't import
+// internal/routines — import cycle). Best-effort: any failure renders as an
+// empty tab, never an error.
+func loadRoutines() []routineRow {
+	self, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	out, err := exec.Command(self, "routines", "--tsv").Output()
+	if err != nil {
+		return nil
+	}
+	var rows []routineRow
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) < 6 {
+			continue
+		}
+		rows = append(rows, routineRow{Name: f[1], Trigger: f[2], Sched: f[3], Last: f[4], Status: f[5]})
+	}
+	return rows
 }
 
 // headerLines: tab bar + rule, above the first row (mouse-mapping contract).
@@ -140,7 +177,7 @@ func (m watchModel) tabs() []string {
 	}
 	sort.Strings(extra)
 	out = append(out, extra...)
-	return append(out, wsTab)
+	return append(out, schedTab, wsTab)
 }
 
 func (m watchModel) activeKind() string { return m.tabKind }
@@ -201,6 +238,15 @@ func (m watchModel) rowWindow() (int, []int) {
 func (m watchModel) visible() []int {
 	q := m.filterText()
 	var idx []int
+	if m.tabKind == schedTab {
+		for i, r := range m.routines {
+			if q != "" && !isSubseq(strings.ToLower(r.Name), q) {
+				continue
+			}
+			idx = append(idx, i)
+		}
+		return idx
+	}
 	if m.tabKind == wsTab {
 		for i, w := range m.workspaces {
 			if q != "" && !isSubseq(strings.ToLower(w.Name+" "+w.Display), q) {
@@ -249,6 +295,8 @@ func (m watchModel) newUsage() string {
 		return "new <file|url>  — preview something"
 	case KindAgent:
 		return "new <cmd…>  — launch an agent"
+	case schedTab:
+		return "new  — schedule with: duck routines add <name> --cron/--every … <prompt>"
 	case wsTab:
 		return "new  — (workspaces are made by `duck` in a directory)"
 	default:
@@ -340,6 +388,13 @@ func (m *watchModel) viewSelected() string {
 	if m.cursor >= len(idx) {
 		return ""
 	}
+	if m.tabKind == schedTab {
+		r := m.routines[idx[m.cursor]]
+		if out := m.duckExec("routines", "fire", r.Name); out != "" {
+			return out
+		}
+		return "fired " + r.Name
+	}
 	if m.tabKind == wsTab {
 		w := m.workspaces[idx[m.cursor]]
 		if w.Current {
@@ -405,6 +460,8 @@ func (m *watchModel) runInput() string {
 				return "new <file|url>"
 			}
 			return m.duckExec("preview", f[1])
+		case schedTab:
+			return "schedule with: duck routines add <name> --cron/--every … <prompt>"
 		case wsTab:
 			return "workspaces are made by running `duck` in a directory"
 		default:
@@ -541,6 +598,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statuses = msg.statuses
 		m.workspaces = msg.workspaces
+		m.routines = msg.routines
 		if n := len(m.visible()); m.cursor >= n {
 			m.cursor = max(0, n-1)
 		}
@@ -665,6 +723,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastMsg = m.viewSelected()
 			return m, m.load
 		case "x":
+			if m.tabKind == schedTab {
+				m.lastMsg = "retire schedules with: duck routines rm <name>"
+				return m, nil
+			}
 			if m.tabKind == wsTab {
 				m.lastMsg = "workspaces aren't killed from here"
 				return m, nil
@@ -705,6 +767,8 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 		n := 0
 		if kind == wsTab {
 			n = len(m.workspaces)
+		} else if kind == schedTab {
+			n = len(m.routines)
 		} else {
 			for _, a := range m.agents {
 				if a.Kind == kind {
@@ -827,6 +891,16 @@ func (m watchModel) View() string {
 	for w, i := range win {
 		row := start + w
 		var line string
+		if m.tabKind == schedTab {
+			r := m.routines[i]
+			label := r.Name + dimStyle.Render(" · "+r.Trigger+" "+r.Sched+" · last "+r.Last+" · "+r.Status)
+			line = "  " + label
+			if row == m.cursor {
+				line = "  " + selectedStyle.Render(" "+r.Name+" ") + dimStyle.Render(" ↵ fire")
+			}
+			b.WriteString(truncate(line, m.width) + "\n")
+			continue
+		}
 		if m.tabKind == wsTab {
 			w := m.workspaces[i]
 			disp := w.Display

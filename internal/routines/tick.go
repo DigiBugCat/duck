@@ -1,12 +1,9 @@
 // Firing: turning due routines into panes. This is the hub-side half of the
-// package (Load/Due compute WHAT should fire; here we make it happen). A tick
-// sweeps every registered/live project, fires the cron routines that are due,
-// and persists last-fire once. Everything routes through duck's own verbs
-// (session create, EnsureCompanion, Spawn) — tmux stays the only database.
-//
-// Phase 1 scope: trigger=cron/manual, target=run only. Heartbeats and
-// target=manager are recognized but not yet fired (they log and are skipped);
-// see docs/ROUTINES.md phases.
+// package (LoadWorkspace/Due compute WHAT should fire; here we make it
+// happen). A tick sweeps every workspace with routine definitions, fires the
+// due ones into THAT workspace, and persists last-fire once. Everything
+// routes through duck's own verbs (EnsureCompanion, Spawn, channel send) —
+// tmux stays the only database.
 package routines
 
 import (
@@ -20,7 +17,6 @@ import (
 	"github.com/DigiBugCat/duck/internal/manager"
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/DigiBugCat/duck/internal/paths"
-	"github.com/DigiBugCat/duck/internal/session"
 	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
@@ -76,9 +72,9 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 	// session this same tick rather than waiting for the next one.
 	healPersistent(run, logw)
 
-	projects, err := SweepProjects(run)
+	wss, err := ListWorkspaces()
 	if err != nil {
-		return fmt.Errorf("enumerate projects: %w", err)
+		return fmt.Errorf("enumerate routine workspaces: %w", err)
 	}
 
 	state, err := LoadState()
@@ -86,18 +82,26 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 		return fmt.Errorf("load state: %w", err)
 	}
 
+	live := liveSessionNames(run)
 	changed := false
-	for _, proj := range projects {
-		defs, err := Load(proj)
+	for _, ws := range wss {
+		if !live[ws] {
+			// Not live and not healed above (no Persistent record): the
+			// employee's office is gone — its duties sleep until the workspace
+			// is back (or its routines dir is removed).
+			fmt.Fprintf(logw, "routines: workspace %s gone — its routines are dormant\n", ws)
+			continue
+		}
+		defs, err := LoadWorkspace(ws)
 		if err != nil {
-			fmt.Fprintf(logw, "routines: skip project %s: %v\n", proj, err)
+			fmt.Fprintf(logw, "routines: skip workspace %s: %v\n", ws, err)
 			continue
 		}
 		for _, d := range defs {
 			if d.Trigger == TriggerManual {
 				continue // manual never auto-fires
 			}
-			last := state.LastFire[Key(d.Dir, d.Name)]
+			last := state.LastFire[Key(ws, d.Name)]
 			if d.Trigger == TriggerCron && last.IsZero() {
 				// First sight of a cron routine: seed last-fire so it waits for
 				// its next cron slot. Without the seed a zero last is never due
@@ -105,7 +109,7 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 				// way that wouldn't refire forever). Heartbeats skip the seed —
 				// a fresh heartbeat is due NOW (Due treats zero-last as due), so
 				// its persistent pane exists from the first tick.
-				state.LastFire[Key(d.Dir, d.Name)] = now
+				state.LastFire[Key(ws, d.Name)] = now
 				changed = true
 				continue
 			}
@@ -119,7 +123,7 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 				// Recording last-fire here is what makes that true — otherwise a
 				// routine skipped for concurrency would re-evaluate as due every
 				// minute and pile up the instant its predecessor finished.
-				state.LastFire[Key(d.Dir, d.Name)] = now
+				state.LastFire[Key(ws, d.Name)] = now
 				changed = true
 			}
 		}
@@ -138,26 +142,27 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 }
 
 // Fire triggers one routine immediately (the `duck routines fire` path and the
-// tick's per-due call share this). It ensures the project workspace exists,
-// applies the concurrency guard, and — when clear — spawns the executor pane.
-// Returns true if the beat should be recorded (a pane was spawned OR the guard
-// dropped the beat); false only on a hard error that left nothing done, so the
-// caller can leave last-fire untouched and retry next minute.
+// tick's per-due call share this). The routine's OWNING workspace is where
+// everything lands: the run pane, the heartbeat thread, the manager turn.
+// Returns true if the beat should be recorded (delivered OR the guard dropped
+// the beat); false only on a hard error that left nothing done, so the caller
+// can leave last-fire untouched and retry next minute.
 func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
-	outer, err := ensureWorkspace(run, d.Dir)
+	outer := d.Workspace
+	dir, err := workspaceCwd(run, outer)
 	if err != nil {
-		fmt.Fprintf(logw, "routines: %s/%s: ensure workspace: %v\n", d.Dir, d.Name, err)
+		fmt.Fprintf(logw, "routines: %s/%s: resolve workspace dir: %v\n", outer, d.Name, err)
 		return false
 	}
-	if _, err := panel.EnsureCompanion(run, outer, d.Dir); err != nil {
-		fmt.Fprintf(logw, "routines: %s/%s: ensure companion: %v\n", d.Dir, d.Name, err)
+	if _, err := panel.EnsureCompanion(run, outer, dir); err != nil {
+		fmt.Fprintf(logw, "routines: %s/%s: ensure companion: %v\n", outer, d.Name, err)
 		return false
 	}
 	if d.Target == TargetManager {
 		return fireManager(run, d, outer, logw)
 	}
 	if d.Trigger == TriggerHeartbeat {
-		return fireHeartbeat(run, d, outer, logw)
+		return fireHeartbeat(run, d, outer, dir, logw)
 	}
 
 	// Concurrency guard: if a pane by this routine's name already exists AND its
@@ -165,18 +170,39 @@ func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
 	// beat (return true so we record last-fire and don't refire next minute).
 	if ref, err := channel.FindAgent(run, outer, d.Name); err == nil {
 		if channel.StatusByWindow(run, ref.WindowID) == "working" {
-			fmt.Fprintf(logw, "routines: %s/%s still working — dropping this beat\n", d.Dir, d.Name)
+			fmt.Fprintf(logw, "routines: %s/%s still working — dropping this beat\n", outer, d.Name)
 			return true
 		}
 	}
 
 	cmdline := codexBin() + " exec --dangerously-bypass-approvals-and-sandbox" + notifyArg() + " " + paths.Quote(d.Prompt)
-	if _, err := panel.Spawn(run, outer, d.Name, d.Dir, cmdline, panel.KindRun); err != nil {
-		fmt.Fprintf(logw, "routines: %s/%s: spawn: %v\n", d.Dir, d.Name, err)
+	if _, err := panel.Spawn(run, outer, d.Name, dir, cmdline, panel.KindRun); err != nil {
+		fmt.Fprintf(logw, "routines: %s/%s: spawn: %v\n", outer, d.Name, err)
 		return false
 	}
-	fmt.Fprintf(logw, "routines: fired %s/%s (workspace %s)\n", d.Dir, d.Name, outer)
+	fmt.Fprintf(logw, "routines: fired %s/%s\n", outer, d.Name)
 	return true
+}
+
+// workspaceCwd resolves a workspace's working directory: its @duck_dir
+// (tilde-form, expanded), falling back to the first pane's current path for
+// sessions that predate the stamp.
+func workspaceCwd(run panel.Runner, ws string) (string, error) {
+	if out, err := run("show-options", "-t", ws, "-v", "@duck_dir"); err == nil {
+		if d := strings.TrimSpace(out); d != "" {
+			if abs, err := paths.Expand(d); err == nil && abs != "" {
+				return abs, nil
+			}
+		}
+	}
+	out, err := run("display-message", "-p", "-t", ws+":", "#{pane_current_path}")
+	if err != nil {
+		return "", err
+	}
+	if d := strings.TrimSpace(out); d != "" {
+		return d, nil
+	}
+	return "", fmt.Errorf("workspace %s has no resolvable directory", ws)
 }
 
 // fireHeartbeat delivers one beat of a heartbeat routine: ONE persistent
@@ -185,30 +211,30 @@ func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
 // (docs/ROUTINES.md "target=run, heartbeat"). The pane is created lazily on
 // the first beat; a beat that lands while the previous turn is still open is
 // DROPPED, not queued.
-func fireHeartbeat(run panel.Runner, d Def, outer string, logw io.Writer) bool {
+func fireHeartbeat(run panel.Runner, d Def, outer, dir string, logw io.Writer) bool {
 	ref, err := channel.FindAgent(run, outer, d.Name)
 	if err != nil {
 		// No pane yet — spawn the persistent TUI and wait for its composer
 		// before typing (keys sent during TUI startup are eaten).
 		cmdline := codexBin() + " --dangerously-bypass-approvals-and-sandbox" + notifyArg()
-		paneID, serr := panel.Spawn(run, outer, d.Name, d.Dir, cmdline, panel.KindRun)
+		paneID, serr := panel.Spawn(run, outer, d.Name, dir, cmdline, panel.KindRun)
 		if serr != nil {
-			fmt.Fprintf(logw, "routines: %s/%s: spawn heartbeat pane: %v\n", d.Dir, d.Name, serr)
+			fmt.Fprintf(logw, "routines: %s/%s: spawn heartbeat pane: %v\n", outer, d.Name, serr)
 			return false
 		}
 		ref = channel.AgentRef{Session: outer, Name: d.Name, WindowID: paneID}
 		if !awaitComposer(run, paneID, 15*time.Second) {
-			fmt.Fprintf(logw, "routines: %s/%s: composer not ready after spawn — sending anyway\n", d.Dir, d.Name)
+			fmt.Fprintf(logw, "routines: %s/%s: composer not ready after spawn — sending anyway\n", outer, d.Name)
 		}
 	} else if channel.StatusByWindow(run, ref.WindowID) == "working" {
-		fmt.Fprintf(logw, "routines: %s/%s heartbeat still working — dropping this beat\n", d.Dir, d.Name)
+		fmt.Fprintf(logw, "routines: %s/%s heartbeat still working — dropping this beat\n", outer, d.Name)
 		return true
 	}
 	if err := channel.Send(run, ref, d.Prompt); err != nil {
-		fmt.Fprintf(logw, "routines: %s/%s: send beat: %v\n", d.Dir, d.Name, err)
+		fmt.Fprintf(logw, "routines: %s/%s: send beat: %v\n", outer, d.Name, err)
 		return false
 	}
-	fmt.Fprintf(logw, "routines: heartbeat %s/%s beat delivered (workspace %s)\n", d.Dir, d.Name, outer)
+	fmt.Fprintf(logw, "routines: heartbeat %s/%s beat delivered\n", outer, d.Name)
 	return true
 }
 
@@ -235,13 +261,9 @@ func courier(run panel.Runner, logw io.Writer) {
 			continue
 		}
 		policy := map[string]string{}
-		if out, derr := run("show-options", "-t", ws, "-v", "@duck_dir"); derr == nil {
-			if proj, perr := paths.Expand(strings.TrimSpace(out)); perr == nil && proj != "" {
-				if defs, lerr := Load(proj); lerr == nil {
-					for _, d := range defs {
-						policy[d.Name] = d.Report
-					}
-				}
+		if defs, lerr := LoadWorkspace(ws); lerr == nil {
+			for _, d := range defs {
+				policy[d.Name] = d.Report
 			}
 		}
 		var lines []string
@@ -284,20 +306,20 @@ func courier(run panel.Runner, logw io.Writer) {
 func fireManager(run panel.Runner, d Def, outer string, logw io.Writer) bool {
 	if channel.AliveWithin(outer, 10*time.Second) {
 		if err := channel.Publish(outer, d.Prompt, map[string]string{"source": "routines", "type": "routine", "routine": d.Name}); err == nil {
-			fmt.Fprintf(logw, "routines: manager turn %s/%s published (workspace %s)\n", d.Dir, d.Name, outer)
+			fmt.Fprintf(logw, "routines: manager turn %s/%s published\n", outer, d.Name)
 			return true
 		}
 	}
 	pane, ok := managerPane(run, outer)
 	if !ok {
-		fmt.Fprintf(logw, "routines: %s/%s: no manager claude in %s — dropping this beat\n", d.Dir, d.Name, outer)
+		fmt.Fprintf(logw, "routines: %s/%s: no manager claude — dropping this beat\n", outer, d.Name)
 		return true
 	}
 	if err := channel.Send(run, channel.AgentRef{Session: outer, Name: "manager", WindowID: pane}, d.Prompt); err != nil {
-		fmt.Fprintf(logw, "routines: %s/%s: send to manager: %v\n", d.Dir, d.Name, err)
+		fmt.Fprintf(logw, "routines: %s/%s: send to manager: %v\n", outer, d.Name, err)
 		return false
 	}
-	fmt.Fprintf(logw, "routines: manager turn %s/%s typed into %s (workspace %s)\n", d.Dir, d.Name, pane, outer)
+	fmt.Fprintf(logw, "routines: manager turn %s/%s typed into %s\n", outer, d.Name, pane)
 	return true
 }
 
@@ -334,84 +356,6 @@ func awaitComposer(run panel.Runner, paneID string, timeout time.Duration) bool 
 
 // sleepFn is a package var so tests can stub waiting.
 var sleepFn = time.Sleep
-
-// sweepProjects is the union of three sources, all as absolute deduped paths:
-// (a) live workspaces' @duck_dir, (b) the registered projects file, and (c)
-// dirs that have at least one Persistent workspace record. Registered projects
-// and persistent records both survive all workspaces being closed, so
-// automation keeps running across a reboot.
-//
-// NOTE: the routines-projects file (source b) is now LEGACY — `duck routines
-// enable` sets Persistent on the live workspace's record (source c) when one
-// exists, which is the durable form. The file union is kept working for
-// migration and for the enable-with-no-live-workspace fallback; it is not
-// removed here.
-func SweepProjects(run panel.Runner) ([]string, error) {
-	seen := map[string]bool{}
-	var out []string
-	add := func(p string) {
-		abs, err := paths.Expand(p)
-		if err != nil || abs == "" || seen[abs] {
-			return
-		}
-		seen[abs] = true
-		out = append(out, abs)
-	}
-
-	dirs, err := workspaceDirs(run)
-	if err != nil {
-		return nil, err
-	}
-	for _, d := range dirs {
-		add(d)
-	}
-
-	registered, err := Projects()
-	if err != nil {
-		return nil, err
-	}
-	for _, p := range registered {
-		add(p)
-	}
-
-	// Persistent records: a dir with one keeps automation alive even with every
-	// workspace closed. Best-effort — a ledger read failure (or empty ledger) must
-	// not stop the sweep, which still fires for live + registered projects.
-	if recs, err := wsStore().All(); err == nil {
-		for _, r := range recs {
-			if r.Persistent {
-				add(r.Dir)
-			}
-		}
-	}
-	return out, nil
-}
-
-// workspaceDirs returns the @duck_dir (tilde-form) of every live duck
-// workspace, companions excluded. Unlike panel.Workspaces it does NOT filter
-// to the current project — the tick must see every project on the hub.
-func workspaceDirs(run panel.Runner) ([]string, error) {
-	out, err := run("list-sessions", "-F", "#{@duck_dir}\t#{@duck_panel_of}")
-	if err != nil {
-		// No server / no sessions: not an error for the sweep — registered
-		// projects still fire.
-		return nil, nil
-	}
-	var dirs []string
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 2)
-		dir := strings.TrimSpace(f[0])
-		panelOf := ""
-		if len(f) == 2 {
-			panelOf = strings.TrimSpace(f[1])
-		}
-		if panelOf != "" || dir == "" {
-			continue // companion (plumbing) or a non-duck session
-		}
-		dirs = append(dirs, dir)
-	}
-	return dirs, nil
-}
 
 // healPersistent recreates every Persistent workspace record whose tmux session
 // is no longer live, so persistent workspaces survive a hub reboot. Each healed
@@ -482,69 +426,4 @@ func liveSessionNames(run panel.Runner) map[string]bool {
 		}
 	}
 	return names
-}
-
-// ensureWorkspace returns the tmux session name for absDir, creating a headless
-// one when none exists (so a routine fires even with every workspace closed and
-// the run stays inspectable later). Reuse is by @duck_dir match, mirroring the
-// Recent semantics the attach path uses. absDir is an absolute (expanded) path;
-// @duck_dir is stamped tilde-form (the display/Recent key) and -c gets the real
-// path (tmux -c does not expand ~).
-func ensureWorkspace(run panel.Runner, absDir string) (string, error) {
-	tilde := paths.Contract(absDir)
-	sessions, err := run("list-sessions", "-F", "#{session_name}\t#{@duck_dir}\t#{@duck_panel_of}")
-	if err == nil {
-		for _, line := range strings.Split(strings.TrimRight(sessions, "\n"), "\n") {
-			f := strings.SplitN(line, "\t", 3)
-			if len(f) < 2 {
-				continue
-			}
-			name := strings.TrimSpace(f[0])
-			dir := strings.TrimSpace(f[1])
-			panelOf := ""
-			if len(f) == 3 {
-				panelOf = strings.TrimSpace(f[2])
-			}
-			if panelOf != "" {
-				continue
-			}
-			if dir == tilde || dir == absDir {
-				return name, nil
-			}
-		}
-	}
-
-	// None live: mint a fresh one. Derive a tmux-legal id from the dir and add
-	// a numeric suffix until it doesn't collide with a live session.
-	id := freshSessionID(run, absDir)
-	if _, err := run("new-session", "-d", "-s", id, "-c", absDir); err != nil {
-		return "", err
-	}
-	if _, err := run("set-option", "-t", id, "@duck_dir", tilde); err != nil {
-		return "", err
-	}
-	return id, nil
-}
-
-// freshSessionID derives a tmux-legal id from absDir and appends -<n> until it
-// doesn't collide with a live session name.
-func freshSessionID(run panel.Runner, absDir string) string {
-	base := session.DeriveID(absDir)
-	taken := map[string]bool{}
-	if out, err := run("list-sessions", "-F", "#{session_name}"); err == nil {
-		for _, n := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-			if n = strings.TrimSpace(n); n != "" {
-				taken[n] = true
-			}
-		}
-	}
-	if !taken[base] {
-		return base
-	}
-	for n := 2; ; n++ {
-		cand := fmt.Sprintf("%s-%d", base, n)
-		if !taken[cand] {
-			return cand
-		}
-	}
 }

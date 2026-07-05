@@ -34,6 +34,28 @@ default viewport.
 - Artifact html pages meant for the sidebar should style dark-first: the
   cells renderer reports prefers-color-scheme: light.
 
+## Scheduling work (routines)
+
+You are this workspace's MANAGER; routines are your team's standing
+duties — scheduled codex executors that run in your sidebar and report
+back to you as batched digest events. When recurring work comes up
+("check X every morning", "keep Y green"), schedule it:
+
+- `duck routines add <name> --cron "0 9 * * *" <prompt…>` — fresh
+  executor per fire (waits for its next cron slot).
+- `duck routines add <name> --every 15m <prompt…>` — heartbeat: ONE
+  persistent codex thread, re-prompted each interval (first beat within
+  a minute).
+- `duck routines add <name> --manual <prompt…>` — fire only on demand.
+- `--manager` targets YOU instead of an executor (a scheduled turn in
+  your own context — use sparingly, e.g. a daily review nudge).
+- `duck routines` lists this workspace's routines; `fire <name>` runs
+  one now; `rm <name>` retires it.
+
+Completions arrive to you automatically as `<channel source="duck-agents"
+type="digest">` events — never poll your executors. Detail on demand:
+`duck channel tail <name>`.
+
 ## Workspace hygiene
 
 - Never do raw tmux pane surgery (kill-pane/move-pane/respawn-pane) on a
