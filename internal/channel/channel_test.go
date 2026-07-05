@@ -56,6 +56,21 @@ func TestParseEventFiltersSignal(t *testing.T) {
 	}
 }
 
+func TestThreadID(t *testing.T) {
+	cases := map[string]string{
+		"/a/b/2026/07/04/rollout-2026-07-04T14-09-56-019f2ef7-7345-7e13-a443-651cf28b427e.jsonl": "019f2ef7-7345-7e13-a443-651cf28b427e",
+		"rollout-2026-07-04T14-09-56-019f2ef7-7345-7e13-a443-651cf28b427e.jsonl":                 "019f2ef7-7345-7e13-a443-651cf28b427e",
+		"/some/other/file.jsonl": "",
+		"":                       "",
+		"rollout-short.jsonl":    "", // fewer than 5 trailing groups
+	}
+	for in, want := range cases {
+		if got := threadID(in); got != want {
+			t.Errorf("threadID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestMatchRolloutPairsByCwdAndTime(t *testing.T) {
 	root := t.TempDir()
 	day := filepath.Join(root, "2026", "07", "03")
@@ -72,29 +87,37 @@ func TestMatchRolloutPairsByCwdAndTime(t *testing.T) {
 	}
 	write("rollout-old.jsonl", "/work", spawn.Add(-time.Hour))           // too old
 	write("rollout-other.jsonl", "/elsewhere", spawn.Add(2*time.Second)) // wrong dir
-	want := write("rollout-mine.jsonl", "/work", spawn.Add(1*time.Second))
-	write("rollout-later.jsonl", "/work", spawn.Add(30*time.Second)) // later spawn wins only if first is absent
+	mine := write("rollout-mine.jsonl", "/work", spawn.Add(1*time.Second))
+	later := write("rollout-later.jsonl", "/work", spawn.Add(30*time.Second))
 
-	// The old file's mtime is fresh (just written) — matchRollout must still
-	// reject it on the meta TIMESTAMP, not just mtime.
+	// TWO unclaimed /work candidates (mine + later) = ambiguous. matchRollout
+	// must refuse to guess (empty, no error) rather than adopt the earliest —
+	// guessing is the fan-out scramble. HandleNotify's exact thread-id pin
+	// resolves it later. The old/other files are correctly filtered (age, cwd).
 	got, err := matchRollout(root, "/work", spawn, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
-		t.Fatalf("want %s, got %s", want, got)
+	if got != "" {
+		t.Fatalf("two same-cwd candidates must be ambiguous → empty, got %s", got)
 	}
 	// No candidates → empty, no error (codex still starting).
 	got, err = matchRollout(root, "/nowhere", spawn, nil)
 	if err != nil || got != "" {
 		t.Fatalf("no-match should be empty+nil, got %q %v", got, err)
 	}
-	// A rollout already pinned by another pane is off-limits: the runner-up
-	// (the later spawn in the same cwd) wins instead.
-	later := filepath.Join(day, "rollout-later.jsonl")
-	got, err = matchRollout(root, "/work", spawn, map[string]bool{want: true})
+	// Claiming one candidate disambiguates: exactly ONE unclaimed /work rollout
+	// remains, so it pairs. This is the legit sequential case — one agent already
+	// paired, the next takes the remaining stream.
+	got, err = matchRollout(root, "/work", spawn, map[string]bool{mine: true})
 	if err != nil || got != later {
-		t.Fatalf("claimed rollout must be skipped; want %s, got %q %v", later, got, err)
+		t.Fatalf("one unclaimed candidate must pair; want %s, got %q %v", later, got, err)
+	}
+	// And with the single genuine candidate (later removed from the picture),
+	// the lone match pairs immediately — the common one-agent case.
+	got, err = matchRollout(root, "/work", spawn, map[string]bool{later: true})
+	if err != nil || got != mine {
+		t.Fatalf("lone candidate must pair; want %s, got %q %v", mine, got, err)
 	}
 }
 

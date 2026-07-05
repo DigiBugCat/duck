@@ -164,6 +164,25 @@ func HandleNotify(run panel.Runner, paneID, payload string) error {
 	return ReportRun(ws, RunReport{Routine: f[1], Message: p.LastMessage, At: time.Now()})
 }
 
+// threadID extracts the codex thread id (the trailing UUID of a rollout
+// filename `rollout-<ts>-<uuid>.jsonl`) — a stable 1:1 key for the STREAM that
+// produced an event, unlike @duck_name (a mutable pane label). Attribution uses
+// it so a supervisor keys on the actual conversation, not on whatever name the
+// pane happens to carry. Returns "" for a non-rollout path.
+func threadID(rolloutPath string) string {
+	base := strings.TrimSuffix(filepath.Base(rolloutPath), ".jsonl")
+	if !strings.HasPrefix(base, "rollout-") {
+		return ""
+	}
+	// The uuid is the last 5 hyphen-groups (8-4-4-4-12). Splitting and taking
+	// the tail is simpler and format-stable than a regex.
+	parts := strings.Split(base, "-")
+	if len(parts) < 5 {
+		return ""
+	}
+	return strings.Join(parts[len(parts)-5:], "-")
+}
+
 // rolloutByThreadID locates root/YYYY/MM/DD/rollout-*-<id>.jsonl without
 // walking the tree: codex thread ids are UUIDv7, whose first 48 bits are the
 // creation time in unix ms — that names the date partition directly. The
@@ -235,12 +254,23 @@ func windowSpawnedAt(run panel.Runner, windowID string) (time.Time, error) {
 // closest after (spawnedAt - slack). Rollouts in claimed (already pinned by
 // another pane) are skipped. Empty when none match yet (codex still
 // starting) — callers retry.
+//
+// AMBIGUITY: cwd+time correlation cannot tell two codex agents launched in the
+// same directory near-simultaneously apart — both see the same unclaimed
+// candidates and would adopt the SAME (earliest) stream, cross-attributing each
+// other's events (the fan-out scramble). So when 2+ unclaimed candidates match
+// the same cwd, matchRollout returns empty and refuses to guess: HandleNotify's
+// exact thread-id pin (fired on first-turn-complete) resolves it correctly, and
+// serve.drain replays from offset 0 for post-sidecar panes, so nothing is lost —
+// pairing is merely delayed until it can be made unambiguously. One candidate is
+// unambiguous and pairs immediately as before.
 func matchRollout(root, dir string, spawnedAt time.Time, claimed map[string]bool) (string, error) {
 	if root == "" {
 		return "", nil
 	}
 	var best string
 	var bestTS time.Time
+	candidates := 0
 	// Rollouts are date-partitioned (root/YYYY/MM/DD, LOCAL date); a day-dir
 	// wholly before the spawn day can't contain our rollout, so skip the
 	// subtree instead of statting months of history on every scan. One extra
@@ -270,12 +300,20 @@ func matchRollout(root, dir string, spawnedAt time.Time, claimed map[string]bool
 		if !ok || meta.cwd != dir || meta.ts.Before(spawnedAt.Add(-spawnSlack)) {
 			return nil
 		}
+		candidates++
 		if best == "" || meta.ts.Before(bestTS) {
 			best, bestTS = path, meta.ts
 		}
 		return nil
 	})
-	return best, err
+	if err != nil {
+		return "", err
+	}
+	// 2+ unclaimed same-cwd candidates: ambiguous — refuse to guess (see doc).
+	if candidates > 1 {
+		return "", nil
+	}
+	return best, nil
 }
 
 type sessionMeta struct {
