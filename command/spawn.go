@@ -12,14 +12,16 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/DigiBugCat/duck/internal/channel"
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/spf13/cobra"
 )
 
 var (
-	spawnName string
-	spawnTab  string
+	spawnName   string
+	spawnTab    string
+	spawnPrompt string
 )
 
 var spawnCmd = &cobra.Command{
@@ -28,11 +30,16 @@ var spawnCmd = &cobra.Command{
 	Long: `Run a command as a new agent in the current duck session's sidebar. With no
 command, spawns an interactive shell. Opens the sidebar if it isn't already.
 
+Prints "spawned <name>\t<pane-id>"; the pane id is the stable handle for
+channel send/tail/reply (it never collides, even when agents share a cwd or
+label). With --prompt, delivers the first turn in the same call.
+
 Examples:
-  duck spawn codex              # codex TUI as an agent
+  duck spawn codex                          # codex TUI as an agent
+  duck spawn codex -p "fix the tests"       # spawn AND send the first turn
   duck spawn -- codex exec "fix the tests"
   duck spawn -n build -- cargo watch -x test
-  duck spawn                    # plain shell agent`,
+  duck spawn                                # plain shell agent`,
 	RunE: func(c *cobra.Command, args []string) error {
 		run := panel.ExecRunner
 		outer, dir, err := panelContext(run)
@@ -77,10 +84,26 @@ Examples:
 				kind = panel.KindShell
 			}
 		}
-		if _, err := panel.Spawn(run, outer, name, dir, line, kind); err != nil {
+		paneID, err := panel.Spawn(run, outer, name, dir, line, kind)
+		if err != nil {
 			return err
 		}
-		fmt.Printf("spawned %s\n", name)
+		// The pane id is the HANDLE — the true identity (tmux-as-db), stable
+		// through swaps and unambiguous when several agents share a cwd or label.
+		// The name is a human alias; address the agent by either, but the id is
+		// what never collides. Print both so a caller can grab whichever it needs.
+		fmt.Printf("spawned %s\t%s\n", name, paneID)
+
+		// One-call spawn+send: deliver the first turn now instead of a separate
+		// `channel send`. SendWhenReady awaits the agent's composer first (a fresh
+		// TUI eats keys in its first seconds). Best-effort — a send failure never
+		// unspawns the agent; the pane is up and addressable regardless.
+		if spawnPrompt != "" {
+			ref := channel.AgentRef{Session: outer, Name: name, WindowID: paneID}
+			if err := channel.SendWhenReady(run, ref, spawnPrompt); err != nil {
+				fmt.Fprintf(os.Stderr, "spawned, but first turn not delivered: %v\n", err)
+			}
+		}
 		return nil
 	},
 }
@@ -140,7 +163,8 @@ func withCodexNotify(args []string) []string {
 }
 
 func init() {
-	spawnCmd.Flags().StringVarP(&spawnName, "name", "n", "", "agent label in the sidebar (default: command name)")
+	spawnCmd.Flags().StringVarP(&spawnName, "name", "n", "", "agent label in the sidebar (default: command name; the printed pane id is the stable handle)")
 	spawnCmd.Flags().StringVar(&spawnTab, "tab", "", "sidebar tab to file this under (default: agents, or shells for a bare spawn; new names create new tabs)")
+	spawnCmd.Flags().StringVarP(&spawnPrompt, "prompt", "p", "", "first turn to deliver once the agent is ready (one-call spawn+send)")
 	rootCmd.AddCommand(spawnCmd)
 }

@@ -121,9 +121,7 @@ func heartbeatResponder(spawnCmd *string) func(args []string) (string, bool) {
 func TestTickFiresHeartbeat(t *testing.T) {
 	t.Setenv("DUCK_HOME", t.TempDir())
 	t.Setenv("DUCK_CODEX_BIN", "echo-codex")
-	oldSleep := sleepFn
-	sleepFn = func(time.Duration) {}
-	defer func() { sleepFn = oldSleep }()
+	defer channel.SetSleepFn(func(time.Duration) {})()
 	writeRoutine(t, "work", "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "report status")
 
 	var spawnCmd string

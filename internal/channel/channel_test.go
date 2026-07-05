@@ -56,6 +56,49 @@ func TestParseEventFiltersSignal(t *testing.T) {
 	}
 }
 
+func TestLooksLikeThreadID(t *testing.T) {
+	yes := []string{"019f2ef7-7345-7e13-a443-651cf28b427e", "00000000-0000-0000-0000-000000000000"}
+	no := []string{"", "naming", "cx-slugfork", "%7", "019f2ef7-7345-7e13-a443", "019f2ef7734573e13a443651cf28b427e",
+		"g19f2ef7-7345-7e13-a443-651cf28b427e"} // non-hex
+	for _, s := range yes {
+		if !looksLikeThreadID(s) {
+			t.Errorf("want thread-id shape: %q", s)
+		}
+	}
+	for _, s := range no {
+		if looksLikeThreadID(s) {
+			t.Errorf("want NOT thread-id shape: %q", s)
+		}
+	}
+}
+
+func TestFindAgentByPaneIDAndName(t *testing.T) {
+	agentsFmt := "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}"
+	// Two agents SHARE the name "worker" — only the pane id disambiguates them.
+	f := &fakeRunner{out: map[string]string{
+		"list-sessions -F #{session_name}\t#{@duck_panel_of}":      "work\t\nwork-agents\twork\n",
+		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}": "%5\tviewport\n",
+		"list-panes -s -t work -F " + agentsFmt:                    "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
+		"list-panes -s -t work-agents -F " + agentsFmt:             "%7\tworker\tagents\t\t\tcodex\t\n%8\tworker\tagents\t\t\tcodex\t\n",
+	}}
+	// Pane id resolves the EXACT pane even though the name collides.
+	for _, want := range []string{"%7", "%8"} {
+		ref, err := FindAgent(f.run, "work", want)
+		if err != nil || ref.WindowID != want {
+			t.Fatalf("FindAgent(%q) → %q %v, want that pane", want, ref.WindowID, err)
+		}
+	}
+	// A bare name still resolves (to the first match) — back-compat.
+	ref, err := FindAgent(f.run, "work", "worker")
+	if err != nil || ref.WindowID != "%7" {
+		t.Fatalf("FindAgent by name → %q %v, want %%7", ref.WindowID, err)
+	}
+	// Unknown ref errors.
+	if _, err := FindAgent(f.run, "work", "%99"); err == nil {
+		t.Fatal("unknown pane id should error")
+	}
+}
+
 func TestThreadID(t *testing.T) {
 	cases := map[string]string{
 		"/a/b/2026/07/04/rollout-2026-07-04T14-09-56-019f2ef7-7345-7e13-a443-651cf28b427e.jsonl": "019f2ef7-7345-7e13-a443-651cf28b427e",

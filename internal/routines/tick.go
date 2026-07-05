@@ -387,22 +387,11 @@ func managerPane(run panel.Runner, outer string) (string, bool) {
 	return pane, true
 }
 
-// awaitComposer polls the pane until codex's composer prompt is on screen.
-// Attempt-bounded (not wall-clock) so tests with a stubbed sleepFn finish
-// instantly instead of busy-spinning to a deadline.
+// awaitComposer delegates to channel.AwaitComposer — one composer-readiness
+// check shared by the routines fire path and one-call spawn+send.
 func awaitComposer(run panel.Runner, paneID string, timeout time.Duration) bool {
-	const every = 500 * time.Millisecond
-	for i := 0; i < int(timeout/every)+1; i++ {
-		if out, err := run("capture-pane", "-p", "-t", paneID); err == nil && strings.Contains(out, "›") {
-			return true
-		}
-		sleepFn(every)
-	}
-	return false
+	return channel.AwaitComposer(run, paneID, timeout)
 }
-
-// sleepFn is a package var so tests can stub waiting.
-var sleepFn = time.Sleep
 
 // healPersistent recreates every Persistent workspace record whose tmux session
 // is no longer live, so persistent workspaces survive a hub reboot. Each healed
