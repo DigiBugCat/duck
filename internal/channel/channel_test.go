@@ -166,6 +166,71 @@ func TestResolveOnlyPairsCodexSpawns(t *testing.T) {
 	}
 }
 
+// TestResolveRefusesAmbiguousConcurrentSpawns is the fan-out scramble repro:
+// two codex panes launched in the SAME cwd near-simultaneously, two rollout
+// files present, neither claimed. Correlation-pairing must NOT guess — both
+// panes defer (empty Rollout) rather than adopt the same earliest stream and
+// cross-attribute. Then, when one pane's stream is claimed (as HandleNotify's
+// exact thread-id pin would do), the other pane pairs to the REMAINING stream.
+func TestResolveRefusesAmbiguousConcurrentSpawns(t *testing.T) {
+	root := t.TempDir()
+	day := filepath.Join(root, "2026", "07", "03")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spawn := time.Now().Add(-time.Minute)
+	rollA := filepath.Join(day, "rollout-a.jsonl")
+	rollB := filepath.Join(day, "rollout-b.jsonl")
+	if err := os.WriteFile(rollA, []byte(metaLine(spawn.Add(1*time.Second), "/work")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rollB, []byte(metaLine(spawn.Add(2*time.Second), "/work")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DUCK_CODEX_SESSIONS", root)
+
+	// Two panes, both codex, both in /work. No @duck_rollout pinned on either,
+	// and list-panes -a reports no claims yet (both fresh).
+	newFake := func(pane string) *fakeRunner {
+		return &fakeRunner{out: map[string]string{
+			"show-options -p -t " + pane + " -v @duck_rollout":     "\n",
+			"show-options -p -t " + pane + " -v @duck_cmd":         "codex --model gpt-5\n",
+			"show-options -p -t " + pane + " -v @duck_spawned_at":  fmt.Sprintf("%d\n", spawn.Unix()),
+			"display-message -p -t " + pane + " #{pane_current_path}": "/work\n",
+			"list-panes -a -F #{@duck_rollout}":                     "\n", // nothing claimed
+		}}
+	}
+	// Pane %1: ambiguous (two unclaimed /work candidates) → must NOT pair.
+	f1 := newFake("%1")
+	ref1 := AgentRef{WindowID: "%1"}
+	if err := Resolve(f1.run, &ref1); err != nil {
+		t.Fatal(err)
+	}
+	if ref1.Rollout != "" {
+		t.Fatalf("ambiguous concurrent spawn must defer, got %q", ref1.Rollout)
+	}
+	// Pane %2: same ambiguity → also defers.
+	f2 := newFake("%2")
+	ref2 := AgentRef{WindowID: "%2"}
+	if err := Resolve(f2.run, &ref2); err != nil {
+		t.Fatal(err)
+	}
+	if ref2.Rollout != "" {
+		t.Fatalf("ambiguous concurrent spawn must defer, got %q", ref2.Rollout)
+	}
+	// Now rollA is claimed (e.g. HandleNotify pinned it to %1). Pane %2 re-resolves
+	// and pairs to the REMAINING stream, rollB — never rollA.
+	f2b := newFake("%2")
+	f2b.out["list-panes -a -F #{@duck_rollout}"] = rollA + "\n"
+	ref2 = AgentRef{WindowID: "%2"}
+	if err := Resolve(f2b.run, &ref2); err != nil {
+		t.Fatal(err)
+	}
+	if ref2.Rollout != rollB {
+		t.Fatalf("with rollA claimed, %%2 must pair to rollB; got %q", ref2.Rollout)
+	}
+}
+
 // TestHandleNotifyPinsRolloutByThreadID: the codex notify hook carries the
 // thread id (a UUIDv7 whose first 48 bits are unix-ms), which names the date
 // partition directly — the rollout is located and pinned with no tree walk.
