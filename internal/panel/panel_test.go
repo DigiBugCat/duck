@@ -85,6 +85,28 @@ func TestAgentsMergesSlotOccupantAndParkedPanes(t *testing.T) {
 	}
 }
 
+func TestWorkspacesUsesManagerClaudeTitle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	outer := "duck-workspace-title"
+	f := &fakeRunner{out: map[string]string{
+		"list-sessions -F #{session_name}\t#{session_attached}\t#{@duck_dir}\t#{@duck_panel_of}": outer + "\t0\t/home/andrew/Obsidian/aviary/duck\t\n",
+		"list-panes -a -F #{session_name}\t#{pane_id}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}": outer + "\t%1\tviewport\tzsh\tpelican\n" +
+			outer + "\t%2\t\tclaude\t\u2733 Fix workspace names\n",
+		"list-panes -t " + outer + ": -F #{pane_current_path}\t#{@duck_panel_role}": "/home/andrew/Obsidian/aviary/duck\t\n",
+	}}
+
+	ws, err := Workspaces(f.run, outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ws) != 1 {
+		t.Fatalf("want one workspace, got %+v", ws)
+	}
+	if ws[0].Display != "Fix workspace names" {
+		t.Fatalf("display = %q, want manager Claude summary", ws[0].Display)
+	}
+}
+
 func TestSpawnParksStampsAndSelects(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
 		"split-window -d -t work-agents:lot -P -F #{pane_id} -c /d sh -c 'codex; ec=$?; if [ $ec -ne 0 ]; then printf '\\''\\n[exited %d — enter to close] '\\'' \"$ec\"; read -r _; fi'": "%9\n",
