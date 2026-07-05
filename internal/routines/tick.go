@@ -327,7 +327,10 @@ const managerOption = "@duck_manager"
 
 // stampManagerPane records the workspace manager pane as a session-scoped tmux
 // option. The target session's active pane is the manager immediately after duck
-// sends the launch line into a newly created/revived session.
+// sends the launch line into a newly created/revived session. The stamp is
+// PROVISIONAL: the pane id is correct at once, but the pane runs a shell until
+// `claude` execs (~1s), so validateManagerPane won't confirm it as claude right
+// away — managerPane's sniff fallback covers that gap and restamps if needed.
 func stampManagerPane(run panel.Runner, outer string) (string, error) {
 	out, err := run("display-message", "-p", "-t", outer, "#{pane_id}")
 	if err != nil {
