@@ -357,12 +357,20 @@ func (s *server) drain(ref AgentRef) {
 		if msg != "" {
 			content += ": " + msg
 		}
+		// agent carries the pane's display label; thread is the STABLE identity of
+		// the stream that produced the event (1:1 with the rollout). A supervisor
+		// keys on thread so attribution can't scramble when panes share a name or
+		// a name gets re-derived — the label is for humans, the thread for routing.
+		meta := map[string]any{"session": ref.Session, "agent": ref.Name, "type": ev.Type}
+		if tid := threadID(ref.Rollout); tid != "" {
+			meta["thread"] = tid
+		}
 		s.write(map[string]any{
 			"jsonrpc": "2.0",
 			"method":  "notifications/claude/channel",
 			"params": map[string]any{
 				"content": content,
-				"meta":    map[string]any{"session": ref.Session, "agent": ref.Name, "type": ev.Type},
+				"meta":    meta,
 			},
 		})
 	}

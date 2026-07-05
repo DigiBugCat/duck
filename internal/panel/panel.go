@@ -785,26 +785,26 @@ type Workspace struct {
 // Workspaces lists the hub's duck sessions (companions excluded), current
 // first, then attached, then name order preserved from tmux.
 func Workspaces(run Runner, outer string) ([]Workspace, error) {
-	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{@duck_dir}\t#{"+panelOfOption+"}\t#{pane_title}")
+	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{@duck_dir}\t#{"+panelOfOption+"}")
+	if err != nil {
+		return nil, err
+	}
+	managerTitles, err := managerPaneTitles(run)
 	if err != nil {
 		return nil, err
 	}
 	myProj := ProjectName(run, outer)
 	doc, _ := names.NewStore(shellRunner{}).Load() // display names; empty doc on any error
 	var ws []Workspace
-	// TrimRight newlines ONLY (TrimSpace eats the last line's trailing tab);
-	// pane_title is free text and LAST, so the split is bounded.
+	// TrimRight newlines ONLY (TrimSpace eats the last line's trailing tab).
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 5)
+		f := strings.SplitN(line, "\t", 4)
 		if len(f) < 3 {
 			continue
 		}
-		panelOf, title := "", ""
+		panelOf := ""
 		if len(f) >= 4 {
 			panelOf = strings.TrimSpace(f[3])
-		}
-		if len(f) == 5 {
-			title = f[4]
 		}
 		if panelOf != "" {
 			continue // companions are plumbing
@@ -819,12 +819,41 @@ func Workspaces(run Runner, outer string) ([]Workspace, error) {
 		}
 		ws = append(ws, Workspace{
 			Name:     f[0],
-			Display:  names.Resolve(doc, f[0], dir, title),
+			Display:  names.Resolve(doc, f[0], dir, managerTitles[f[0]]),
 			Attached: f[1] != "0" && f[1] != "",
 			Current:  f[0] == outer,
 		})
 	}
 	return ws, nil
+}
+
+// managerPaneTitles returns the Claude task-summary title from each workspace's
+// manager pane: the first unstamped pane in the session that is running claude.
+func managerPaneTitles(run Runner) (map[string]string, error) {
+	out, err := run("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}")
+	if err != nil {
+		return nil, err
+	}
+	titles := map[string]string{}
+	// TrimRight newlines ONLY (TrimSpace eats the last line's trailing tab);
+	// pane_title is free text and LAST, so the split is bounded.
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		f := strings.SplitN(line, "\t", 5)
+		if len(f) < 4 {
+			continue
+		}
+		if _, ok := titles[f[0]]; ok {
+			continue
+		}
+		if strings.TrimSpace(f[2]) == "" && strings.TrimSpace(f[3]) == "claude" {
+			title := ""
+			if len(f) == 5 {
+				title = f[4]
+			}
+			titles[f[0]] = title
+		}
+	}
+	return titles, nil
 }
 
 // shellRunner adapts the names.Store Runner (shell-string commands) to

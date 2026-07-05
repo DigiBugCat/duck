@@ -56,6 +56,64 @@ func TestParseEventFiltersSignal(t *testing.T) {
 	}
 }
 
+func TestLooksLikeThreadID(t *testing.T) {
+	yes := []string{"019f2ef7-7345-7e13-a443-651cf28b427e", "00000000-0000-0000-0000-000000000000"}
+	no := []string{"", "naming", "cx-slugfork", "%7", "019f2ef7-7345-7e13-a443", "019f2ef7734573e13a443651cf28b427e",
+		"g19f2ef7-7345-7e13-a443-651cf28b427e"} // non-hex
+	for _, s := range yes {
+		if !looksLikeThreadID(s) {
+			t.Errorf("want thread-id shape: %q", s)
+		}
+	}
+	for _, s := range no {
+		if looksLikeThreadID(s) {
+			t.Errorf("want NOT thread-id shape: %q", s)
+		}
+	}
+}
+
+func TestFindAgentByPaneIDAndName(t *testing.T) {
+	agentsFmt := "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}"
+	// Two agents SHARE the name "worker" — only the pane id disambiguates them.
+	f := &fakeRunner{out: map[string]string{
+		"list-sessions -F #{session_name}\t#{@duck_panel_of}":      "work\t\nwork-agents\twork\n",
+		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}": "%5\tviewport\n",
+		"list-panes -s -t work -F " + agentsFmt:                    "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
+		"list-panes -s -t work-agents -F " + agentsFmt:             "%7\tworker\tagents\t\t\tcodex\t\n%8\tworker\tagents\t\t\tcodex\t\n",
+	}}
+	// Pane id resolves the EXACT pane even though the name collides.
+	for _, want := range []string{"%7", "%8"} {
+		ref, err := FindAgent(f.run, "work", want)
+		if err != nil || ref.WindowID != want {
+			t.Fatalf("FindAgent(%q) → %q %v, want that pane", want, ref.WindowID, err)
+		}
+	}
+	// A bare name still resolves (to the first match) — back-compat.
+	ref, err := FindAgent(f.run, "work", "worker")
+	if err != nil || ref.WindowID != "%7" {
+		t.Fatalf("FindAgent by name → %q %v, want %%7", ref.WindowID, err)
+	}
+	// Unknown ref errors.
+	if _, err := FindAgent(f.run, "work", "%99"); err == nil {
+		t.Fatal("unknown pane id should error")
+	}
+}
+
+func TestThreadID(t *testing.T) {
+	cases := map[string]string{
+		"/a/b/2026/07/04/rollout-2026-07-04T14-09-56-019f2ef7-7345-7e13-a443-651cf28b427e.jsonl": "019f2ef7-7345-7e13-a443-651cf28b427e",
+		"rollout-2026-07-04T14-09-56-019f2ef7-7345-7e13-a443-651cf28b427e.jsonl":                 "019f2ef7-7345-7e13-a443-651cf28b427e",
+		"/some/other/file.jsonl": "",
+		"":                       "",
+		"rollout-short.jsonl":    "", // fewer than 5 trailing groups
+	}
+	for in, want := range cases {
+		if got := threadID(in); got != want {
+			t.Errorf("threadID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestMatchRolloutPairsByCwdAndTime(t *testing.T) {
 	root := t.TempDir()
 	day := filepath.Join(root, "2026", "07", "03")
@@ -72,29 +130,37 @@ func TestMatchRolloutPairsByCwdAndTime(t *testing.T) {
 	}
 	write("rollout-old.jsonl", "/work", spawn.Add(-time.Hour))           // too old
 	write("rollout-other.jsonl", "/elsewhere", spawn.Add(2*time.Second)) // wrong dir
-	want := write("rollout-mine.jsonl", "/work", spawn.Add(1*time.Second))
-	write("rollout-later.jsonl", "/work", spawn.Add(30*time.Second)) // later spawn wins only if first is absent
+	mine := write("rollout-mine.jsonl", "/work", spawn.Add(1*time.Second))
+	later := write("rollout-later.jsonl", "/work", spawn.Add(30*time.Second))
 
-	// The old file's mtime is fresh (just written) — matchRollout must still
-	// reject it on the meta TIMESTAMP, not just mtime.
+	// TWO unclaimed /work candidates (mine + later) = ambiguous. matchRollout
+	// must refuse to guess (empty, no error) rather than adopt the earliest —
+	// guessing is the fan-out scramble. HandleNotify's exact thread-id pin
+	// resolves it later. The old/other files are correctly filtered (age, cwd).
 	got, err := matchRollout(root, "/work", spawn, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
-		t.Fatalf("want %s, got %s", want, got)
+	if got != "" {
+		t.Fatalf("two same-cwd candidates must be ambiguous → empty, got %s", got)
 	}
 	// No candidates → empty, no error (codex still starting).
 	got, err = matchRollout(root, "/nowhere", spawn, nil)
 	if err != nil || got != "" {
 		t.Fatalf("no-match should be empty+nil, got %q %v", got, err)
 	}
-	// A rollout already pinned by another pane is off-limits: the runner-up
-	// (the later spawn in the same cwd) wins instead.
-	later := filepath.Join(day, "rollout-later.jsonl")
-	got, err = matchRollout(root, "/work", spawn, map[string]bool{want: true})
+	// Claiming one candidate disambiguates: exactly ONE unclaimed /work rollout
+	// remains, so it pairs. This is the legit sequential case — one agent already
+	// paired, the next takes the remaining stream.
+	got, err = matchRollout(root, "/work", spawn, map[string]bool{mine: true})
 	if err != nil || got != later {
-		t.Fatalf("claimed rollout must be skipped; want %s, got %q %v", later, got, err)
+		t.Fatalf("one unclaimed candidate must pair; want %s, got %q %v", later, got, err)
+	}
+	// And with the single genuine candidate (later removed from the picture),
+	// the lone match pairs immediately — the common one-agent case.
+	got, err = matchRollout(root, "/work", spawn, map[string]bool{later: true})
+	if err != nil || got != mine {
+		t.Fatalf("lone candidate must pair; want %s, got %q %v", mine, got, err)
 	}
 }
 
@@ -140,6 +206,71 @@ func TestResolveOnlyPairsCodexSpawns(t *testing.T) {
 	}
 	if ref.Rollout == "" {
 		t.Fatal("codex spawn should pair")
+	}
+}
+
+// TestResolveRefusesAmbiguousConcurrentSpawns is the fan-out scramble repro:
+// two codex panes launched in the SAME cwd near-simultaneously, two rollout
+// files present, neither claimed. Correlation-pairing must NOT guess — both
+// panes defer (empty Rollout) rather than adopt the same earliest stream and
+// cross-attribute. Then, when one pane's stream is claimed (as HandleNotify's
+// exact thread-id pin would do), the other pane pairs to the REMAINING stream.
+func TestResolveRefusesAmbiguousConcurrentSpawns(t *testing.T) {
+	root := t.TempDir()
+	day := filepath.Join(root, "2026", "07", "03")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spawn := time.Now().Add(-time.Minute)
+	rollA := filepath.Join(day, "rollout-a.jsonl")
+	rollB := filepath.Join(day, "rollout-b.jsonl")
+	if err := os.WriteFile(rollA, []byte(metaLine(spawn.Add(1*time.Second), "/work")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rollB, []byte(metaLine(spawn.Add(2*time.Second), "/work")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DUCK_CODEX_SESSIONS", root)
+
+	// Two panes, both codex, both in /work. No @duck_rollout pinned on either,
+	// and list-panes -a reports no claims yet (both fresh).
+	newFake := func(pane string) *fakeRunner {
+		return &fakeRunner{out: map[string]string{
+			"show-options -p -t " + pane + " -v @duck_rollout":     "\n",
+			"show-options -p -t " + pane + " -v @duck_cmd":         "codex --model gpt-5\n",
+			"show-options -p -t " + pane + " -v @duck_spawned_at":  fmt.Sprintf("%d\n", spawn.Unix()),
+			"display-message -p -t " + pane + " #{pane_current_path}": "/work\n",
+			"list-panes -a -F #{@duck_rollout}":                     "\n", // nothing claimed
+		}}
+	}
+	// Pane %1: ambiguous (two unclaimed /work candidates) → must NOT pair.
+	f1 := newFake("%1")
+	ref1 := AgentRef{WindowID: "%1"}
+	if err := Resolve(f1.run, &ref1); err != nil {
+		t.Fatal(err)
+	}
+	if ref1.Rollout != "" {
+		t.Fatalf("ambiguous concurrent spawn must defer, got %q", ref1.Rollout)
+	}
+	// Pane %2: same ambiguity → also defers.
+	f2 := newFake("%2")
+	ref2 := AgentRef{WindowID: "%2"}
+	if err := Resolve(f2.run, &ref2); err != nil {
+		t.Fatal(err)
+	}
+	if ref2.Rollout != "" {
+		t.Fatalf("ambiguous concurrent spawn must defer, got %q", ref2.Rollout)
+	}
+	// Now rollA is claimed (e.g. HandleNotify pinned it to %1). Pane %2 re-resolves
+	// and pairs to the REMAINING stream, rollB — never rollA.
+	f2b := newFake("%2")
+	f2b.out["list-panes -a -F #{@duck_rollout}"] = rollA + "\n"
+	ref2 = AgentRef{WindowID: "%2"}
+	if err := Resolve(f2b.run, &ref2); err != nil {
+		t.Fatal(err)
+	}
+	if ref2.Rollout != rollB {
+		t.Fatalf("with rollA claimed, %%2 must pair to rollB; got %q", ref2.Rollout)
 	}
 }
 

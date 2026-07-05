@@ -323,10 +323,42 @@ func fireManager(run panel.Runner, d Def, outer string, logw io.Writer) bool {
 	return true
 }
 
-// managerPane finds the workspace's main claude pane: the first pane of the
-// outer window that is not panel furniture (no role option) AND is running
-// claude. `manager` is the reserved name for this endpoint in the org model.
-func managerPane(run panel.Runner, outer string) (string, bool) {
+const managerOption = "@duck_manager"
+
+// stampManagerPane records the workspace manager pane as a session-scoped tmux
+// option. The target session's active pane is the manager immediately after duck
+// sends the launch line into a newly created/revived session. The stamp is
+// PROVISIONAL: the pane id is correct at once, but the pane runs a shell until
+// `claude` execs (~1s), so validateManagerPane won't confirm it as claude right
+// away — managerPane's sniff fallback covers that gap and restamps if needed.
+func stampManagerPane(run panel.Runner, outer string) (string, error) {
+	out, err := run("display-message", "-p", "-t", outer, "#{pane_id}")
+	if err != nil {
+		return "", err
+	}
+	pane := strings.TrimSpace(out)
+	if pane == "" {
+		return "", fmt.Errorf("no pane id for %s", outer)
+	}
+	if _, err := run("set-option", "-t", outer, managerOption, pane); err != nil {
+		return "", err
+	}
+	return pane, nil
+}
+
+func validateManagerPane(run panel.Runner, pane string) bool {
+	if strings.TrimSpace(pane) == "" {
+		return false
+	}
+	out, err := run("display-message", "-p", "-t", pane, "#{pane_id}\t#{pane_current_command}")
+	if err != nil {
+		return false
+	}
+	f := strings.SplitN(strings.TrimRight(out, "\n"), "\t", 2)
+	return len(f) == 2 && strings.TrimSpace(f[0]) == pane && strings.TrimSpace(f[1]) == "claude"
+}
+
+func sniffManagerPane(run panel.Runner, outer string) (string, bool) {
 	out, err := run("list-panes", "-t", outer+":", "-F", "#{pane_id}\t#{@duck_panel_role}\t#{pane_current_command}")
 	if err != nil {
 		return "", false
@@ -340,22 +372,29 @@ func managerPane(run panel.Runner, outer string) (string, bool) {
 	return "", false
 }
 
-// awaitComposer polls the pane until codex's composer prompt is on screen.
-// Attempt-bounded (not wall-clock) so tests with a stubbed sleepFn finish
-// instantly instead of busy-spinning to a deadline.
-func awaitComposer(run panel.Runner, paneID string, timeout time.Duration) bool {
-	const every = 500 * time.Millisecond
-	for i := 0; i < int(timeout/every)+1; i++ {
-		if out, err := run("capture-pane", "-p", "-t", paneID); err == nil && strings.Contains(out, "›") {
-			return true
+// managerPane finds the workspace's main claude pane. @duck_manager is the
+// authority when it points at a live claude pane; the old role-less claude scan
+// remains as a fallback/healer and restamps the option when it finds a match.
+// `manager` is the reserved name for this endpoint in the org model.
+func managerPane(run panel.Runner, outer string) (string, bool) {
+	if out, err := run("show-options", "-t", outer, "-v", managerOption); err == nil {
+		if pane := strings.TrimSpace(out); validateManagerPane(run, pane) {
+			return pane, true
 		}
-		sleepFn(every)
 	}
-	return false
+	pane, ok := sniffManagerPane(run, outer)
+	if !ok {
+		return "", false
+	}
+	_, _ = run("set-option", "-t", outer, managerOption, pane)
+	return pane, true
 }
 
-// sleepFn is a package var so tests can stub waiting.
-var sleepFn = time.Sleep
+// awaitComposer delegates to channel.AwaitComposer — one composer-readiness
+// check shared by the routines fire path and one-call spawn+send.
+func awaitComposer(run panel.Runner, paneID string, timeout time.Duration) bool {
+	return channel.AwaitComposer(run, paneID, timeout)
+}
 
 // healPersistent recreates every Persistent workspace record whose tmux session
 // is no longer live, so persistent workspaces survive a hub reboot. Each healed
@@ -371,7 +410,27 @@ func healPersistent(run panel.Runner, logw io.Writer) {
 	}
 	live := liveSessionNames(run)
 	for _, r := range recs {
-		if !r.Persistent || live[r.Name] {
+		if live[r.Name] {
+			if _, ok := managerPane(run, r.Name); ok {
+				_, _ = run("set-option", "-u", "-t", r.Name, "@duck_manager_down")
+				continue
+			}
+			if !r.Persistent {
+				_, _ = run("set-option", "-t", r.Name, "@duck_manager_down", "1")
+				continue
+			}
+			if _, err := run("send-keys", "-t", r.Name, manager.Line(nil), "Enter"); err != nil {
+				fmt.Fprintf(logw, "routines: heal %s: relaunch manager: %v\n", r.Name, err)
+				continue
+			}
+			if _, err := stampManagerPane(run, r.Name); err != nil {
+				fmt.Fprintf(logw, "routines: heal %s: stamp @duck_manager: %v\n", r.Name, err)
+			}
+			_, _ = run("set-option", "-u", "-t", r.Name, "@duck_manager_down")
+			fmt.Fprintf(logw, "routines: healed persistent workspace %s manager\n", r.Name)
+			continue
+		}
+		if !r.Persistent {
 			continue
 		}
 		abs, err := paths.Expand(r.Dir)
@@ -397,14 +456,23 @@ func healPersistent(run panel.Runner, logw io.Writer) {
 		// session's pane the same way bare `duck` does (bare `claude`, so the pane
 		// shell's function owns profiles; channel flags unless DUCK_NO_CHANNELS).
 		// Best-effort — a send failure logs but never stops the heal/tick.
+		launched := false
 		if _, err := run("send-keys", "-t", r.Name, manager.Line(nil), "Enter"); err != nil {
 			fmt.Fprintf(logw, "routines: heal %s: launch manager: %v\n", r.Name, err)
 		} else if !manager.ChannelsWired(nil) && !r.Channels {
+			launched = true
 			// Stamp the record channel-aware once the manager launched with channel
 			// flags, so the ledger reflects reality. Best-effort.
 			r.Channels = true
 			if err := wsStore().Save(r); err != nil {
 				fmt.Fprintf(logw, "routines: heal %s: stamp channels: %v\n", r.Name, err)
+			}
+		} else {
+			launched = true
+		}
+		if launched {
+			if _, err := stampManagerPane(run, r.Name); err != nil {
+				fmt.Fprintf(logw, "routines: heal %s: stamp @duck_manager: %v\n", r.Name, err)
 			}
 		}
 		fmt.Fprintf(logw, "routines: healed persistent workspace %s (%s)\n", r.Name, tilde)

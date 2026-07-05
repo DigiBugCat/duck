@@ -63,18 +63,43 @@ type AgentRef struct {
 	SpawnedAt time.Time
 }
 
-// FindAgent locates the named agent window in outer's companion session.
-func FindAgent(run panel.Runner, outer, name string) (AgentRef, error) {
+// FindAgent locates an agent window in outer's companion session by REFERENCE,
+// which may be (in precedence order): a tmux pane id (%NN or @NN — the stable
+// handle `duck spawn` prints, unambiguous even when agents share a name); a
+// codex thread id (the rollout's trailing UUID, from an event's meta.thread);
+// or the agent's display name. Name resolution is last so an explicit id always
+// wins over a colliding label.
+func FindAgent(run panel.Runner, outer, ref string) (AgentRef, error) {
 	agents, err := panel.Agents(run, outer)
 	if err != nil {
 		return AgentRef{}, err
 	}
+	// A pane id is exact — match it first, before any name could shadow it.
+	if strings.HasPrefix(ref, "%") || strings.HasPrefix(ref, "@") {
+		for _, a := range agents {
+			if a.PaneID == ref {
+				return AgentRef{Session: outer, Name: a.Name, WindowID: a.PaneID}, nil
+			}
+		}
+	}
+	// A thread id resolves via each pane's paired rollout — the stream identity,
+	// independent of the mutable name label. Gated on the ref LOOKING like a
+	// thread id so the common name lookup never pays the per-agent Resolve cost.
+	if looksLikeThreadID(ref) {
+		for _, a := range agents {
+			r := AgentRef{Session: outer, Name: a.Name, WindowID: a.PaneID}
+			_ = Resolve(run, &r)
+			if r.Rollout != "" && threadID(r.Rollout) == ref {
+				return r, nil
+			}
+		}
+	}
 	for _, a := range agents {
-		if a.Name == name {
+		if a.Name == ref {
 			return AgentRef{Session: outer, Name: a.Name, WindowID: a.PaneID}, nil
 		}
 	}
-	return AgentRef{}, fmt.Errorf("no agent %q in session %s (see: duck channel ls)", name, outer)
+	return AgentRef{}, fmt.Errorf("no agent %q in session %s (see: duck channel ls)", ref, outer)
 }
 
 // Resolve pairs ref's window with its codex rollout file, caching the result
@@ -164,6 +189,48 @@ func HandleNotify(run panel.Runner, paneID, payload string) error {
 	return ReportRun(ws, RunReport{Routine: f[1], Message: p.LastMessage, At: time.Now()})
 }
 
+// looksLikeThreadID reports whether ref has the 8-4-4-4-12 hyphenated UUID shape
+// of a codex thread id — a cheap gate so FindAgent only pays per-agent rollout
+// resolution when the reference could actually be a thread id.
+func looksLikeThreadID(ref string) bool {
+	groups := strings.Split(ref, "-")
+	if len(groups) != 5 {
+		return false
+	}
+	for _, want := range [5]int{8, 4, 4, 4, 12} {
+		g := groups[0]
+		groups = groups[1:]
+		if len(g) != want {
+			return false
+		}
+		for _, c := range g {
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// threadID extracts the codex thread id (the trailing UUID of a rollout
+// filename `rollout-<ts>-<uuid>.jsonl`) — a stable 1:1 key for the STREAM that
+// produced an event, unlike @duck_name (a mutable pane label). Attribution uses
+// it so a supervisor keys on the actual conversation, not on whatever name the
+// pane happens to carry. Returns "" for a non-rollout path.
+func threadID(rolloutPath string) string {
+	base := strings.TrimSuffix(filepath.Base(rolloutPath), ".jsonl")
+	if !strings.HasPrefix(base, "rollout-") {
+		return ""
+	}
+	// The uuid is the last 5 hyphen-groups (8-4-4-4-12). Splitting and taking
+	// the tail is simpler and format-stable than a regex.
+	parts := strings.Split(base, "-")
+	if len(parts) < 5 {
+		return ""
+	}
+	return strings.Join(parts[len(parts)-5:], "-")
+}
+
 // rolloutByThreadID locates root/YYYY/MM/DD/rollout-*-<id>.jsonl without
 // walking the tree: codex thread ids are UUIDv7, whose first 48 bits are the
 // creation time in unix ms — that names the date partition directly. The
@@ -235,12 +302,23 @@ func windowSpawnedAt(run panel.Runner, windowID string) (time.Time, error) {
 // closest after (spawnedAt - slack). Rollouts in claimed (already pinned by
 // another pane) are skipped. Empty when none match yet (codex still
 // starting) — callers retry.
+//
+// AMBIGUITY: cwd+time correlation cannot tell two codex agents launched in the
+// same directory near-simultaneously apart — both see the same unclaimed
+// candidates and would adopt the SAME (earliest) stream, cross-attributing each
+// other's events (the fan-out scramble). So when 2+ unclaimed candidates match
+// the same cwd, matchRollout returns empty and refuses to guess: HandleNotify's
+// exact thread-id pin (fired on first-turn-complete) resolves it correctly, and
+// serve.drain replays from offset 0 for post-sidecar panes, so nothing is lost —
+// pairing is merely delayed until it can be made unambiguously. One candidate is
+// unambiguous and pairs immediately as before.
 func matchRollout(root, dir string, spawnedAt time.Time, claimed map[string]bool) (string, error) {
 	if root == "" {
 		return "", nil
 	}
 	var best string
 	var bestTS time.Time
+	candidates := 0
 	// Rollouts are date-partitioned (root/YYYY/MM/DD, LOCAL date); a day-dir
 	// wholly before the spawn day can't contain our rollout, so skip the
 	// subtree instead of statting months of history on every scan. One extra
@@ -270,12 +348,20 @@ func matchRollout(root, dir string, spawnedAt time.Time, claimed map[string]bool
 		if !ok || meta.cwd != dir || meta.ts.Before(spawnedAt.Add(-spawnSlack)) {
 			return nil
 		}
+		candidates++
 		if best == "" || meta.ts.Before(bestTS) {
 			best, bestTS = path, meta.ts
 		}
 		return nil
 	})
-	return best, err
+	if err != nil {
+		return "", err
+	}
+	// 2+ unclaimed same-cwd candidates: ambiguous — refuse to guess (see doc).
+	if candidates > 1 {
+		return "", nil
+	}
+	return best, nil
 }
 
 type sessionMeta struct {
@@ -455,6 +541,43 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 		}
 	}
 	return fmt.Errorf("no submit confirmation after retries (pane %s)", ref.WindowID)
+}
+
+// sleepFn is a package var so tests can stub the composer-await wait.
+var sleepFn = time.Sleep
+
+// SetSleepFn overrides the composer-await sleep and returns a restore func. For
+// tests (in this and dependent packages) that drive AwaitComposer/SendWhenReady
+// and must not block on real wall-clock waits.
+func SetSleepFn(fn func(time.Duration)) (restore func()) {
+	old := sleepFn
+	sleepFn = fn
+	return func() { sleepFn = old }
+}
+
+// AwaitComposer polls the pane until codex's composer prompt (›) is on screen,
+// up to timeout. A freshly spawned TUI eats keystrokes during its first seconds
+// of startup, so a caller sending the first turn must wait for readiness first.
+// Attempt-bounded so a stubbed sleepFn finishes instantly in tests.
+func AwaitComposer(run panel.Runner, paneID string, timeout time.Duration) bool {
+	const every = 500 * time.Millisecond
+	for i := 0; i < int(timeout/every)+1; i++ {
+		if out, err := run("capture-pane", "-p", "-t", paneID); err == nil && strings.Contains(out, "›") {
+			return true
+		}
+		sleepFn(every)
+	}
+	return false
+}
+
+// SendWhenReady awaits the agent's composer, then Sends. It is the correct entry
+// point for delivering the FIRST turn to a just-spawned agent (one-call
+// spawn+send); Send alone assumes a ready composer. If the composer never
+// appears within the window it sends anyway (best-effort — a non-codex or
+// slow-booting pane still gets the text rather than silently dropping it).
+func SendWhenReady(run panel.Runner, ref AgentRef, message string) error {
+	AwaitComposer(run, ref.WindowID, 15*time.Second)
+	return Send(run, ref, message)
 }
 
 // taskStartedSince reports whether the rollout gained a task_started event

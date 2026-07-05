@@ -9,10 +9,13 @@
 package command
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/DigiBugCat/duck/internal/claude"
+	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
@@ -64,13 +67,19 @@ func claudeConfigHome() string {
 	return home
 }
 
-// stampManagerLaunched marks the workspace record channel-aware whenever duck
-// launched a manager WITH channel flags (i.e. not opted out via DUCK_NO_CHANNELS
-// / explicit --channels). Best-effort: a ledger write must never block the
-// launch. It writes over the same ssh seam as the names store (records live in
-// the hub's Claude projects corpus), loading the existing record first so a
+// stampManagerLaunched records the freshly launched manager pane in tmux and
+// marks the workspace record channel-aware whenever duck launched a manager WITH
+// channel flags (i.e. not opted out via DUCK_NO_CHANNELS / explicit --channels).
+// Best-effort: neither a tmux option nor ledger write may block the launch. The
+// ledger write uses the same ssh seam as the names store (records live in the
+// hub's Claude projects corpus), loading the existing record first so a
 // re-stamp preserves Parent/Title/Persistent.
 func stampManagerLaunched(w *wiring, tildeDir, name string, extraArgs []string) {
+	if out, err := w.client.Run(fmt.Sprintf("tmux display-message -p -t %s '#{pane_id}'", paths.Quote(name))); err == nil {
+		if pane := strings.TrimSpace(out); pane != "" {
+			_, _ = w.client.Run(fmt.Sprintf("tmux set-option -t %s @duck_manager %s", paths.Quote(name), paths.Quote(pane)))
+		}
+	}
 	if channelsWired(extraArgs) {
 		return // manager launched without channel flags — nothing to stamp.
 	}

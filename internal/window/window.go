@@ -119,8 +119,17 @@ func (s *Store) persist() {
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(s.path), 0o755)
-	_ = os.WriteFile(s.path, b, 0o644)
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		_ = os.Remove(tmp)
+		return
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
+	}
 }
 
 // Host owns the browser session and serves the control API.

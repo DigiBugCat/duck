@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
 // evictRunner extends the fake-runner seam with RunInput output (Evict streams
@@ -81,7 +83,9 @@ func TestListEvictedMissingFileIsEmpty(t *testing.T) {
 }
 
 func TestReviveRecreatesAndResumesClaude(t *testing.T) {
-	f := &evictRunner{out: map[string]string{}} // empty list-sessions → not live
+	f := &evictRunner{out: map[string]string{
+		"tmux display-message -p -t 'foo' '#{pane_id}'": "%7\n",
+	}} // empty list-sessions → not live
 	m := NewManager(f, &fakeAttacher{})
 	err := m.Revive(Evicted{Name: "foo", Dir: "~/dev/foo", ClaudeID: "abc-123", ResumeArgs: "--model opus --dangerously-skip-permissions"})
 	if err != nil {
@@ -90,12 +94,37 @@ func TestReviveRecreatesAndResumesClaude(t *testing.T) {
 	joined := strings.Join(f.cmds, "\n")
 	for _, want := range []string{
 		"tmux new-session -d -s 'foo' -c \"$HOME\"/'dev/foo'",
-		"tmux send-keys -t 'foo' 'claude --resume abc-123 --model opus --dangerously-skip-permissions' Enter",
+		"tmux set-option -t 'foo' '@duck_manager' '%7'",
 		"awk -F '\\t' -v n='foo' '$1 != n'",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing command %q in:\n%s", want, joined)
 		}
+	}
+	for _, want := range []string{"tmux send-keys -t 'foo'", "claude", "--resume", "abc-123", "--model", "opus", "--dangerously-skip-permissions", "--dangerously-load-development-channels", "server:duck-agents"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("revive send line missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
+func TestReviveRestampsParentFromWorkspaceLedger(t *testing.T) {
+	oldBase := workspaces.DefaultBase
+	workspaces.DefaultBase = "/ledger"
+	defer func() { workspaces.DefaultBase = oldBase }()
+
+	record := `{"name":"foo","dir":"/repo","parent":"motherduck"}`
+	f := &evictRunner{out: map[string]string{
+		"cat '/ledger/-repo/duck/foo.json' 2>/dev/null || echo ''": record,
+		"tmux display-message -p -t 'foo' '#{pane_id}'":            "%7\n",
+	}}
+	m := NewManager(f, &fakeAttacher{})
+	if err := m.Revive(Evicted{Name: "foo", Dir: "/repo", ClaudeID: "abc-123"}); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(f.cmds, "\n")
+	if !strings.Contains(joined, "tmux set-option -t 'foo' '@duck_parent' 'motherduck'") {
+		t.Fatalf("revive must restamp @duck_parent from ledger; cmds:\n%s", joined)
 	}
 }
 
@@ -119,6 +148,19 @@ func TestEvictScriptNeverTouchesAttachedOrLooped(t *testing.T) {
 	} {
 		if !strings.Contains(EvictScript, guard) {
 			t.Fatalf("EvictScript lost its safety guard %q", guard)
+		}
+	}
+}
+
+func TestEvictScriptSkipsPersistentWorkspaceRecords(t *testing.T) {
+	for _, want := range []string{
+		"persistent_workspace()",
+		`"$HOME/.claude/projects/$pslug/duck/$2.json"`,
+		`"persistent"[[:space:]]*:[[:space:]]*true`,
+		`persistent_workspace "$dir" "$name" && continue`,
+	} {
+		if !strings.Contains(EvictScript, want) {
+			t.Fatalf("EvictScript persistent exemption missing %q", want)
 		}
 	}
 }
