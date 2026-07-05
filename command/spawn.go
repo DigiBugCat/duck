@@ -69,11 +69,17 @@ Examples:
 		name := spawnName
 		kind := spawnTab
 		if name == "" {
+			// An OMITTED name defaults to the command, but made UNIQUE: bare
+			// `duck spawn codex` × N otherwise stamps N agents all named "codex"
+			// — the collision that makes a fan-out unaddressable by name (the
+			// pane id is always the unambiguous handle, but the label should not
+			// actively mislead). An EXPLICIT -n is honored verbatim: routines and
+			// the manager depend on deterministic, predictable names.
+			base := "shell"
 			if len(args) > 0 {
-				name = filepath.Base(args[0])
-			} else {
-				name = "shell"
+				base = filepath.Base(args[0])
 			}
+			name = uniqueAgentName(run, outer, base)
 		}
 		if kind == "" {
 			// Default tab by shape: a bare `duck spawn` is a shell; anything
@@ -106,6 +112,30 @@ Examples:
 		}
 		return nil
 	},
+}
+
+// uniqueAgentName returns base if no agent in outer already carries it, else the
+// first free base-2, base-3, … A best-effort listing failure falls back to base
+// (spawn must never be blocked by a naming nicety; the pane id stays unique
+// regardless). Only used for OMITTED names — an explicit -n is never rewritten.
+func uniqueAgentName(run panel.Runner, outer, base string) string {
+	agents, err := panel.Agents(run, outer)
+	if err != nil {
+		return base
+	}
+	taken := map[string]bool{}
+	for _, a := range agents {
+		taken[a.Name] = true
+	}
+	if !taken[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		cand := fmt.Sprintf("%s-%d", base, i)
+		if !taken[cand] {
+			return cand
+		}
+	}
 }
 
 // withCodexFullAccess makes spawned codex agents run with full access by
