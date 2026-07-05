@@ -210,3 +210,13 @@ duck window close          close the window (host may linger)
 Prove the spine end-to-end: `duck window serve` host + CDP-launched
 app-mode chromium + load a hub `:7327` artifact + one highlight round-trip
 (select text in the window → `duck window marks` shows it on the hub).
+
+## Marks as channel events (settled 2026-07-05)
+
+Marks must PUSH, not sit in a store waiting for `duck window marks`: the
+window host is an event source exactly like a sidebar agent. When a mark
+arrives, the host reports it through the channel fabric (same lane as the
+routines RunReport breadcrumbs) addressed to the workspace that showed the
+artifact — the manager Claude sees "human circled X on <url>, note: '…',
+shot: <path>" as a <channel> event the moment Send is clicked. `duck window
+marks` stays as the query/history verb; the channel is the live path.
