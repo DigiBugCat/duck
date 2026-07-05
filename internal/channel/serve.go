@@ -60,6 +60,10 @@ func Serve(run panel.Runner, workspace string, in io.Reader, out io.Writer) erro
 		}
 		s.handle(line)
 	}
+	// Wait for in-flight tools/call handlers (spawn can block on spin-up) to write
+	// their replies before returning — otherwise a reply is lost when stdin closes
+	// mid-call.
+	s.inflight.Wait()
 	return sc.Err()
 }
 
@@ -71,9 +75,10 @@ type server struct {
 	stop      chan struct{} // closed when Serve returns; stops the watch goroutine
 	started   time.Time     // sidecar start; panes spawned after this drain from 0
 
-	mu      sync.Mutex       // guards out and ready (watcher + handler both touch them)
-	offsets map[string]int64 // rollout → drained byte offset; watch goroutine only
-	ready   bool             // initialize handshake done — notifications may flow
+	mu       sync.Mutex     // guards out and ready (watcher + handler both touch them)
+	offsets  map[string]int64 // rollout → drained byte offset; watch goroutine only
+	ready    bool           // initialize handshake done — notifications may flow
+	inflight sync.WaitGroup // tools/call handlers dispatched in goroutines
 }
 
 func (s *server) write(v any) {
@@ -116,6 +121,64 @@ func (s *server) replyErr(id json.RawMessage, code int, msg string) {
 	s.write(map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": code, "message": msg}})
 }
 
+// tool is one MCP tool the sidecar exposes. schema and handler are built
+// per-server-instance (the schema varies with s.workspace), so the table is a
+// method, not a package global. handler returns the human-facing result text;
+// a non-nil error becomes an isError tool result.
+type tool struct {
+	name        string
+	description string
+	schema      map[string]any
+	handler     func(args json.RawMessage) (string, error)
+}
+
+// tools builds this instance's tool table. reply is first (unchanged behavior);
+// spawn/resume/fork append here as they land. Schemas that vary with workspace
+// scope are computed here so tools/list and tools/call share one definition.
+func (s *server) tools() []tool {
+	agentDesc := "agent reference: name, pane id (%NN), or codex session id (from event meta)"
+	sessionReq := true
+	sessionDesc := "duck session owning the agent (from event meta)"
+	if s.workspace != "" {
+		sessionReq = false
+		sessionDesc = "duck session owning the agent (default: your workspace, " + s.workspace + ")"
+	}
+	required := []string{"agent", "message"}
+	if sessionReq {
+		required = []string{"session", "agent", "message"}
+	}
+	return []tool{{
+		name:        "reply",
+		description: "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport). The agent's response arrives later as a <channel source=\"duck-agents\"> event — do not poll; react when it lands.",
+		schema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"session": map[string]any{"type": "string", "description": sessionDesc},
+				"agent":   map[string]any{"type": "string", "description": agentDesc},
+				"message": map[string]any{"type": "string"},
+			},
+			"required": required,
+		},
+		handler: func(raw json.RawMessage) (string, error) {
+			var a struct{ Session, Agent, Message string }
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return "", err
+			}
+			if a.Session == "" {
+				a.Session = s.workspace
+			}
+			ref, err := FindAgent(s.run, a.Session, a.Agent)
+			if err != nil {
+				return "", err
+			}
+			if err := Send(s.run, ref, a.Message); err != nil {
+				return "", err
+			}
+			return "delivered to " + a.Agent, nil
+		},
+	}}
+}
+
 func (s *server) handle(line []byte) {
 	var req request
 	if json.Unmarshal(line, &req) != nil {
@@ -144,48 +207,49 @@ func (s *server) handle(line []byte) {
 		s.ready = true
 		s.mu.Unlock()
 	case "tools/list":
-		required := []string{"session", "agent", "message"}
-		sessionDesc := "duck session owning the agent (from event meta)"
-		if s.workspace != "" {
-			required = []string{"agent", "message"}
-			sessionDesc = "duck session owning the agent (default: your workspace, " + s.workspace + ")"
+		var list []any
+		for _, t := range s.tools() {
+			list = append(list, map[string]any{
+				"name": t.name, "description": t.description, "inputSchema": t.schema,
+			})
 		}
-		s.reply(req.ID, map[string]any{"tools": []any{map[string]any{
-			"name":        "reply",
-			"description": "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport).",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"session": map[string]any{"type": "string", "description": sessionDesc},
-					"agent":   map[string]any{"type": "string", "description": "agent name (from event meta)"},
-					"message": map[string]any{"type": "string"},
-				},
-				"required": required,
-			},
-		}}})
+		s.reply(req.ID, map[string]any{"tools": list})
 	case "tools/call":
 		var p struct {
-			Name string `json:"name"`
-			Args struct {
-				Session, Agent, Message string
-			} `json:"arguments"`
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
 		}
-		if json.Unmarshal(req.Params, &p) != nil || p.Name != "reply" {
-			s.replyErr(req.ID, -32602, "unknown tool")
+		if json.Unmarshal(req.Params, &p) != nil {
+			s.replyErr(req.ID, -32602, "bad tools/call params")
 			return
 		}
-		if p.Args.Session == "" {
-			p.Args.Session = s.workspace
+		var h func(json.RawMessage) (string, error)
+		for _, t := range s.tools() {
+			if t.name == p.Name {
+				h = t.handler
+				break
+			}
 		}
-		ref, err := FindAgent(s.run, p.Args.Session, p.Args.Agent)
-		if err == nil {
-			err = Send(s.run, ref, p.Args.Message)
-		}
-		if err != nil {
-			s.reply(req.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": "send failed: " + err.Error()}}, "isError": true})
+		if h == nil {
+			s.replyErr(req.ID, -32602, "unknown tool: "+p.Name)
 			return
 		}
-		s.reply(req.ID, map[string]any{"content": []any{map[string]any{"type": "text", "text": "delivered to " + p.Args.Agent}}})
+		// Dispatch in a goroutine: a handler that BLOCKS (spawn awaits the agent's
+		// spin-up) must not freeze the single-threaded stdin loop — no other
+		// tools/call, reply, or ping could be serviced while it ran. JSON-RPC
+		// permits out-of-order responses; s.reply is mutex-guarded (s.write), and
+		// the watch goroutine keeps pushing notifications independently.
+		id := req.ID
+		s.inflight.Add(1)
+		go func() {
+			defer s.inflight.Done()
+			text, err := h(p.Arguments)
+			if err != nil {
+				s.reply(id, map[string]any{"content": []any{map[string]any{"type": "text", "text": err.Error()}}, "isError": true})
+				return
+			}
+			s.reply(id, map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}})
+		}()
 	case "ping":
 		s.reply(req.ID, map[string]any{})
 	default:
