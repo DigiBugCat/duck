@@ -78,6 +78,7 @@ function showComposer(onSend, onCancel) {
   });
   const cancel = button('Cancel');
   const send = button('Send');
+  send.type = 'submit'; // button() defaults type=button — a click must submit
   send.style.background = '#5BC4A8'; send.style.color = '#10201B';
   composer.append(input, cancel, send);
   composer.addEventListener('submit', ev => {
