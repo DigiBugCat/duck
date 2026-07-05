@@ -949,11 +949,25 @@ func TestSendConfirmsViaRollout(t *testing.T) {
 	}
 }
 
-// fakeLauncher records calls for the spawn/resume/fork tool tests.
-type fakeLauncher struct{ last string }
-func (f *fakeLauncher) Launch(ws string, argv []string, name, tab, prompt string) (string, string, error) { f.last = "launch"; return "%9", "sid-new", nil }
-func (f *fakeLauncher) Resume(ws, id, prompt string) (string, string, error) { f.last = "resume:" + id; return "%9", id, nil }
-func (f *fakeLauncher) Fork(ws, id, prompt string) (string, string, error) { f.last = "fork:" + id; return "%10", "sid-fork", nil }
+// fakeHost records calls for the action-tool tests.
+type fakeHost struct{ last string }
+
+func (f *fakeHost) Launch(ws string, argv []string, name, tab, prompt string) (string, string, error) {
+	f.last = "launch"
+	return "%9", "sid-new", nil
+}
+func (f *fakeHost) Resume(ws, id, prompt string) (string, string, error) {
+	f.last = "resume:" + id
+	return "%9", id, nil
+}
+func (f *fakeHost) Fork(ws, id, prompt string) (string, string, error) {
+	f.last = "fork:" + id
+	return "%10", "sid-fork", nil
+}
+func (f *fakeHost) Preview(ws, target, name string) (string, error) { f.last = "preview:" + name; return "%11", nil }
+func (f *fakeHost) Render(ws, target string) error                  { f.last = "render:" + target; return nil }
+func (f *fakeHost) Routines(ws string) (string, error)              { f.last = "routines"; return "beat\theartbeat\t15m", nil }
+func (f *fakeHost) FireRoutine(ws, name string) (string, error)     { f.last = "fire:" + name; return "fired " + name, nil }
 
 func TestServeToolsGatedOnLauncher(t *testing.T) {
 	// No launcher → only reply.
@@ -962,9 +976,9 @@ func TestServeToolsGatedOnLauncher(t *testing.T) {
 		t.Fatalf("no launcher: want [reply], got %v", names)
 	}
 	// With a launcher → reply + spawn/resume/fork.
-	s1 := &server{workspace: "work", launcher: &fakeLauncher{}}
+	s1 := &server{workspace: "work", host: &fakeHost{}}
 	got := toolNames(s1.tools())
-	for _, want := range []string{"reply", "spawn", "resume", "fork"} {
+	for _, want := range []string{"reply", "spawn", "resume", "fork", "preview", "render", "routines"} {
 		found := false
 		for _, n := range got { if n == want { found = true } }
 		if !found { t.Errorf("missing tool %q in %v", want, got) }

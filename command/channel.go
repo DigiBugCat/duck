@@ -23,6 +23,7 @@ import (
 	agentpkg "github.com/DigiBugCat/duck/internal/agent"
 	"github.com/DigiBugCat/duck/internal/channel"
 	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/DigiBugCat/duck/internal/routines"
 	"github.com/spf13/cobra"
 )
 
@@ -150,13 +151,14 @@ var channelNotifyCmd = &cobra.Command{
 	},
 }
 
-// agentLauncher backs the serve MCP server's spawn/resume/fork tools with the
-// shared internal/agent pipeline — so an agent spawned via a tool is wired
-// (full-access, notify + SessionStart hooks, trust) identically to `duck spawn`.
-// Lives here (not in internal/channel) to break the channel↔agent import cycle.
-type agentLauncher struct{}
+// mcpHost backs the serve MCP server's action tools (spawn/resume/fork agents,
+// preview/render artifacts, routine control) with duck's real internal packages
+// — so a tool call does EXACTLY what the equivalent CLI verb does. Lives here
+// (not in internal/channel) to break the channel↔{agent,routines,command} import
+// cycles: command already imports all of them.
+type mcpHost struct{}
 
-func (agentLauncher) launch(workspace string, spec agentpkg.Spec) (string, string, error) {
+func (mcpHost) launch(workspace string, spec agentpkg.Spec) (string, string, error) {
 	run := panel.ExecRunner
 	dir, err := panel.SessionPath(run, workspace)
 	if err != nil {
@@ -173,14 +175,64 @@ func (agentLauncher) launch(workspace string, spec agentpkg.Spec) (string, strin
 	return res.PaneID, res.SessionID, nil
 }
 
-func (l agentLauncher) Launch(workspace string, argv []string, name, tab, prompt string) (string, string, error) {
-	return l.launch(workspace, agentpkg.Spec{Args: argv, Name: name, Tab: tab, Prompt: prompt})
+func (h mcpHost) Launch(workspace string, argv []string, name, tab, prompt string) (string, string, error) {
+	return h.launch(workspace, agentpkg.Spec{Args: argv, Name: name, Tab: tab, Prompt: prompt})
 }
-func (l agentLauncher) Resume(workspace, sessionID, prompt string) (string, string, error) {
-	return l.launch(workspace, agentpkg.Spec{Args: agentpkg.ResumeArgs(sessionID), Prompt: prompt})
+func (h mcpHost) Resume(workspace, sessionID, prompt string) (string, string, error) {
+	return h.launch(workspace, agentpkg.Spec{Args: agentpkg.ResumeArgs(sessionID), Prompt: prompt})
 }
-func (l agentLauncher) Fork(workspace, sessionID, prompt string) (string, string, error) {
-	return l.launch(workspace, agentpkg.Spec{Args: agentpkg.ForkArgs(sessionID), Prompt: prompt})
+func (h mcpHost) Fork(workspace, sessionID, prompt string) (string, string, error) {
+	return h.launch(workspace, agentpkg.Spec{Args: agentpkg.ForkArgs(sessionID), Prompt: prompt})
+}
+
+// Preview / Render route through the same functions the CLI preview/render verbs
+// use, so a tool-driven artifact behaves identically (live-watch, click-refresh).
+func (mcpHost) Preview(workspace, target, name string) (string, error) {
+	run := panel.ExecRunner
+	dir, err := panel.SessionPath(run, workspace)
+	if err != nil {
+		return "", err
+	}
+	return runPreview(run, workspace, dir, target, name, false)
+}
+func (mcpHost) Render(workspace, target string) error {
+	return openOnClient(target)
+}
+
+// Routines / FireRoutine drive the workspace's scheduled executors (list, or run
+// one now) via internal/routines — the same paths `duck routines`/`fire` use.
+func (mcpHost) Routines(workspace string) (string, error) {
+	defs, err := routines.LoadWorkspace(workspace)
+	if err != nil {
+		return "", err
+	}
+	if len(defs) == 0 {
+		return "no routines in this workspace", nil
+	}
+	var b strings.Builder
+	for _, d := range defs {
+		when := d.Schedule
+		if d.Trigger == routines.TriggerHeartbeat {
+			when = d.Interval.String()
+		}
+		fmt.Fprintf(&b, "%s\t%s\t%s\n", d.Name, d.Trigger, when)
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+func (mcpHost) FireRoutine(workspace, name string) (string, error) {
+	defs, err := routines.LoadWorkspace(workspace)
+	if err != nil {
+		return "", err
+	}
+	for _, d := range defs {
+		if d.Name == name {
+			if !routines.Fire(panel.ExecRunner, d, time.Now(), io.Discard) {
+				return "", fmt.Errorf("routine %q did not fire (already running?)", name)
+			}
+			return "fired routine " + name, nil
+		}
+	}
+	return "", fmt.Errorf("no routine %q in this workspace", name)
 }
 
 var channelHookCmd = &cobra.Command{
@@ -226,7 +278,7 @@ and launch: claude --channels server:duck-agents --dangerously-load-development-
 				workspace = ws
 			}
 		}
-		return channel.Serve(panel.ExecRunner, workspace, agentLauncher{}, os.Stdin, os.Stdout)
+		return channel.Serve(panel.ExecRunner, workspace, mcpHost{}, os.Stdin, os.Stdout)
 	},
 }
 

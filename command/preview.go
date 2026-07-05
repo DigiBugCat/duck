@@ -33,93 +33,94 @@ var previewCmd = &cobra.Command{
 	Short: "Render a page/doc/image in the sidebar (terminal graphics)",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(c *cobra.Command, args []string) error {
-		// A name is REQUIRED: every artifact row must be tellable apart in
-		// the roster — a tab of panes all called "preview" was the failure.
-		name := strings.TrimSpace(args[1])
-		if name == "" {
-			return fmt.Errorf("artifact name must be non-empty")
-		}
 		run := panel.ExecRunner
 		outer, dir, err := panelContext(run)
 		if err != nil {
 			return err
 		}
-		render, hold, err := previewRender(args[0])
-		if err != nil {
-			return err
-		}
-		line := render
-		isURL := strings.HasPrefix(args[0], "http://") || strings.HasPrefix(args[0], "https://")
-		// Local html always live-rerenders: carbonyl caches file:// pages so
-		// hard that even its reload button misses edits, and artifacts are a
-		// live agent⇄human surface (agents rewrite them in place). The watch
-		// wrapper repaints only on real change, so an idle page costs nothing.
-		if !isURL {
-			switch strings.ToLower(filepath.Ext(args[0])) {
-			case ".html", ".htm", ".md", ".markdown":
-				// Live agent⇄human surfaces: always watch so a write repaints the
-				// pane. html uses the iframe-probe path below; md/markdown fall to
-				// the watchWrap default (kill+re-render glow on mtime change).
-				previewWatch = true
-			}
-		}
-		if previewWatch {
-			if isURL {
-				return fmt.Errorf("--watch needs a local file (URLs have no mtime to watch)")
-			}
-			abs, _ := filepath.Abs(args[0])
-			switch strings.ToLower(filepath.Ext(abs)) {
-			case ".html", ".htm":
-				// Live HTML without any visible churn: a wrapper page holds a
-				// visible iframe of the target plus a HIDDEN probe iframe. The
-				// probe reloads on a timer (display:none — never painted) and
-				// the visible frame reloads ONLY when the probe's content
-				// differs, so an unchanged file repaints exactly nothing. One
-				// carbonyl runs for the window's lifetime. Needs
-				// --allow-file-access-from-files (forwarded to Chromium) so
-				// the wrapper may read its same-file iframe; without it every
-				// file:// is its own origin and change-detection is impossible
-				// (fetch and DOM reads both blocked — verified).
-				wrap, err := writeRefreshWrapper(abs)
-				if err != nil {
-					return err
-				}
-				line = "carbonyl --allow-file-access-from-files file://" + paths.Quote(wrap)
-			default:
-				// Cheap renderers re-run on change; the loop holds the window.
-				line = watchWrap(abs, render)
-			}
-		} else if hold {
-			// One-shot renderers print and exit; hold the window for a keypress
-			// so the output doesn't vanish with the process.
-			line = fmt.Sprintf(`sh -c %s`, paths.Quote(render+`; printf "\n  [enter to close] "; read -r _`))
-		}
-		comp, err := panel.EnsureCompanion(run, outer, dir)
-		if err != nil {
-			return err
-		}
-		bin, err := os.Executable()
-		if err != nil {
-			bin = "duck"
-		}
-		if err := panel.Open(run, outer, comp, bin); err != nil {
-			return err
-		}
-		wid, err := panel.Spawn(run, outer, name, dir, line, panel.KindArtifact)
-		if err != nil {
-			return err
-		}
-		// Stamp the render recipe on non-watch file previews so the roster can
-		// re-render on selection when the file has changed (click-to-refresh).
-		if !previewWatch && !strings.HasPrefix(args[0], "http") {
-			if abs, err := filepath.Abs(args[0]); err == nil {
-				if mtime, ok := panel.FileMtime(abs); ok {
-					panel.StampPreview(run, wid, line, abs, mtime)
-				}
-			}
-		}
-		return nil
+		_, err = runPreview(run, outer, dir, args[0], args[1], previewWatch)
+		return err
 	},
+}
+
+// runPreview is the shared preview orchestration (CLI RunE + the MCP preview
+// tool call it): pick the renderer for target, live-watch-wrap html/markdown,
+// spawn the artifact pane, and stamp non-watch previews for click-to-refresh.
+// Returns the artifact pane id. A name is REQUIRED — every artifact row must be
+// tellable apart in the roster.
+func runPreview(run panel.Runner, outer, dir, target, rawName string, watch bool) (string, error) {
+	name := strings.TrimSpace(rawName)
+	if name == "" {
+		return "", fmt.Errorf("artifact name must be non-empty")
+	}
+	render, hold, err := previewRender(target)
+	if err != nil {
+		return "", err
+	}
+	line := render
+	isURL := strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
+	// Local html/markdown always live-rerender: carbonyl caches file:// pages
+	// hard, and artifacts are a live agent⇄human surface (agents rewrite them in
+	// place). The watch wrapper repaints only on real change — an idle page costs
+	// nothing.
+	if !isURL {
+		switch strings.ToLower(filepath.Ext(target)) {
+		case ".html", ".htm", ".md", ".markdown":
+			watch = true
+		}
+	}
+	if watch {
+		if isURL {
+			return "", fmt.Errorf("watch needs a local file (URLs have no mtime to watch)")
+		}
+		abs, _ := filepath.Abs(target)
+		switch strings.ToLower(filepath.Ext(abs)) {
+		case ".html", ".htm":
+			// Live HTML without any visible churn: a wrapper page holds a visible
+			// iframe of the target plus a HIDDEN probe iframe. The probe reloads on
+			// a timer (display:none) and the visible frame reloads ONLY when the
+			// probe's content differs, so an unchanged file repaints nothing. Needs
+			// --allow-file-access-from-files so the wrapper may read its same-file
+			// iframe (else every file:// is its own origin and detection is blocked).
+			wrap, err := writeRefreshWrapper(abs)
+			if err != nil {
+				return "", err
+			}
+			line = "carbonyl --allow-file-access-from-files file://" + paths.Quote(wrap)
+		default:
+			// Cheap renderers re-run on change; the loop holds the window.
+			line = watchWrap(abs, render)
+		}
+	} else if hold {
+		// One-shot renderers print and exit; hold the window for a keypress so the
+		// output doesn't vanish with the process.
+		line = fmt.Sprintf(`sh -c %s`, paths.Quote(render+`; printf "\n  [enter to close] "; read -r _`))
+	}
+	comp, err := panel.EnsureCompanion(run, outer, dir)
+	if err != nil {
+		return "", err
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		bin = "duck"
+	}
+	if err := panel.Open(run, outer, comp, bin); err != nil {
+		return "", err
+	}
+	wid, err := panel.Spawn(run, outer, name, dir, line, panel.KindArtifact)
+	if err != nil {
+		return "", err
+	}
+	// Stamp the render recipe on non-watch file previews so the roster can
+	// re-render on selection when the file has changed (click-to-refresh).
+	if !watch && !isURL {
+		if abs, err := filepath.Abs(target); err == nil {
+			if mtime, ok := panel.FileMtime(abs); ok {
+				panel.StampPreview(run, wid, line, abs, mtime)
+			}
+		}
+	}
+	return wid, nil
 }
 
 // previewRender picks the renderer command for a target and reports whether

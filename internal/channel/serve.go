@@ -37,20 +37,28 @@ var sweepEvery = 2 * time.Second
 // up the supervisor's context.
 const maxPush = 2000
 
-// Launcher spawns a codex sidebar agent — the spawn/resume/fork tools' backend.
-// It is an interface (not a direct call) so internal/channel needn't import
-// internal/agent, which imports channel back (a cycle). command wires the
-// concrete agent-backed launcher in via Serve. A nil launcher just omits the
-// spawn/resume/fork tools (the reply-only server still works).
+// Host backs the sidecar's action tools (spawn/resume/fork agents, preview/
+// render artifacts, routine control). It is an interface (not direct calls) so
+// internal/channel needn't import the packages those actions live in — several
+// of which import channel back (a cycle). command wires the concrete host in via
+// Serve. A nil host just omits the action tools (the reply-only server works).
 //
-// Launch spawns a NEW agent (argv), Resume continues a codex session by id,
-// Fork branches one. Each returns the pane id (instant handle) and the session
-// id (bound at first turn — may be "" if not yet taken). workspace is the outer
-// duck session to spawn into.
-type Launcher interface {
+// Agents: Launch spawns a NEW codex agent (argv), Resume continues a session by
+// id, Fork branches one — each returns the pane id (instant handle) and session
+// id (bound at first turn, "" if not yet taken). Artifacts: Preview shows a
+// file/url in the sidebar (returns the pane id), Render opens it in the human's
+// laptop browser. Routines: list/fire the workspace's scheduled executors.
+// workspace is the outer duck session the action targets.
+type Host interface {
 	Launch(workspace string, argv []string, name, tab, prompt string) (paneID, sessionID string, err error)
 	Resume(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
 	Fork(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
+
+	Preview(workspace, target, name string) (paneID string, err error)
+	Render(workspace, target string) error
+
+	Routines(workspace string) (string, error)         // human-readable listing
+	FireRoutine(workspace, name string) (string, error) // run one now
 }
 
 // Serve runs the channel sidecar until stdin closes (Claude exiting kills
@@ -61,8 +69,8 @@ type Launcher interface {
 // workspace scopes the sweep to ONE duck session's agents — the down edge of
 // the org chart: a manager hears its own lot, not every workspace on the
 // machine. Empty means machine-wide (motherduck / explicit --all).
-func Serve(run panel.Runner, workspace string, launcher Launcher, in io.Reader, out io.Writer) error {
-	s := &server{run: run, workspace: workspace, launcher: launcher, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{}), started: time.Now().Truncate(time.Second)}
+func Serve(run panel.Runner, workspace string, host Host, in io.Reader, out io.Writer) error {
+	s := &server{run: run, workspace: workspace, host: host, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{}), started: time.Now().Truncate(time.Second)}
 	watchDone := make(chan struct{})
 	go func() { defer close(watchDone); s.watch() }()
 	// Stop the watcher when stdin closes (Claude exited) and wait for it to
@@ -87,7 +95,7 @@ func Serve(run panel.Runner, workspace string, launcher Launcher, in io.Reader, 
 type server struct {
 	run       panel.Runner
 	workspace string   // sweep only this duck session's agents ("" = machine-wide)
-	launcher  Launcher // backs spawn/resume/fork tools; nil omits them
+	host      Host // backs spawn/resume/fork tools; nil omits them
 	out       io.Writer
 	resolver  *Resolver     // memoized pairing/status — watch goroutine only
 	stop      chan struct{} // closed when Serve returns; stops the watch goroutine
@@ -195,7 +203,7 @@ func (s *server) tools() []tool {
 			return "delivered to " + a.Agent, nil
 		},
 	}}
-	if s.launcher == nil {
+	if s.host == nil {
 		return ts
 	}
 	// receipt renders a {paneId, sessionId} handle line for the spawn family.
@@ -223,7 +231,7 @@ func (s *server) tools() []tool {
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				pane, sess, err := s.launcher.Launch(ws, []string{"codex"}, a.Name, a.Tab, a.Prompt)
+				pane, sess, err := s.host.Launch(ws, []string{"codex"}, a.Name, a.Tab, a.Prompt)
 				if err != nil {
 					return "", err
 				}
@@ -249,7 +257,7 @@ func (s *server) tools() []tool {
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				pane, sess, err := s.launcher.Resume(ws, a.SessionID, a.Prompt)
+				pane, sess, err := s.host.Resume(ws, a.SessionID, a.Prompt)
 				if err != nil {
 					return "", err
 				}
@@ -275,11 +283,75 @@ func (s *server) tools() []tool {
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				pane, sess, err := s.launcher.Fork(ws, a.SessionID, a.Prompt)
+				pane, sess, err := s.host.Fork(ws, a.SessionID, a.Prompt)
 				if err != nil {
 					return "", err
 				}
 				return receipt(pane, sess), nil
+			},
+		},
+		tool{
+			name:        "preview",
+			description: "Show an artifact (a file or URL — a document, report, table, chart, image, or a rendered .md/.html) to the human IN THIS WORKSPACE's sidebar. Prefer this over shelling out to `duck preview`. Use whenever showing something visually beats describing it in text. Local html/markdown live-update: rewrite the file and the pane repaints itself.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"target": map[string]any{"type": "string", "description": "path to a local file or an http(s) URL"},
+					"name":   map[string]any{"type": "string", "description": "a short descriptive label for the artifact (its roster tab entry)"},
+				},
+				"required": []string{"target", "name"},
+			},
+			handler: func(raw json.RawMessage) (string, error) {
+				var a struct{ Target, Name string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				pane, err := s.host.Preview(ws, a.Target, a.Name)
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("previewing %q in the sidebar (pane %s)", a.Name, pane), nil
+			},
+		},
+		tool{
+			name:        "render",
+			description: "Open an artifact (file or URL) at FULL FIDELITY in the human's laptop browser — for anything dynamic, interactive, or where fidelity matters (the sidebar preview is terminal cells). Prefer this over shelling out to `duck render`.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"target": map[string]any{"type": "string", "description": "path to a local file or an http(s) URL"},
+				},
+				"required": []string{"target"},
+			},
+			handler: func(raw json.RawMessage) (string, error) {
+				var a struct{ Target string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				if err := s.host.Render(ws, a.Target); err != nil {
+					return "", err
+				}
+				return "opened in the human's laptop browser", nil
+			},
+		},
+		tool{
+			name:        "routines",
+			description: "List this workspace's scheduled routines (your standing executor duties). Optionally fire one now by name (runs a fresh executor immediately, off-schedule). Routines run codex executors on a cron/heartbeat and report back to you as digest events on the channel.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"fire": map[string]any{"type": "string", "description": "optional: name of a routine to run NOW (omit to just list)"},
+				},
+			},
+			handler: func(raw json.RawMessage) (string, error) {
+				var a struct{ Fire string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				if a.Fire != "" {
+					return s.host.FireRoutine(ws, a.Fire)
+				}
+				return s.host.Routines(ws)
 			},
 		},
 	)
