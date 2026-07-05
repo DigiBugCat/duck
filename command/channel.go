@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	agentpkg "github.com/DigiBugCat/duck/internal/agent"
 	"github.com/DigiBugCat/duck/internal/channel"
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/spf13/cobra"
@@ -149,6 +150,39 @@ var channelNotifyCmd = &cobra.Command{
 	},
 }
 
+// agentLauncher backs the serve MCP server's spawn/resume/fork tools with the
+// shared internal/agent pipeline — so an agent spawned via a tool is wired
+// (full-access, notify + SessionStart hooks, trust) identically to `duck spawn`.
+// Lives here (not in internal/channel) to break the channel↔agent import cycle.
+type agentLauncher struct{}
+
+func (agentLauncher) launch(workspace string, spec agentpkg.Spec) (string, string, error) {
+	run := panel.ExecRunner
+	dir, err := panel.SessionPath(run, workspace)
+	if err != nil {
+		return "", "", err
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		bin = "duck"
+	}
+	res, err := agentpkg.Launch(run, workspace, dir, bin, spec)
+	if err != nil {
+		return "", "", err
+	}
+	return res.PaneID, res.SessionID, nil
+}
+
+func (l agentLauncher) Launch(workspace string, argv []string, name, tab, prompt string) (string, string, error) {
+	return l.launch(workspace, agentpkg.Spec{Args: argv, Name: name, Tab: tab, Prompt: prompt})
+}
+func (l agentLauncher) Resume(workspace, sessionID, prompt string) (string, string, error) {
+	return l.launch(workspace, agentpkg.Spec{Args: agentpkg.ResumeArgs(sessionID), Prompt: prompt})
+}
+func (l agentLauncher) Fork(workspace, sessionID, prompt string) (string, string, error) {
+	return l.launch(workspace, agentpkg.Spec{Args: agentpkg.ForkArgs(sessionID), Prompt: prompt})
+}
+
 var channelHookCmd = &cobra.Command{
 	Use:    "hook",
 	Hidden: true, // plumbing: codex's SessionStart hook target, wired in by duck spawn
@@ -192,7 +226,7 @@ and launch: claude --channels server:duck-agents --dangerously-load-development-
 				workspace = ws
 			}
 		}
-		return channel.Serve(panel.ExecRunner, workspace, os.Stdin, os.Stdout)
+		return channel.Serve(panel.ExecRunner, workspace, agentLauncher{}, os.Stdin, os.Stdout)
 	},
 }
 

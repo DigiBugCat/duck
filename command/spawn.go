@@ -9,12 +9,9 @@ package command
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
-	"github.com/DigiBugCat/duck/internal/channel"
+	agentpkg "github.com/DigiBugCat/duck/internal/agent"
 	"github.com/DigiBugCat/duck/internal/panel"
-	"github.com/DigiBugCat/duck/internal/paths"
 	"github.com/spf13/cobra"
 )
 
@@ -55,223 +52,39 @@ Examples:
 		if err != nil {
 			return err
 		}
-		comp, err := panel.EnsureCompanion(run, outer, dir)
-		if err != nil {
-			return err
-		}
 		bin, err := os.Executable()
 		if err != nil {
 			bin = "duck"
 		}
-		// Open BEFORE spawn: Spawn selects the newcomer into the viewport slot,
-		// which must exist.
-		if err := panel.Open(run, outer, comp, bin); err != nil {
-			return err
-		}
 		// --resume/--fork are shorthands that BUILD the codex argv: resume a codex
 		// session by id (same conversation, same session id — a durable handle) or
-		// fork it (a new session that inherits the parent's context, leaving the
-		// parent untouched — the cheap fan-out primitive). Both go through the same
-		// injectors below, so the resumed/forked agent is bound + attributed like
-		// any spawn. Mutually exclusive; either overrides a bare `codex` in args.
+		// fork it (a new session that inherits the parent's context, the cheap
+		// fan-out primitive). Both flow through the shared agent.Launch pipeline,
+		// so a resumed/forked agent is wired + bound + attributed like any spawn.
 		if spawnResume != "" && spawnFork != "" {
 			return fmt.Errorf("--resume and --fork are mutually exclusive")
 		}
-		if id := spawnResume; id != "" {
-			args = []string{"codex", "resume", id}
-		} else if id := spawnFork; id != "" {
-			args = []string{"codex", "fork", id}
+		if spawnResume != "" {
+			args = agentpkg.ResumeArgs(spawnResume)
+		} else if spawnFork != "" {
+			args = agentpkg.ForkArgs(spawnFork)
 		}
-		args = withCodexFullAccess(args)
-		args = withCodexNotify(args)
-		args = withCodexSessionHook(args)
-		args = withCodexHookTrust(args)
-		quoted := make([]string, len(args))
-		for i, a := range args {
-			quoted[i] = paths.Quote(a)
-		}
-		line := strings.Join(quoted, " ")
-		name := spawnName
-		kind := spawnTab
-		if name == "" {
-			// An OMITTED name defaults to the command, but made UNIQUE: bare
-			// `duck spawn codex` × N otherwise stamps N agents all named "codex"
-			// — the collision that makes a fan-out unaddressable by name (the
-			// pane id is always the unambiguous handle, but the label should not
-			// actively mislead). An EXPLICIT -n is honored verbatim: routines and
-			// the manager depend on deterministic, predictable names.
-			base := "shell"
-			if len(args) > 0 {
-				base = filepath.Base(args[0])
-			}
-			name = uniqueAgentName(run, outer, base)
-		}
-		if kind == "" {
-			// Default tab by shape: a bare `duck spawn` is a shell; anything
-			// running a command is an agent. --tab overrides (and mints new
-			// tabs on the fly — any name becomes a tab while windows carry it).
-			kind = panel.KindAgent
-			if len(args) == 0 {
-				kind = panel.KindShell
-			}
-		}
-		paneID, err := panel.Spawn(run, outer, name, dir, line, kind)
+		res, err := agentpkg.Launch(run, outer, dir, bin, agentpkg.Spec{
+			Args: args, Name: spawnName, Tab: spawnTab, Prompt: spawnPrompt,
+		})
 		if err != nil {
 			return err
 		}
 		// The pane id is the HANDLE — the true identity (tmux-as-db), stable
 		// through swaps and unambiguous when several agents share a cwd or label.
-		// The name is a human alias; address the agent by either, but the id is
-		// what never collides. Print both so a caller can grab whichever it needs.
-		fmt.Printf("spawned %s\t%s\n", name, paneID)
-
-		// One-call spawn+send: deliver the first turn now instead of a separate
-		// `channel send`. SendWhenReady awaits the agent's composer first (a fresh
-		// TUI eats keys in its first seconds). Best-effort — a send failure never
-		// unspawns the agent; the pane is up and addressable regardless.
-		if spawnPrompt != "" {
-			ref := channel.AgentRef{Session: outer, Name: name, WindowID: paneID}
-			if err := channel.SendWhenReady(run, ref, spawnPrompt); err != nil {
-				fmt.Fprintf(os.Stderr, "spawned, but first turn not delivered: %v\n", err)
-			}
+		// Print it; add the session id once the hook has bound it (first turn).
+		if res.SessionID != "" {
+			fmt.Printf("spawned %s\t%s\t%s\n", res.Name, res.PaneID, res.SessionID)
+		} else {
+			fmt.Printf("spawned %s\t%s\n", res.Name, res.PaneID)
 		}
 		return nil
 	},
-}
-
-// uniqueAgentName returns base if no agent in outer already carries it, else the
-// first free base-2, base-3, … A best-effort listing failure falls back to base
-// (spawn must never be blocked by a naming nicety; the pane id stays unique
-// regardless). Only used for OMITTED names — an explicit -n is never rewritten.
-func uniqueAgentName(run panel.Runner, outer, base string) string {
-	agents, err := panel.Agents(run, outer)
-	if err != nil {
-		return base
-	}
-	taken := map[string]bool{}
-	for _, a := range agents {
-		taken[a.Name] = true
-	}
-	if !taken[base] {
-		return base
-	}
-	for i := 2; ; i++ {
-		cand := fmt.Sprintf("%s-%d", base, i)
-		if !taken[cand] {
-			return cand
-		}
-	}
-}
-
-// codexInsertAt is where injected flags/-c overrides belong in a codex argv:
-// right after the subcommand when one is present (`codex exec/resume/fork …` —
-// the flag belongs to the subcommand), else right after "codex" (interactive
-// TUI, no subcommand). Centralizes the position logic the arg-injectors share.
-func codexInsertAt(args []string) int {
-	if len(args) > 1 {
-		switch args[1] {
-		case "exec", "e", "review", "resume", "fork":
-			return 2
-		}
-	}
-	return 1
-}
-
-// withCodexFullAccess makes spawned codex agents run with full access by
-// default: sidebar agents exist to work autonomously under supervision (the
-// channel layer + viewport ARE the oversight), so per-command approval prompts
-// just stall them. Only applies when the command is codex AND the user gave no
-// approval/sandbox preference of their own — an explicit flag always wins.
-func withCodexFullAccess(args []string) []string {
-	if len(args) == 0 || filepath.Base(args[0]) != "codex" {
-		return args
-	}
-	for _, a := range args {
-		switch {
-		case a == "-a", a == "-s", a == "--full-auto",
-			strings.HasPrefix(a, "--ask-for-approval"), strings.HasPrefix(a, "--sandbox"),
-			strings.HasPrefix(a, "--dangerously-bypass"):
-			return args
-		}
-	}
-	// Insert after the subcommand when one is given (`codex exec …` — the flag
-	// belongs to the subcommand), else right after "codex".
-	at := codexInsertAt(args)
-	out := append([]string{}, args[:at]...)
-	out = append(out, "--dangerously-bypass-approvals-and-sandbox")
-	return append(out, args[at:]...)
-}
-
-// withCodexNotify wires codex's end-of-turn notify hook to `duck channel
-// notify`, which pins the pane's rollout from the payload's thread id —
-// exact, instant channel attribution instead of cwd+time correlation.
-// Skipped when the user configured their own notify (an explicit -c wins).
-func withCodexNotify(args []string) []string {
-	if len(args) == 0 || filepath.Base(args[0]) != "codex" {
-		return args
-	}
-	for _, a := range args {
-		if strings.HasPrefix(a, "notify=") {
-			return args
-		}
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return args
-	}
-	at := codexInsertAt(args)
-	out := append([]string{}, args[:at]...)
-	out = append(out, "-c", fmt.Sprintf(`notify=[%q,"channel","notify"]`, self))
-	return append(out, args[at:]...)
-}
-
-// withCodexSessionHook wires codex's SessionStart hook to `duck channel hook`,
-// which binds the pane's EXACT session id + rollout at the first turn (payload
-// carries both) — race-free even under fan-out, since each hook fires in its own
-// pane's process. This is the precise fast-path over notify/matchRollout. Wired
-// as an inline `-c hooks.SessionStart=[...]` override (verified: fires without
-// touching config.toml). Requires the trust bypass (see withCodexHookTrust) or
-// codex silently skips it. Skipped if the user wired their own hooks.
-func withCodexSessionHook(args []string) []string {
-	if len(args) == 0 || filepath.Base(args[0]) != "codex" {
-		return args
-	}
-	for _, a := range args {
-		if strings.HasPrefix(a, "hooks.") || strings.HasPrefix(a, "hooks=") {
-			return args
-		}
-	}
-	self, err := os.Executable()
-	if err != nil {
-		return args
-	}
-	at := codexInsertAt(args)
-	out := append([]string{}, args[:at]...)
-	// The hook command must be a single string codex runs via the shell; it reads
-	// the payload from stdin (duck channel hook), so no arg is appended.
-	hook := fmt.Sprintf(`hooks.SessionStart=[{hooks=[{type="command",command=%q}]}]`,
-		self+" channel hook")
-	out = append(out, "-c", hook)
-	return append(out, args[at:]...)
-}
-
-// withCodexHookTrust injects --dangerously-bypass-hook-trust for codex spawns.
-// VERIFIED load-bearing: without it, codex SILENTLY skips duck's SessionStart
-// hook (no error, no binding — the "flaky no-fire" we chased). duck vets its own
-// hook, so the bypass is safe here. The flag is GLOBAL (before any subcommand),
-// so it goes right after `codex`.
-func withCodexHookTrust(args []string) []string {
-	if len(args) == 0 || filepath.Base(args[0]) != "codex" {
-		return args
-	}
-	for _, a := range args {
-		if a == "--dangerously-bypass-hook-trust" {
-			return args
-		}
-	}
-	out := append([]string{}, args[:1]...)
-	out = append(out, "--dangerously-bypass-hook-trust")
-	return append(out, args[1:]...)
 }
 
 func init() {

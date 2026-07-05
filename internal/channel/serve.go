@@ -37,15 +37,32 @@ var sweepEvery = 2 * time.Second
 // up the supervisor's context.
 const maxPush = 2000
 
+// Launcher spawns a codex sidebar agent — the spawn/resume/fork tools' backend.
+// It is an interface (not a direct call) so internal/channel needn't import
+// internal/agent, which imports channel back (a cycle). command wires the
+// concrete agent-backed launcher in via Serve. A nil launcher just omits the
+// spawn/resume/fork tools (the reply-only server still works).
+//
+// Launch spawns a NEW agent (argv), Resume continues a codex session by id,
+// Fork branches one. Each returns the pane id (instant handle) and the session
+// id (bound at first turn — may be "" if not yet taken). workspace is the outer
+// duck session to spawn into.
+type Launcher interface {
+	Launch(workspace string, argv []string, name, tab, prompt string) (paneID, sessionID string, err error)
+	Resume(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
+	Fork(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
+}
+
 // Serve runs the channel sidecar until stdin closes (Claude exiting kills
 // us). run drives the local tmux server; in production it is
-// panel.ExecRunner and rw is stdin/stdout.
+// panel.ExecRunner and rw is stdin/stdout. launcher backs the spawn/resume/fork
+// tools (nil = those tools are omitted).
 //
 // workspace scopes the sweep to ONE duck session's agents — the down edge of
 // the org chart: a manager hears its own lot, not every workspace on the
 // machine. Empty means machine-wide (motherduck / explicit --all).
-func Serve(run panel.Runner, workspace string, in io.Reader, out io.Writer) error {
-	s := &server{run: run, workspace: workspace, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{}), started: time.Now().Truncate(time.Second)}
+func Serve(run panel.Runner, workspace string, launcher Launcher, in io.Reader, out io.Writer) error {
+	s := &server{run: run, workspace: workspace, launcher: launcher, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{}), started: time.Now().Truncate(time.Second)}
 	watchDone := make(chan struct{})
 	go func() { defer close(watchDone); s.watch() }()
 	// Stop the watcher when stdin closes (Claude exited) and wait for it to
@@ -69,7 +86,8 @@ func Serve(run panel.Runner, workspace string, in io.Reader, out io.Writer) erro
 
 type server struct {
 	run       panel.Runner
-	workspace string // sweep only this duck session's agents ("" = machine-wide)
+	workspace string   // sweep only this duck session's agents ("" = machine-wide)
+	launcher  Launcher // backs spawn/resume/fork tools; nil omits them
 	out       io.Writer
 	resolver  *Resolver     // memoized pairing/status — watch goroutine only
 	stop      chan struct{} // closed when Serve returns; stops the watch goroutine
@@ -147,7 +165,7 @@ func (s *server) tools() []tool {
 	if sessionReq {
 		required = []string{"session", "agent", "message"}
 	}
-	return []tool{{
+	ts := []tool{{
 		name:        "reply",
 		description: "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport). The agent's response arrives later as a <channel source=\"duck-agents\"> event — do not poll; react when it lands.",
 		schema: map[string]any{
@@ -177,6 +195,95 @@ func (s *server) tools() []tool {
 			return "delivered to " + a.Agent, nil
 		},
 	}}
+	if s.launcher == nil {
+		return ts
+	}
+	// receipt renders a {paneId, sessionId} handle line for the spawn family.
+	receipt := func(pane, sess string) string {
+		if sess != "" {
+			return fmt.Sprintf("spawned — pane %s, session %s. Its output arrives on the duck-agents channel; do NOT poll or tail — react when it lands. Address it later with the reply tool by pane id or session id.", pane, sess)
+		}
+		return fmt.Sprintf("spawned — pane %s (session id pending its first turn). Output arrives on the duck-agents channel; do NOT poll — react when it lands. Address it by pane id via the reply tool.", pane)
+	}
+	ws := s.workspace
+	ts = append(ts,
+		tool{
+			name:        "spawn",
+			description: "Launch a codex agent into this workspace's sidebar (a durable, human-watchable TUI pane) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt": map[string]any{"type": "string", "description": "first task to hand the agent (recommended — triggers its first turn so the session id binds)"},
+					"name":   map[string]any{"type": "string", "description": "optional roster label (default: a unique codex-N)"},
+					"tab":    map[string]any{"type": "string", "description": "optional roster tab"},
+				},
+			},
+			handler: func(raw json.RawMessage) (string, error) {
+				var a struct{ Prompt, Name, Tab string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				pane, sess, err := s.launcher.Launch(ws, []string{"codex"}, a.Name, a.Tab, a.Prompt)
+				if err != nil {
+					return "", err
+				}
+				return receipt(pane, sess), nil
+			},
+		},
+		tool{
+			name:        "resume",
+			description: "Resume a codex session by its id — continue that EXACT conversation (same session id, full context intact). Works even if its pane is gone. Returns a handle; output arrives on the channel. Use to give a prior agent its next turn with all its context.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"session_id": map[string]any{"type": "string", "description": "the codex session id to resume (from an event's meta or a prior spawn receipt)"},
+					"prompt":     map[string]any{"type": "string", "description": "the next turn to deliver"},
+				},
+				"required": []string{"session_id"},
+			},
+			handler: func(raw json.RawMessage) (string, error) {
+				var a struct {
+					SessionID string `json:"session_id"`
+					Prompt    string
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				pane, sess, err := s.launcher.Resume(ws, a.SessionID, a.Prompt)
+				if err != nil {
+					return "", err
+				}
+				return receipt(pane, sess), nil
+			},
+		},
+		tool{
+			name:        "fork",
+			description: "Fork a codex session by its id — branch a NEW session that inherits the parent's context, leaving the parent untouched. The cheap fan-out primitive: prime one base agent with shared setup, then fork it N ways to explore variations in parallel. Returns the new agent's handle; output arrives on the channel.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"session_id": map[string]any{"type": "string", "description": "the codex session id to fork from"},
+					"prompt":     map[string]any{"type": "string", "description": "the task for this branch"},
+				},
+				"required": []string{"session_id"},
+			},
+			handler: func(raw json.RawMessage) (string, error) {
+				var a struct {
+					SessionID string `json:"session_id"`
+					Prompt    string
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				pane, sess, err := s.launcher.Fork(ws, a.SessionID, a.Prompt)
+				if err != nil {
+					return "", err
+				}
+				return receipt(pane, sess), nil
+			},
+		},
+	)
+	return ts
 }
 
 func (s *server) handle(line []byte) {

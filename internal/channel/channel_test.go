@@ -541,7 +541,7 @@ func TestServeHandshakeAndReply(t *testing.T) {
 			`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n" +
 			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"reply","arguments":{"session":"work","agent":"codex","message":"go on"}}}` + "\n")
 	var out bytes.Buffer
-	if err := Serve(f.run, "", in, &out); err != nil {
+	if err := Serve(f.run, "", nil, in, &out); err != nil {
 		t.Fatal(err)
 	}
 	var replies []map[string]any
@@ -593,7 +593,7 @@ func TestServeDrainsPublishSpool(t *testing.T) {
 	pr, pw := io.Pipe()
 	var out lockedBuffer
 	done := make(chan error, 1)
-	go func() { done <- Serve(f.run, "work", pr, &out) }()
+	go func() { done <- Serve(f.run, "work", nil, pr, &out) }()
 
 	// Handshake, then leave stdin open so watch() can sweep.
 	io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
@@ -671,7 +671,7 @@ func TestServeSweepsWindowMarksOnceWithWorkspaceAttribution(t *testing.T) {
 	pr, pw := io.Pipe()
 	var out lockedBuffer
 	done := make(chan error, 1)
-	go func() { done <- Serve(f.run, "work", pr, &out) }()
+	go func() { done <- Serve(f.run, "work", nil, pr, &out) }()
 	io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
 	io.WriteString(pw, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
 
@@ -726,7 +726,7 @@ func TestServeSweepsWindowMarksOnceWithWorkspaceAttribution(t *testing.T) {
 	var out2 lockedBuffer
 	pr2, pw2 := io.Pipe()
 	done2 := make(chan error, 1)
-	go func() { done2 <- Serve(f.run, "work", pr2, &out2) }()
+	go func() { done2 <- Serve(f.run, "work", nil, pr2, &out2) }()
 	io.WriteString(pw2, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
 	io.WriteString(pw2, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
 	time.Sleep(40 * time.Millisecond)
@@ -808,7 +808,7 @@ func TestServeDrainsFirstTurnOfFreshAgent(t *testing.T) {
 	pr, pw := io.Pipe()
 	var out lockedBuffer
 	done := make(chan error, 1)
-	go func() { done <- Serve(f.run, "work", pr, &out) }()
+	go func() { done <- Serve(f.run, "work", nil, pr, &out) }()
 	io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
 	io.WriteString(pw, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
 
@@ -867,7 +867,7 @@ func TestServeBaselinesPreexistingAgentAtEnd(t *testing.T) {
 	pr, pw := io.Pipe()
 	var out lockedBuffer
 	done := make(chan error, 1)
-	go func() { done <- Serve(f.run, "work", pr, &out) }()
+	go func() { done <- Serve(f.run, "work", nil, pr, &out) }()
 	io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
 	io.WriteString(pw, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
 
@@ -948,3 +948,26 @@ func TestSendConfirmsViaRollout(t *testing.T) {
 		t.Fatalf("want 2 Enters (retry until rollout confirms), got %d", enters)
 	}
 }
+
+// fakeLauncher records calls for the spawn/resume/fork tool tests.
+type fakeLauncher struct{ last string }
+func (f *fakeLauncher) Launch(ws string, argv []string, name, tab, prompt string) (string, string, error) { f.last = "launch"; return "%9", "sid-new", nil }
+func (f *fakeLauncher) Resume(ws, id, prompt string) (string, string, error) { f.last = "resume:" + id; return "%9", id, nil }
+func (f *fakeLauncher) Fork(ws, id, prompt string) (string, string, error) { f.last = "fork:" + id; return "%10", "sid-fork", nil }
+
+func TestServeToolsGatedOnLauncher(t *testing.T) {
+	// No launcher → only reply.
+	s0 := &server{workspace: "work"}
+	if names := toolNames(s0.tools()); len(names) != 1 || names[0] != "reply" {
+		t.Fatalf("no launcher: want [reply], got %v", names)
+	}
+	// With a launcher → reply + spawn/resume/fork.
+	s1 := &server{workspace: "work", launcher: &fakeLauncher{}}
+	got := toolNames(s1.tools())
+	for _, want := range []string{"reply", "spawn", "resume", "fork"} {
+		found := false
+		for _, n := range got { if n == want { found = true } }
+		if !found { t.Errorf("missing tool %q in %v", want, got) }
+	}
+}
+func toolNames(ts []tool) []string { var n []string; for _, t := range ts { n = append(n, t.name) }; return n }
