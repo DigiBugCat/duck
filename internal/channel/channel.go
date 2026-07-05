@@ -216,18 +216,31 @@ func HandleHook(run panel.Runner, paneID, payload string) error {
 		Source         string `json:"source"`
 		SessionID      string `json:"session_id"`
 		TranscriptPath string `json:"transcript_path"`
+		TurnID         string `json:"turn_id"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
 		return fmt.Errorf("hook payload: %w", err)
 	}
-	if p.Event != "SessionStart" || p.SessionID == "" {
-		return nil
-	}
-	// Stamp the durable session id (resume/fork handle) and the exact rollout on
-	// the pane. Idempotent: a re-fire re-stamps identical values.
-	_, _ = run("set-option", "-p", "-t", paneID, panel.SessionOption, p.SessionID)
-	if p.TranscriptPath != "" && p.Source == "startup" {
-		_, _ = run("set-option", "-p", "-t", paneID, panel.RolloutOption, p.TranscriptPath)
+	switch p.Event {
+	case "SessionStart":
+		if p.SessionID == "" {
+			return nil
+		}
+		// Step 1 of the turn lifecycle: bind pane↔session. Stamp the durable
+		// session id (resume/fork handle) and the exact rollout. Idempotent.
+		_, _ = run("set-option", "-p", "-t", paneID, panel.SessionOption, p.SessionID)
+		if p.TranscriptPath != "" && p.Source == "startup" {
+			_, _ = run("set-option", "-p", "-t", paneID, panel.RolloutOption, p.TranscriptPath)
+		}
+	case "UserPromptSubmit":
+		// Step 2: a prompt was actually SUBMITTED (a turn began). turn_id is unique
+		// per submit, so Send confirms delivery by watching @duck_last_prompt
+		// CHANGE — this fires on EVERY turn (spawn's first AND reply/resume's later
+		// ones), unlike SessionStart which only fires once. This is the ground-truth
+		// "the Enter landed" signal, replacing fragile composer inspection.
+		if p.TurnID != "" {
+			_, _ = run("set-option", "-p", "-t", paneID, panel.PromptOption, p.TurnID)
+		}
 	}
 	return nil
 }
@@ -552,11 +565,17 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 	// The sanity loop: press Enter until the submit is CONFIRMED. A multi-KB
 	// paste can take codex seconds to ingest — during that window Enters are
 	// swallowed while the pane looks momentarily clean, so a quick composer
-	// glance false-positives (observed live). Ground truth, when the pane has
-	// a paired rollout, is the rollout itself: a task_started event appears
-	// past the pre-send offset the moment the prompt actually submits.
-	// Composer inspection stays as the fallback for un-paired panes. Extra
-	// Enters on an empty composer are no-ops, so repetition is safe.
+	// glance false-positives (observed live). Extra Enters on an empty composer
+	// are no-ops, so repetition is safe.
+	//
+	// GROUND TRUTH is codex's UserPromptSubmit hook, which fires on EVERY submit
+	// (spawn's first turn AND reply/resume's later ones) and stamps a fresh
+	// turn_id into @duck_last_prompt. So a genuine submit = @duck_last_prompt
+	// CHANGED from its pre-send value. This needs no rollout (works at fresh
+	// spawn, unlike task_started), and no composer heuristic. Fallbacks (for a
+	// pane whose hook isn't wired — e.g. a user's own codex): the rollout's
+	// task_started when paired, else composer inspection.
+	prePrompt := paneOpt(run, ref.WindowID, panel.PromptOption)
 	var rolloutFrom int64 = -1
 	if ref.Rollout != "" {
 		if fi, err := os.Stat(ref.Rollout); err == nil {
@@ -568,15 +587,16 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 			return err
 		}
 		time.Sleep(time.Duration(500+attempt*500) * time.Millisecond)
-		if rolloutFrom >= 0 {
-			if taskStartedSince(ref.Rollout, rolloutFrom) {
-				return nil
-			}
-			continue // rollout is authoritative — don't trust the composer
+		// Primary: a new UserPromptSubmit stamped a different turn_id.
+		if cur := paneOpt(run, ref.WindowID, panel.PromptOption); cur != "" && cur != prePrompt {
+			return nil
 		}
-		if submitted(run, ref.WindowID, message) {
-			// Re-check after a beat: a composer that is REALLY clear stays
-			// clear; mid-ingest it only looks clear.
+		// Fallback A: paired rollout gained a task_started past the pre-send offset.
+		if rolloutFrom >= 0 && taskStartedSince(ref.Rollout, rolloutFrom) {
+			return nil
+		}
+		// Fallback B (last resort — hookless, unpaired pane): composer emptied.
+		if rolloutFrom < 0 && submitted(run, ref.WindowID, message) {
 			time.Sleep(400 * time.Millisecond)
 			if submitted(run, ref.WindowID, message) {
 				return nil
@@ -584,6 +604,15 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 		}
 	}
 	return fmt.Errorf("no submit confirmation after retries (pane %s)", ref.WindowID)
+}
+
+// paneOpt reads a pane user option, "" on any error or unset.
+func paneOpt(run panel.Runner, windowID, opt string) string {
+	out, err := run("show-options", "-p", "-t", windowID, "-v", opt)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
 }
 
 // sleepFn is a package var so tests can stub the composer-await wait.

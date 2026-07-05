@@ -54,7 +54,7 @@ func TestWire(t *testing.T) {
 	line := strings.Join(Wire([]string{"codex"}), " ")
 	for _, want := range []string{
 		"--dangerously-bypass-approvals-and-sandbox", "notify=",
-		"hooks.SessionStart", "--dangerously-bypass-hook-trust", "channel hook",
+		"hooks={SessionStart", "UserPromptSubmit", "--dangerously-bypass-hook-trust", "channel hook",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("Wire(codex) missing %q in %q", want, line)

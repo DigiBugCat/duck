@@ -87,10 +87,16 @@ func WithNotify(args []string) []string {
 	return append(out, args[at:]...)
 }
 
-// WithSessionHook wires codex's SessionStart hook to `duck channel hook`, which
-// binds the pane's exact session id + rollout at the first turn (race-free even
-// under fan-out). Inline `-c hooks.SessionStart=[...]`. Requires WithHookTrust or
-// codex silently skips it. Skipped when the user wired their own hooks.
+// WithSessionHook wires codex's SessionStart AND UserPromptSubmit hooks to `duck
+// channel hook`. Two events, two jobs:
+//   - SessionStart binds the pane's exact session id + rollout at the first turn
+//     (race-free even under fan-out).
+//   - UserPromptSubmit stamps @duck_last_prompt on EVERY submit (turn_id) — the
+//     ground-truth "the prompt actually submitted" signal Send confirms against
+//     (SessionStart fires only once; UserPromptSubmit fires per turn).
+//
+// Both go in one inline `-c hooks=...` TOML table. Requires WithHookTrust or
+// codex silently skips them. Skipped when the user wired their own hooks.
 func WithSessionHook(args []string) []string {
 	if !isCodex(args) {
 		return args
@@ -102,8 +108,10 @@ func WithSessionHook(args []string) []string {
 	}
 	at := codexInsertAt(args)
 	out := append([]string{}, args[:at]...)
-	hook := fmt.Sprintf(`hooks.SessionStart=[{hooks=[{type="command",command=%q}]}]`,
-		selfBin()+" channel hook")
+	self := selfBin() + " channel hook"
+	hook := fmt.Sprintf(
+		`hooks={SessionStart=[{hooks=[{type="command",command=%[1]q}]}],UserPromptSubmit=[{hooks=[{type="command",command=%[1]q}]}]}`,
+		self)
 	out = append(out, "-c", hook)
 	return append(out, args[at:]...)
 }
