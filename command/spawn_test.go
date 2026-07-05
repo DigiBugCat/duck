@@ -29,3 +29,28 @@ func TestWithCodexFullAccess(t *testing.T) {
 		}
 	}
 }
+
+// TestCodexInsertAt: injected flags land after the SUBCOMMAND when one is
+// present (exec/resume/fork/review), else right after "codex". Getting this
+// wrong put --sandbox before `resume`, which codex rejects.
+func TestCodexInsertAt(t *testing.T) {
+	cases := map[int][]string{
+		1: {"codex"},
+		2: {"codex", "exec", "prompt"},
+	}
+	for want, args := range cases {
+		if got := codexInsertAt(args); got != want {
+			t.Errorf("codexInsertAt(%v) = %d, want %d", args, got, want)
+		}
+	}
+	for _, sub := range []string{"resume", "fork", "e", "review"} {
+		if got := codexInsertAt([]string{"codex", sub, "x"}); got != 2 {
+			t.Errorf("codexInsertAt(codex %s) = %d, want 2", sub, got)
+		}
+	}
+	// The injectors place the sandbox flag AFTER resume/fork, not before.
+	line := strings.Join(withCodexFullAccess([]string{"codex", "resume", "SID"}), " ")
+	if strings.Index(line, "--dangerously-bypass-approvals-and-sandbox") < strings.Index(line, "resume") {
+		t.Fatalf("sandbox flag must follow the subcommand: %s", line)
+	}
+}

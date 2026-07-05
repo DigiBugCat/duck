@@ -22,6 +22,8 @@ var (
 	spawnName   string
 	spawnTab    string
 	spawnPrompt string
+	spawnResume string
+	spawnFork   string
 )
 
 var spawnCmd = &cobra.Command{
@@ -34,9 +36,16 @@ Prints "spawned <name>\t<pane-id>"; the pane id is the stable handle for
 channel send/tail/reply (it never collides, even when agents share a cwd or
 label). With --prompt, delivers the first turn in the same call.
 
+A codex agent's session id (printed on its channel events, stamped @duck_session)
+is a durable handle: --resume <id> continues that exact conversation; --fork <id>
+branches a NEW session that inherits its context (cheap fan-out — prime one, fork
+many). Both bind + attribute like any spawn.
+
 Examples:
   duck spawn codex                          # codex TUI as an agent
   duck spawn codex -p "fix the tests"       # spawn AND send the first turn
+  duck spawn --resume <id> -p "keep going"  # continue an existing codex session
+  duck spawn --fork <id> -p "try approach B"# branch a session, inherit its context
   duck spawn -- codex exec "fix the tests"
   duck spawn -n build -- cargo watch -x test
   duck spawn                                # plain shell agent`,
@@ -58,6 +67,20 @@ Examples:
 		// which must exist.
 		if err := panel.Open(run, outer, comp, bin); err != nil {
 			return err
+		}
+		// --resume/--fork are shorthands that BUILD the codex argv: resume a codex
+		// session by id (same conversation, same session id — a durable handle) or
+		// fork it (a new session that inherits the parent's context, leaving the
+		// parent untouched — the cheap fan-out primitive). Both go through the same
+		// injectors below, so the resumed/forked agent is bound + attributed like
+		// any spawn. Mutually exclusive; either overrides a bare `codex` in args.
+		if spawnResume != "" && spawnFork != "" {
+			return fmt.Errorf("--resume and --fork are mutually exclusive")
+		}
+		if id := spawnResume; id != "" {
+			args = []string{"codex", "resume", id}
+		} else if id := spawnFork; id != "" {
+			args = []string{"codex", "fork", id}
 		}
 		args = withCodexFullAccess(args)
 		args = withCodexNotify(args)
@@ -140,6 +163,20 @@ func uniqueAgentName(run panel.Runner, outer, base string) string {
 	}
 }
 
+// codexInsertAt is where injected flags/-c overrides belong in a codex argv:
+// right after the subcommand when one is present (`codex exec/resume/fork …` —
+// the flag belongs to the subcommand), else right after "codex" (interactive
+// TUI, no subcommand). Centralizes the position logic the arg-injectors share.
+func codexInsertAt(args []string) int {
+	if len(args) > 1 {
+		switch args[1] {
+		case "exec", "e", "review", "resume", "fork":
+			return 2
+		}
+	}
+	return 1
+}
+
 // withCodexFullAccess makes spawned codex agents run with full access by
 // default: sidebar agents exist to work autonomously under supervision (the
 // channel layer + viewport ARE the oversight), so per-command approval prompts
@@ -159,10 +196,7 @@ func withCodexFullAccess(args []string) []string {
 	}
 	// Insert after the subcommand when one is given (`codex exec …` — the flag
 	// belongs to the subcommand), else right after "codex".
-	at := 1
-	if len(args) > 1 && (args[1] == "exec" || args[1] == "e" || args[1] == "review") {
-		at = 2
-	}
+	at := codexInsertAt(args)
 	out := append([]string{}, args[:at]...)
 	out = append(out, "--dangerously-bypass-approvals-and-sandbox")
 	return append(out, args[at:]...)
@@ -185,10 +219,7 @@ func withCodexNotify(args []string) []string {
 	if err != nil {
 		return args
 	}
-	at := 1
-	if len(args) > 1 && (args[1] == "exec" || args[1] == "e" || args[1] == "review") {
-		at = 2
-	}
+	at := codexInsertAt(args)
 	out := append([]string{}, args[:at]...)
 	out = append(out, "-c", fmt.Sprintf(`notify=[%q,"channel","notify"]`, self))
 	return append(out, args[at:]...)
@@ -214,10 +245,7 @@ func withCodexSessionHook(args []string) []string {
 	if err != nil {
 		return args
 	}
-	at := 1
-	if len(args) > 1 && (args[1] == "exec" || args[1] == "e" || args[1] == "review") {
-		at = 2
-	}
+	at := codexInsertAt(args)
 	out := append([]string{}, args[:at]...)
 	// The hook command must be a single string codex runs via the shell; it reads
 	// the payload from stdin (duck channel hook), so no arg is appended.
@@ -250,5 +278,7 @@ func init() {
 	spawnCmd.Flags().StringVarP(&spawnName, "name", "n", "", "agent label in the sidebar (default: command name; the printed pane id is the stable handle)")
 	spawnCmd.Flags().StringVar(&spawnTab, "tab", "", "sidebar tab to file this under (default: agents, or shells for a bare spawn; new names create new tabs)")
 	spawnCmd.Flags().StringVarP(&spawnPrompt, "prompt", "p", "", "first turn to deliver once the agent is ready (one-call spawn+send)")
+	spawnCmd.Flags().StringVar(&spawnResume, "resume", "", "resume a codex session by id — same conversation, same session id (a durable handle)")
+	spawnCmd.Flags().StringVar(&spawnFork, "fork", "", "fork a codex session by id — a new session that inherits the parent's context (cheap fan-out)")
 	rootCmd.AddCommand(spawnCmd)
 }
