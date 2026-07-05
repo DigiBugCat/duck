@@ -15,6 +15,7 @@ package command
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -148,6 +149,23 @@ var channelNotifyCmd = &cobra.Command{
 	},
 }
 
+var channelHookCmd = &cobra.Command{
+	Use:    "hook",
+	Hidden: true, // plumbing: codex's SessionStart hook target, wired in by duck spawn
+	Short:  "codex SessionStart hook: bind this pane's session id + rollout at first turn",
+	Args:   cobra.NoArgs,
+	// codex hooks deliver their payload on STDIN (unlike notify, which passes it
+	// as arg $1). Must be fast + non-blocking — codex blocks on the hook (60s
+	// timeout), so HandleHook does only local option stamps.
+	RunE: func(c *cobra.Command, args []string) error {
+		payload, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		return channel.HandleHook(panel.ExecRunner, os.Getenv("TMUX_PANE"), string(payload))
+	},
+}
+
 var channelServeAll bool
 
 var channelServeCmd = &cobra.Command{
@@ -183,6 +201,6 @@ func init() {
 	channelServeCmd.Flags().BoolVar(&channelServeAll, "all", false, "sweep every workspace on the machine (motherduck), not just the enclosing one")
 	channelTailCmd.Flags().BoolVarP(&channelTailFollow, "follow", "f", false, "keep streaming as new events arrive")
 	channelTailCmd.Flags().BoolVar(&channelTailRaw, "raw", false, "raw rollout lines (unfiltered)")
-	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd, channelPublishCmd, channelNotifyCmd)
+	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd, channelPublishCmd, channelNotifyCmd, channelHookCmd)
 	rootCmd.AddCommand(channelCmd)
 }

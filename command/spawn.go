@@ -61,6 +61,8 @@ Examples:
 		}
 		args = withCodexFullAccess(args)
 		args = withCodexNotify(args)
+		args = withCodexSessionHook(args)
+		args = withCodexHookTrust(args)
 		quoted := make([]string, len(args))
 		for i, a := range args {
 			quoted[i] = paths.Quote(a)
@@ -190,6 +192,58 @@ func withCodexNotify(args []string) []string {
 	out := append([]string{}, args[:at]...)
 	out = append(out, "-c", fmt.Sprintf(`notify=[%q,"channel","notify"]`, self))
 	return append(out, args[at:]...)
+}
+
+// withCodexSessionHook wires codex's SessionStart hook to `duck channel hook`,
+// which binds the pane's EXACT session id + rollout at the first turn (payload
+// carries both) — race-free even under fan-out, since each hook fires in its own
+// pane's process. This is the precise fast-path over notify/matchRollout. Wired
+// as an inline `-c hooks.SessionStart=[...]` override (verified: fires without
+// touching config.toml). Requires the trust bypass (see withCodexHookTrust) or
+// codex silently skips it. Skipped if the user wired their own hooks.
+func withCodexSessionHook(args []string) []string {
+	if len(args) == 0 || filepath.Base(args[0]) != "codex" {
+		return args
+	}
+	for _, a := range args {
+		if strings.HasPrefix(a, "hooks.") || strings.HasPrefix(a, "hooks=") {
+			return args
+		}
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return args
+	}
+	at := 1
+	if len(args) > 1 && (args[1] == "exec" || args[1] == "e" || args[1] == "review") {
+		at = 2
+	}
+	out := append([]string{}, args[:at]...)
+	// The hook command must be a single string codex runs via the shell; it reads
+	// the payload from stdin (duck channel hook), so no arg is appended.
+	hook := fmt.Sprintf(`hooks.SessionStart=[{hooks=[{type="command",command=%q}]}]`,
+		self+" channel hook")
+	out = append(out, "-c", hook)
+	return append(out, args[at:]...)
+}
+
+// withCodexHookTrust injects --dangerously-bypass-hook-trust for codex spawns.
+// VERIFIED load-bearing: without it, codex SILENTLY skips duck's SessionStart
+// hook (no error, no binding — the "flaky no-fire" we chased). duck vets its own
+// hook, so the bypass is safe here. The flag is GLOBAL (before any subcommand),
+// so it goes right after `codex`.
+func withCodexHookTrust(args []string) []string {
+	if len(args) == 0 || filepath.Base(args[0]) != "codex" {
+		return args
+	}
+	for _, a := range args {
+		if a == "--dangerously-bypass-hook-trust" {
+			return args
+		}
+	}
+	out := append([]string{}, args[:1]...)
+	out = append(out, "--dangerously-bypass-hook-trust")
+	return append(out, args[1:]...)
 }
 
 func init() {

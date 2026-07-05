@@ -81,6 +81,7 @@ const (
 	kindOption      = "@duck_kind"       // roster tab (see Kinds)
 	SpawnedAtOption = "@duck_spawned_at" // unix epoch of spawn (channel pairing)
 	RolloutOption   = "@duck_rollout"    // cached codex rollout path
+	SessionOption   = "@duck_session"    // codex session id (durable resume/fork handle)
 	CmdOption       = "@duck_cmd"        // spawn cmdline (channel pairing eligibility)
 	anchorOption    = "@duck_anchor"     // the lot's immortal keep-alive pane
 )

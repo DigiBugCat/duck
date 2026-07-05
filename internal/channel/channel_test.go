@@ -56,6 +56,43 @@ func TestParseEventFiltersSignal(t *testing.T) {
 	}
 }
 
+func TestHandleHookBindsSessionStart(t *testing.T) {
+	// A startup SessionStart stamps BOTH @duck_session and @duck_rollout on the
+	// pane, from the payload directly — no matchRollout, no scan.
+	f := &fakeRunner{out: map[string]string{}}
+	payload := `{"hook_event_name":"SessionStart","source":"startup","session_id":"019f3113-9978-70c2-a547-2e1e41321e69","transcript_path":"/x/rollout-019f3113.jsonl"}`
+	if err := HandleHook(f.run, "%7", payload); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(f.calls, "\n")
+	for _, want := range []string{
+		"set-option -p -t %7 @duck_session 019f3113-9978-70c2-a547-2e1e41321e69",
+		"set-option -p -t %7 @duck_rollout /x/rollout-019f3113.jsonl",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("missing %q in:\n%s", want, joined)
+		}
+	}
+	// A non-SessionStart event, or empty pane, does nothing.
+	f2 := &fakeRunner{out: map[string]string{}}
+	_ = HandleHook(f2.run, "%7", `{"hook_event_name":"Stop","session_id":"x"}`)
+	if len(f2.calls) != 0 {
+		t.Fatalf("non-SessionStart must not stamp: %v", f2.calls)
+	}
+	f3 := &fakeRunner{out: map[string]string{}}
+	_ = HandleHook(f3.run, "", payload)
+	if len(f3.calls) != 0 {
+		t.Fatalf("empty pane must no-op: %v", f3.calls)
+	}
+	// resume/compact re-fire: stamps session but NOT rollout (only startup binds rollout).
+	f4 := &fakeRunner{out: map[string]string{}}
+	_ = HandleHook(f4.run, "%7", `{"hook_event_name":"SessionStart","source":"resume","session_id":"abc","transcript_path":"/y.jsonl"}`)
+	j4 := strings.Join(f4.calls, "\n")
+	if !strings.Contains(j4, "@duck_session abc") || strings.Contains(j4, "@duck_rollout") {
+		t.Fatalf("resume should stamp session only, got:\n%s", j4)
+	}
+}
+
 func TestLooksLikeThreadID(t *testing.T) {
 	yes := []string{"019f2ef7-7345-7e13-a443-651cf28b427e", "00000000-0000-0000-0000-000000000000"}
 	no := []string{"", "naming", "cx-slugfork", "%7", "019f2ef7-7345-7e13-a443", "019f2ef7734573e13a443651cf28b427e",
@@ -116,11 +153,14 @@ func TestThreadID(t *testing.T) {
 
 func TestMatchRolloutPairsByCwdAndTime(t *testing.T) {
 	root := t.TempDir()
-	day := filepath.Join(root, "2026", "07", "03")
+	spawn := time.Now().Add(-time.Minute)
+	// Day dir derived from spawn (LOCAL date, matching matchRollout's partition
+	// skip) — a hardcoded date silently expires once the real clock passes it.
+	lt := spawn.Local()
+	day := filepath.Join(root, lt.Format("2006"), lt.Format("01"), lt.Format("02"))
 	if err := os.MkdirAll(day, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	spawn := time.Now().Add(-time.Minute)
 	write := func(name, cwd string, ts time.Time) string {
 		p := filepath.Join(day, name)
 		if err := os.WriteFile(p, []byte(metaLine(ts, cwd)+"\n"), 0o644); err != nil {
@@ -169,11 +209,14 @@ func TestMatchRolloutPairsByCwdAndTime(t *testing.T) {
 // never adopt a neighboring agent's rollout — the duck-2 misattribution.
 func TestResolveOnlyPairsCodexSpawns(t *testing.T) {
 	root := t.TempDir()
-	day := filepath.Join(root, "2026", "07", "03")
+	spawn := time.Now().Add(-time.Minute)
+	// Day dir derived from spawn (LOCAL date, matching matchRollout's partition
+	// skip) — a hardcoded date silently expires once the real clock passes it.
+	lt := spawn.Local()
+	day := filepath.Join(root, lt.Format("2006"), lt.Format("01"), lt.Format("02"))
 	if err := os.MkdirAll(day, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	spawn := time.Now().Add(-time.Minute)
 	rollout := filepath.Join(day, "rollout-agent.jsonl")
 	if err := os.WriteFile(rollout, []byte(metaLine(spawn.Add(time.Second), "/work")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -217,11 +260,14 @@ func TestResolveOnlyPairsCodexSpawns(t *testing.T) {
 // exact thread-id pin would do), the other pane pairs to the REMAINING stream.
 func TestResolveRefusesAmbiguousConcurrentSpawns(t *testing.T) {
 	root := t.TempDir()
-	day := filepath.Join(root, "2026", "07", "03")
+	spawn := time.Now().Add(-time.Minute)
+	// Day dir derived from spawn (LOCAL date, matching matchRollout's partition
+	// skip) — a hardcoded date silently expires once the real clock passes it.
+	lt := spawn.Local()
+	day := filepath.Join(root, lt.Format("2006"), lt.Format("01"), lt.Format("02"))
 	if err := os.MkdirAll(day, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	spawn := time.Now().Add(-time.Minute)
 	rollA := filepath.Join(day, "rollout-a.jsonl")
 	rollB := filepath.Join(day, "rollout-b.jsonl")
 	if err := os.WriteFile(rollA, []byte(metaLine(spawn.Add(1*time.Second), "/work")+"\n"), 0o644); err != nil {

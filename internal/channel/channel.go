@@ -189,6 +189,49 @@ func HandleNotify(run panel.Runner, paneID, payload string) error {
 	return ReportRun(ws, RunReport{Routine: f[1], Message: p.LastMessage, At: time.Now()})
 }
 
+// HandleHook is `duck channel hook <json>` — codex's SessionStart hook, wired in
+// by duck spawn. codex runs it INSIDE the agent's pane at the FIRST turn (not
+// process start — verified), with a payload carrying session_id AND
+// transcript_path (the exact rollout file, handed over directly — no
+// rolloutByThreadID lookup, no matchRollout guess). Combined with $TMUX_PANE
+// (the pane the hook runs in), this pins the EXACT pane↔rollout↔session binding
+// RACE-FREE — even for N concurrent same-cwd spawns, each hook fires in its own
+// pane's process. This is what makes the fan-out scramble impossible at the
+// source; matchRollout survives only as the fallback for non-hooked/legacy panes.
+//
+// MUST be fast + non-blocking: codex BLOCKS on the hook with a 60s timeout, so
+// this does only local option stamps (no rollout scans, no sweeps). It does NOT
+// publish an event — serve's sweep drains the now-paired rollout within ~2s.
+//
+// Only source=="startup" binds. resume/clear/compact re-fire SessionStart with
+// the same session_id; re-stamping the same value is an idempotent no-op, so
+// they are harmless, but gating on startup keeps the intent clear and avoids a
+// compact mid-life re-bind masquerading as a birth.
+func HandleHook(run panel.Runner, paneID, payload string) error {
+	if paneID == "" {
+		return nil // hook fired outside tmux — nothing to attribute
+	}
+	var p struct {
+		Event          string `json:"hook_event_name"`
+		Source         string `json:"source"`
+		SessionID      string `json:"session_id"`
+		TranscriptPath string `json:"transcript_path"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return fmt.Errorf("hook payload: %w", err)
+	}
+	if p.Event != "SessionStart" || p.SessionID == "" {
+		return nil
+	}
+	// Stamp the durable session id (resume/fork handle) and the exact rollout on
+	// the pane. Idempotent: a re-fire re-stamps identical values.
+	_, _ = run("set-option", "-p", "-t", paneID, panel.SessionOption, p.SessionID)
+	if p.TranscriptPath != "" && p.Source == "startup" {
+		_, _ = run("set-option", "-p", "-t", paneID, panel.RolloutOption, p.TranscriptPath)
+	}
+	return nil
+}
+
 // looksLikeThreadID reports whether ref has the 8-4-4-4-12 hyphenated UUID shape
 // of a codex thread id — a cheap gate so FindAgent only pays per-agent rollout
 // resolution when the reference could actually be a thread id.
