@@ -57,6 +57,32 @@ func KnownModels() []string {
 	return out
 }
 
+// CrossProvider reports whether an alias routes through a non-default
+// provider profile (e.g. DeepSeek via Moon Bridge) rather than codex's own
+// provider. Routines only accept native aliases — a scheduled, unattended
+// executor stays on codex's shown models; cross-provider runs are a
+// deliberate per-spawn choice.
+func CrossProvider(alias string) (bool, error) {
+	spec, err := resolveModel(alias)
+	if err != nil {
+		return false, err
+	}
+	return spec.Profile != "", nil
+}
+
+// KnownNativeModels returns the sorted aliases on the default provider —
+// the set routines accept.
+func KnownNativeModels() []string {
+	var out []string
+	for k, spec := range models {
+		if spec.Profile == "" {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // resolveModel maps an alias to its spec. An empty alias is the default (no
 // injection). An unknown alias is an error — callers surface it rather than
 // silently launching the wrong model.

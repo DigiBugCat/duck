@@ -40,7 +40,7 @@ const schedTab = "routines"
 
 // routineRow is one schedule as shown on the ⏰ routines tab.
 type routineRow struct {
-	Name, Trigger, Sched, Last, Status string
+	Name, Trigger, Sched, Model, Last, Next, Status string
 }
 
 type tickMsg time.Time
@@ -147,10 +147,10 @@ func loadRoutines() []routineRow {
 	var rows []routineRow
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) < 6 {
+		if len(f) < 8 {
 			continue
 		}
-		rows = append(rows, routineRow{Name: f[1], Trigger: f[2], Sched: f[3], Last: f[4], Status: f[5]})
+		rows = append(rows, routineRow{Name: f[1], Trigger: f[2], Sched: f[3], Model: f[4], Last: f[5], Next: f[6], Status: f[7]})
 	}
 	return rows
 }
@@ -989,7 +989,11 @@ func (m watchModel) View() string {
 		var line string
 		if m.tabKind == schedTab {
 			r := m.routines[i]
-			label := r.Name + dimStyle.Render(" · "+r.Trigger+" "+r.Sched+" · last "+r.Last+" · "+r.Status)
+			meta := r.Trigger + " " + r.Sched
+			if r.Model != "" && r.Model != "—" {
+				meta += " · " + r.Model
+			}
+			label := r.Name + dimStyle.Render(" · "+meta+" · next "+r.Next+" · "+r.Status)
 			line = "  " + label
 			if row == m.cursor {
 				line = "  " + selectedStyle.Render(" "+r.Name+" ") + dimStyle.Render(" ↵ fire")

@@ -25,9 +25,21 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/robfig/cron/v3"
 
+	"github.com/DigiBugCat/duck/internal/agent"
 	"github.com/DigiBugCat/duck/internal/panel"
 	"github.com/DigiBugCat/duck/internal/paths"
 )
+
+// Location is the fleet's wall clock: every cron schedule is evaluated in
+// Pacific time regardless of the hub's TZ (the human is in PST; "0 9 * * *"
+// must mean 9am for THEM). Falls back to time.Local only if the tzdata lookup
+// fails, which on a stock hub it won't.
+var Location = func() *time.Location {
+	if loc, err := time.LoadLocation("America/Los_Angeles"); err == nil {
+		return loc
+	}
+	return time.Local
+}()
 
 // Trigger selects what makes a routine due.
 type Trigger string
@@ -56,6 +68,8 @@ type Def struct {
 	Interval  time.Duration // required when Trigger==heartbeat (toml value is a Go duration string like "15m")
 	Target    Target        // defaults to "run"
 	Report    string        // "digest" (default) | "none"
+	Model     string        // optional CODEX-NATIVE model alias for the executor (agent.KnownNativeModels); empty = codex default
+	Effort    string        // optional reasoning effort (low|medium|high); empty = codex default
 	Prompt    string        // contents of the sibling <name>.md, trimmed
 
 	schedule cron.Schedule // parsed at Load time so bad cron exprs fail early
@@ -70,6 +84,8 @@ type rawDef struct {
 	Interval string `toml:"interval"`
 	Target   string `toml:"target"`
 	Report   string `toml:"report"`
+	Model    string `toml:"model"`
+	Effort   string `toml:"effort"`
 }
 
 // SyncRootFn resolves the longest mutagen sync root covering a workspace's dir
@@ -246,6 +262,8 @@ func loadOne(root, name, ws, tomlPath, mdPath string) (Def, error) {
 		Schedule:  raw.Schedule,
 		Target:    Target(raw.Target),
 		Report:    raw.Report,
+		Model:     raw.Model,
+		Effort:    raw.Effort,
 	}
 
 	switch d.Trigger {
@@ -253,7 +271,14 @@ func loadOne(root, name, ws, tomlPath, mdPath string) (Def, error) {
 		if d.Schedule == "" {
 			return Def{}, fmt.Errorf("trigger=cron requires schedule")
 		}
-		sched, err := cron.ParseStandard(d.Schedule)
+		// Pin every schedule to the fleet wall clock (Location) unless the def
+		// spells its own TZ. robfig evaluates a spec in its parse-time zone, so
+		// the pin must happen HERE, not at Next() time.
+		spec := d.Schedule
+		if !strings.HasPrefix(spec, "TZ=") && !strings.HasPrefix(spec, "CRON_TZ=") {
+			spec = "CRON_TZ=" + Location.String() + " " + spec
+		}
+		sched, err := cron.ParseStandard(spec)
 		if err != nil {
 			return Def{}, fmt.Errorf("invalid schedule %q: %w", d.Schedule, err)
 		}
@@ -294,6 +319,28 @@ func loadOne(root, name, ws, tomlPath, mdPath string) (Def, error) {
 		// ok
 	default:
 		return Def{}, fmt.Errorf("unknown report %q", raw.Report)
+	}
+
+	// Model/effort must fail at load, not at fire — a routine that silently
+	// launches the wrong executor is worse than one that refuses to parse.
+	// Same alias table as spawn, but routines are codex-native ONLY: an
+	// unattended scheduled executor stays on codex's shown models;
+	// cross-provider (DeepSeek et al) is a deliberate per-spawn choice.
+	if cross, err := agent.CrossProvider(d.Model); err != nil {
+		return Def{}, err
+	} else if cross {
+		return Def{}, fmt.Errorf("model %q is not codex-native — routines accept only: %s",
+			raw.Model, strings.Join(agent.KnownNativeModels(), ", "))
+	}
+	switch d.Effort {
+	case "", "low", "medium", "high":
+		// ok
+	default:
+		return Def{}, fmt.Errorf("unknown effort %q (want low|medium|high)", raw.Effort)
+	}
+
+	if d.Target == TargetManager && (d.Model != "" || d.Effort != "") {
+		return Def{}, fmt.Errorf("model/effort apply to codex executors, not target=manager")
 	}
 
 	promptBytes, err := os.ReadFile(mdPath)
@@ -341,9 +388,33 @@ func (d Def) Due(last, now time.Time) bool {
 		// them in the INPUT time's location — a JSON round-trip pins
 		// last_fire to a fixed offset, which would silently turn "0 9 * * *"
 		// into 9am UTC. Normalize before computing.
-		next := d.schedule.Next(last.In(time.Local))
-		return !next.After(now.In(time.Local))
+		next := d.schedule.Next(last.In(Location))
+		return !next.After(now.In(Location))
 	default:
 		return false
+	}
+}
+
+// NextFire reports when the routine will next fire, given the last fire time
+// and now — the listing's NEXT column. Zero means "no scheduled fire" (manual
+// routines, or an unparsed schedule). A heartbeat whose interval has already
+// lapsed (or that has never beaten) reports now: it fires on the next tick.
+func (d Def) NextFire(last, now time.Time) time.Time {
+	switch d.Trigger {
+	case TriggerCron:
+		if d.schedule == nil {
+			return time.Time{}
+		}
+		return d.schedule.Next(now.In(Location))
+	case TriggerHeartbeat:
+		if last.IsZero() {
+			return now
+		}
+		if next := last.Add(d.Interval); next.After(now) {
+			return next
+		}
+		return now
+	default:
+		return time.Time{}
 	}
 }

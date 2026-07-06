@@ -90,7 +90,7 @@ func listRoutines(c *cobra.Command) error {
 	var tw *tabwriter.Writer
 	if !routinesTSV {
 		tw = tabwriter.NewWriter(c.OutOrStdout(), 0, 2, 2, ' ', 0)
-		fmt.Fprintln(tw, "WORKSPACE\tROUTINE\tTRIGGER\tSCHEDULE\tLAST FIRE\tSTATUS")
+		fmt.Fprintln(tw, "WORKSPACE\tROUTINE\tTRIGGER\tSCHEDULE\tMODEL\tLAST FIRE\tNEXT FIRE\tSTATUS")
 	}
 	any := false
 	for _, ref := range refs {
@@ -109,15 +109,25 @@ func listRoutines(c *cobra.Command) error {
 			if sched == "" {
 				sched = "—"
 			}
+			model := d.Model
+			if model == "" {
+				model = "—"
+			}
+			now := time.Now()
+			lastT := state.LastFire[routines.Key(ref.Root, ws, d.Name)]
 			last := "never"
-			if t, ok := state.LastFire[routines.Key(ref.Root, ws, d.Name)]; ok && !t.IsZero() {
-				last = t.Local().Format("Jan 2 15:04")
+			if !lastT.IsZero() {
+				last = lastT.In(routines.Location).Format("Jan 2 15:04")
+			}
+			next := "—"
+			if t := d.NextFire(lastT, now); !t.IsZero() {
+				next = t.In(routines.Location).Format("Jan 2 15:04")
 			}
 			status := routineStatus(run, ws, d.Name)
 			if routinesTSV {
-				fmt.Fprintf(c.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, last, status)
+				fmt.Fprintf(c.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, model, last, next, status)
 			} else {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, last, status)
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, model, last, next, status)
 			}
 		}
 	}
@@ -149,6 +159,8 @@ var (
 	addManual  bool
 	addManager bool
 	addReport  string
+	addModel   string
+	addEffort  string
 )
 
 var routinesAddCmd = &cobra.Command{
@@ -206,6 +218,12 @@ Pick exactly one trigger (default --manual):
 		}
 		if addReport != "" {
 			fmt.Fprintf(&body, "report = %q\n", addReport)
+		}
+		if addModel != "" {
+			fmt.Fprintf(&body, "model = %q\n", addModel)
+		}
+		if addEffort != "" {
+			fmt.Fprintf(&body, "effort = %q\n", addEffort)
 		}
 
 		// Resolve the project sync-root this workspace's defs live under BEFORE
@@ -603,6 +621,8 @@ func init() {
 	routinesAddCmd.Flags().BoolVar(&addManual, "manual", false, "fire only on demand (the default)")
 	routinesAddCmd.Flags().BoolVar(&addManager, "manager", false, "deliver to this workspace's manager claude instead of a codex executor")
 	routinesAddCmd.Flags().StringVar(&addReport, "report", "", `completion reporting: "digest" (default) or "none"`)
+	routinesAddCmd.Flags().StringVar(&addModel, "model", "", "executor model alias — codex-native only (e.g. gpt-5.4-mini, gpt-5.3-codex-spark); default = codex config default")
+	routinesAddCmd.Flags().StringVar(&addEffort, "effort", "", "executor reasoning effort: low|medium|high; default = codex config default")
 	routinesInstallCmd.Flags().BoolVar(&routinesUninstall, "uninstall", false, "remove the hub routines timer")
 	routinesInstallCmd.Flags().DurationVar(&routinesEvery, "every", time.Minute, "tick interval for the installed hub timer")
 	routinesCmd.AddCommand(routinesAddCmd, routinesRmCmd, routinesFireCmd, routinesTickCmd, routinesInstallCmd)

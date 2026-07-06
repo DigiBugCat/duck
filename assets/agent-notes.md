@@ -51,6 +51,9 @@ back to you as batched digest events. When recurring work comes up
   persistent codex thread, re-prompted each interval (first beat within
   a minute).
 - `duck routines add <name> --manual <prompt…>` — fire only on demand.
+- `--model <alias>` / `--effort low|medium|high` — pick the executor's
+  model. Routines accept codex-native gpt aliases ONLY (e.g. gpt-5.4-mini
+  for cheap duties); deepseek is spawn-only. Schedules run on PST wall-clock.
 - `--manager` targets YOU instead of an executor (a scheduled turn in
   your own context — use sparingly, e.g. a daily review nudge).
 - `duck routines` lists this workspace's routines; `fire <name>` runs

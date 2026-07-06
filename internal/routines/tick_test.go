@@ -483,3 +483,15 @@ func TestTickHealsDeadManagerInLivePersistentWorkspace(t *testing.T) {
 		t.Fatalf("relaunched manager must restamp @duck_manager; calls=%v", f.calls)
 	}
 }
+
+func TestModelArgs(t *testing.T) {
+	if got := modelArgs(Def{}, "exec"); got != "" {
+		t.Fatalf("no-override modelArgs = %q, want empty", got)
+	}
+	got := modelArgs(Def{Model: "gpt-5.4-mini", Effort: "low"}, "exec")
+	for _, want := range []string{"gpt-5.4-mini", "model_reasoning_effort"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("modelArgs = %q, missing %q", got, want)
+		}
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DigiBugCat/duck/internal/agent"
 	"github.com/DigiBugCat/duck/internal/channel"
 	"github.com/DigiBugCat/duck/internal/manager"
 	"github.com/DigiBugCat/duck/internal/panel"
@@ -44,6 +45,29 @@ func codexBin() string {
 // getenv is a package var so tests can stub environment lookups without
 // touching the real process environment. Defaults to os.Getenv.
 var getenv = os.Getenv
+
+// modelArgs renders a routine's model/effort overrides as shell-quoted codex
+// flags (leading space included), via the same alias resolver duck spawn uses.
+// argv0/sub only steer WHERE agent.WithModel inserts; the returned string is
+// just the injected flags. Defs are validated at load, so a resolve error here
+// is impossible in practice — degrade to no override rather than blocking the
+// fire.
+func modelArgs(d Def, sub string) string {
+	base := []string{"codex"}
+	if sub != "" {
+		base = append(base, sub)
+	}
+	argv, err := agent.WithModel(base, d.Model, d.Effort)
+	if err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, a := range argv[len(base):] {
+		b.WriteString(" ")
+		b.WriteString(paths.Quote(a))
+	}
+	return b.String()
+}
 
 // notifyArg wires codex's end-of-turn notify hook to `duck channel notify`
 // (same treatment `duck spawn` gives interactive agents): the hook pins the
@@ -175,7 +199,7 @@ func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
 		}
 	}
 
-	cmdline := codexBin() + " exec --dangerously-bypass-approvals-and-sandbox" + notifyArg() + " " + paths.Quote(d.Prompt)
+	cmdline := codexBin() + " exec" + modelArgs(d, "exec") + " --dangerously-bypass-approvals-and-sandbox" + notifyArg() + " " + paths.Quote(d.Prompt)
 	if _, err := panel.Spawn(run, outer, d.Name, dir, cmdline, panel.KindRun); err != nil {
 		fmt.Fprintf(logw, "routines: %s/%s: spawn: %v\n", outer, d.Name, err)
 		return false
@@ -240,7 +264,7 @@ func fireHeartbeat(run panel.Runner, d Def, outer, dir string, logw io.Writer) b
 	if err != nil {
 		// No pane yet — spawn the persistent TUI and wait for its composer
 		// before typing (keys sent during TUI startup are eaten).
-		cmdline := codexBin() + " --dangerously-bypass-approvals-and-sandbox" + notifyArg()
+		cmdline := codexBin() + modelArgs(d, "") + " --dangerously-bypass-approvals-and-sandbox" + notifyArg()
 		paneID, serr := panel.Spawn(run, outer, d.Name, dir, cmdline, panel.KindRun)
 		if serr != nil {
 			fmt.Fprintf(logw, "routines: %s/%s: spawn heartbeat pane: %v\n", outer, d.Name, serr)

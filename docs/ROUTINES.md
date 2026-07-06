@@ -75,13 +75,21 @@ set composes them freely; trust is merely the default.
 ```
 
 Created with `duck routines add <name> [--cron "…" | --every 15m | --manual]
-[--manager] [--report none] <prompt…>` from inside the workspace (or by
-writing the files directly).
+[--manager] [--report none] [--model <alias>] [--effort low|medium|high]
+<prompt…>` from inside the workspace (or by writing the files directly).
 
 Fields (v1): `trigger = "cron" | "heartbeat" | "manual"`,
 `schedule`/`interval`, `target = "run" (default) | "manager"` (run = codex
 executor; manager = the rare scheduled turn to claude, e.g. daily digest),
-`report = "digest" (default) | "none"`. The flock repo
+`report = "digest" (default) | "none"`, `model`/`effort` (executor model
+alias + reasoning effort; target=run only, and CODEX-NATIVE aliases only —
+gpt-5.4-mini etc. Cross-provider models (deepseek via Moon Bridge) are a
+deliberate per-spawn choice, never a standing unattended duty).
+
+Clock semantics: cron schedules are evaluated in **America/Los_Angeles**
+regardless of hub TZ (override per-def with a `CRON_TZ=` prefix in the
+schedule). Missed fires while a workspace is dormant are SKIPPED, never
+replayed; a beat landing while the previous run is still working is dropped. The flock repo
 (~/Obsidian/aviary/flock; never deployed) is reference reading only.
 
 ## Semantics per trigger

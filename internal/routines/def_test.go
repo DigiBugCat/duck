@@ -295,3 +295,74 @@ schedule = "0 9 * * *"`, "prompt")
 		t.Fatal("should be due after many missed beats")
 	}
 }
+
+func TestLoadWorkspace_ModelEffort(t *testing.T) {
+	root := t.TempDir()
+	writeRoutine(t, root, "work", "cheap", `
+trigger = "manual"
+model = "gpt-5.4-mini"
+effort = "low"
+`, "cheap duty")
+	defs, err := LoadWorkspace(root, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defs[0].Model != "gpt-5.4-mini" || defs[0].Effort != "low" {
+		t.Fatalf("model/effort not parsed: %+v", defs[0])
+	}
+}
+
+func TestLoadWorkspace_ModelEffortValidation(t *testing.T) {
+	cases := map[string]string{
+		"bad-model":      "trigger = \"manual\"\nmodel = \"gpt-9000\"\n",
+		"cross-provider": "trigger = \"manual\"\nmodel = \"deepseek\"\n",
+		"bad-effort":     "trigger = \"manual\"\neffort = \"ultra\"\n",
+		"manager-model":  "trigger = \"manual\"\ntarget = \"manager\"\nmodel = \"deepseek\"\n",
+		"manager-effort": "trigger = \"manual\"\ntarget = \"manager\"\neffort = \"low\"\n",
+	}
+	for name, body := range cases {
+		root := t.TempDir()
+		writeRoutine(t, root, "work", name, body, "job")
+		if _, err := LoadWorkspace(root, "work"); err == nil {
+			t.Errorf("%s: expected validation error, got nil", name)
+		}
+	}
+}
+
+func TestNextFire(t *testing.T) {
+	root := t.TempDir()
+	writeRoutine(t, root, "work", "morning", "trigger = \"cron\"\nschedule = \"0 9 * * *\"\n", "hi")
+	writeRoutine(t, root, "work", "beat", "trigger = \"heartbeat\"\ninterval = \"15m\"\n", "hi")
+	writeRoutine(t, root, "work", "byhand", "trigger = \"manual\"\n", "hi")
+	defs, err := LoadWorkspace(root, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]Def{}
+	for _, d := range defs {
+		byName[d.Name] = d
+	}
+
+	// Cron schedules are pinned to the fleet wall clock (PST): from 3am UTC
+	// (= 7pm or 8pm previous day PST), the next "0 9 * * *" is 9am PST.
+	now := time.Date(2026, 7, 5, 3, 0, 0, 0, time.UTC)
+	next := byName["morning"].NextFire(time.Time{}, now)
+	if next.IsZero() {
+		t.Fatal("cron NextFire is zero")
+	}
+	inPST := next.In(Location)
+	if inPST.Hour() != 9 || inPST.Minute() != 0 {
+		t.Fatalf("cron next fire = %v, want 09:00 in %v", inPST, Location)
+	}
+
+	last := now.Add(-5 * time.Minute)
+	if got := byName["beat"].NextFire(last, now); !got.Equal(last.Add(15 * time.Minute)) {
+		t.Fatalf("heartbeat next = %v, want %v", got, last.Add(15*time.Minute))
+	}
+	if got := byName["beat"].NextFire(now.Add(-time.Hour), now); !got.Equal(now) {
+		t.Fatalf("lapsed heartbeat next = %v, want now", got)
+	}
+	if got := byName["byhand"].NextFire(time.Time{}, now); !got.IsZero() {
+		t.Fatalf("manual next = %v, want zero", got)
+	}
+}
