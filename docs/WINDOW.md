@@ -1,6 +1,7 @@
 # duck window — a duck-owned local render surface
 
-Status: settled design, not yet built (2026-07-04).
+Status: shipped in v0.24-v0.25; current work is integration hardening
+(2026-07-06).
 
 ## The idea
 
@@ -11,11 +12,11 @@ never fit), interaction, or content you want to *mark up* — needs a real
 window. Today that's `duck render`, which flings a URL at the laptop's
 default browser and loses custody.
 
-`duck window` replaces the fling with ownership: duck runs on the client
-machine (e.g. studio) anyway, so it can host a chromium window it fully
-controls — navigate it, position it, close it, intercept its traffic, and
-inject an annotation layer so the human can highlight/comment/draw on the
-page and the agent can query those marks back as structured data.
+`duck window` replaces the fling with ownership: duck runs on the attached
+client machine anyway, so it can host a chromium window it fully controls —
+navigate it, position it, close it, intercept its traffic, and inject an
+annotation layer so the human can highlight/comment/draw on the page and the
+agent can query those marks back as structured data.
 
 The routing model (settled 2026-07-04) — ONE noun, three viewports.
 
@@ -73,10 +74,10 @@ duck render publish                    duck window host (detached singleton,
   :7327 static file server        ──►    │
   (existing, unchanged)                  ├─ CDP session → chromium --app=...
                                          ├─ Fetch interception (all traffic)
-open shim (existing hub→client    ──►    ├─ annotation store (keyed by URL)
-channel) routes window-bound             └─ local publish endpoint
-targets to the host                         (~/.duck/render/ trick, for the
-                                            rare studio-local file)
+per-session window socket          ──►    ├─ annotation store (keyed by URL)
+(hub ~/.duck/run/window-<session>.sock)   └─ local publish endpoint
+reverse-forwards to client :7334             (~/.duck/render/ trick, for the
+                                             rare studio-local file)
 ```
 
 ### The window
@@ -87,6 +88,14 @@ targets to the host                         (~/.duck/render/ trick, for the
 - The host is a detached singleton (`duck window serve` re-exec, Setsid,
   port poll, log to `~/.duck/window.log`) — third instance of the proven
   render-server / auto-updater pattern.
+- Discovery follows the attached client. On attach, the client ensures its
+  local host is running on `127.0.0.1:7334`, reverse-forwards the hub socket
+  `~/.duck/run/window-<session>.sock` to that port, and stamps
+  `DUCK_WINDOW_SOCK` into the tmux session environment. Hub-side `duck window`
+  resolves in this order: `--host`, `DUCK_WINDOW_HOST`, the session's
+  `DUCK_WINDOW_SOCK` (looked up from the target session, not the most recent
+  tmux client), config `window_host`, then local loopback. `window_host` remains
+  only as a headless/fixed-host fallback.
 
 **Backend note (2026-07-04).** Today, headful chromium driven via chromedp
 is the whole backend, but its dock identity on macOS is a problem: launched
