@@ -24,6 +24,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	rowmodel "github.com/DigiBugCat/duck/internal/model"
 )
 
 // pollEvery is the roster refresh cadence.
@@ -79,9 +81,11 @@ type watchModel struct {
 	statuses   map[string]string
 	workspaces []Workspace
 	routines   []routineRow
-	tabKind    string         // active tab BY NAME
-	cursor     int            // index into visible() rows
-	tabCursor  map[string]int // last cursor per tab, so switching back restores it
+	tabKind        string         // active tab BY NAME
+	cursor         int            // index into visible() rows
+	tabCursor      map[string]int // last cursor per tab, so switching back restores it
+	wsScopeProject bool           // ⌂ ws tab: true = this project only, false = all sessions (s toggles)
+	lastActive     string         // pane id of the last observed viewport occupant (see syncToOccupant)
 	width      int
 	height     int
 
@@ -99,7 +103,11 @@ func Watch(run Runner, outer string, status StatusFn) error {
 	ti := textinput.New()
 	ti.Prompt = "❯ "
 	ti.Placeholder = ": for commands · ↵ view · x kill · ←→ tabs"
-	m := watchModel{run: run, outer: outer, statusFn: status, input: ti, tabKind: KindAgent, tabCursor: map[string]int{}}
+	// Pin the terminal background once, before bubbletea grabs the TTY, so the
+	// shared AdaptiveColor row palette (model.RenderRow) resolves the right
+	// light/dark variant instead of defaulting to Dark on a probe miss.
+	lipgloss.SetHasDarkBackground(lipgloss.HasDarkBackground())
+	m := watchModel{run: run, outer: outer, statusFn: status, input: ti, tabKind: KindAgent, tabCursor: map[string]int{}, wsScopeProject: true}
 	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus()).Run()
 	return err
 }
@@ -349,6 +357,9 @@ func (m watchModel) visible() []int {
 	}
 	if m.tabKind == wsTab {
 		for i, w := range m.workspaces {
+			if m.wsScopeProject && !w.InProject {
+				continue // this-project scope hides other projects' sessions
+			}
 			if q != "" && !isSubseq(strings.ToLower(w.Name+" "+w.Display), q) {
 				continue
 			}
@@ -370,6 +381,64 @@ func (m watchModel) visible() []int {
 		idx = append(idx, i)
 	}
 	return idx
+}
+
+// syncToOccupant makes the tab bar follow the viewport: when the OCCUPANT
+// CHANGES (a preview lands, a spawn appears, a routine run is swapped in),
+// the active tab and cursor jump to that item. It fires only when the
+// occupant's pane differs from the last observed one, so it never fights the
+// user's own navigation between polls. The placeholder filler pane (empty
+// kind — empty tabs, ws previews, routine cards) advances the marker but
+// leaves tabs alone, so browsing routine cards is never yanked off the ⏰ tab.
+// Routine-backed run panes (kind=runs named after a routine) fold under the
+// ⏰ tab, so the cursor lands on the routine row instead. Tab/cursor fields
+// are set directly — the pane is already on display, so switchTab's viewport
+// side effects must not re-fire.
+func (m *watchModel) syncToOccupant() {
+	var occ *Agent
+	for i := range m.agents {
+		if m.agents[i].Active {
+			occ = &m.agents[i]
+			break
+		}
+	}
+	if occ == nil || occ.PaneID == m.lastActive {
+		return
+	}
+	m.lastActive = occ.PaneID
+	if occ.Kind == "" {
+		return
+	}
+	target := occ.Kind
+	if occ.Kind == KindRun && m.routineNames()[occ.Name] {
+		target = schedTab
+	}
+	known := false
+	for _, k := range m.tabs() {
+		if k == target {
+			known = true
+			break
+		}
+	}
+	if !known {
+		return
+	}
+	if m.tabKind != target {
+		m.tabCursor[m.tabKind] = m.cursor
+		m.tabKind, m.armedKill = target, ""
+		m.cursor = m.tabCursor[target]
+	}
+	for pos, i := range m.visible() {
+		if target == schedTab {
+			if m.routines[i].Name == occ.Name {
+				m.cursor = pos
+				break
+			}
+		} else if m.agents[i].PaneID == occ.PaneID {
+			m.cursor = pos
+			break
+		}
+	}
 }
 
 // routineNames is the set of this workspace's routine names. Executor panes
@@ -732,6 +801,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statuses = msg.statuses
 		m.workspaces = msg.workspaces
 		m.routines = msg.routines
+		m.syncToOccupant()
 		if n := len(m.visible()); m.cursor >= n {
 			m.cursor = max(0, n-1)
 		}
@@ -917,6 +987,13 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.lastMsg = m.backWorkspace()
 				return m, m.load
 			}
+		case "s": // scope: toggle the ws tab between this-project and all sessions
+			if m.tabKind == wsTab {
+				m.wsScopeProject = !m.wsScopeProject
+				m.cursor = 0
+				m.previewWorkspace()
+				return m, nil
+			}
 		case "x":
 			if m.tabKind == schedTab {
 				m.lastMsg = "retire schedules with: duck routines rm <name>"
@@ -1030,7 +1107,7 @@ var (
 	workingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	doneStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
 	tabStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	tabActiveStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6"))
+	tabActiveStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FAFAFA")).Background(rowmodel.Accent)
 	ghostStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
 )
 
@@ -1135,25 +1212,28 @@ func (m watchModel) View() string {
 			continue
 		}
 		if m.tabKind == wsTab {
-			w := m.workspaces[i]
-			disp := w.Display
+			ws := m.workspaces[i]
+			disp := ws.Display
 			if disp == "" {
-				disp = w.Name
+				disp = ws.Name
 			}
-			label := disp
-			if disp != w.Name {
-				label += dimStyle.Render(" · " + w.Name)
+			// The current workspace attaches a "here" hint; everything else reads
+			// as a plain shared session row (same look as the --resume picker).
+			if ws.Current {
+				disp += " (here)"
 			}
-			if w.Current {
-				label += dimStyle.Render(" · here")
-			} else if w.Attached {
-				label += dimStyle.Render(" · attached")
-			}
-			line = "  " + label
-			if row == m.cursor {
-				line = "  " + selectedStyle.Render(" "+disp+" ")
-			}
-		} else {
+			b.WriteString(rowmodel.RenderRow(rowmodel.Row{
+				Display:  disp,
+				Dir:      ws.Dir,
+				Age:      ws.Age,
+				Attached: ws.Attached,
+				Looped:   ws.Looped,
+				Windows:  ws.Windows,
+				LastSeen: ws.LastActive,
+			}, row == m.cursor, m.width) + "\n")
+			continue
+		}
+		{
 			a := m.agents[i]
 			marker := "  "
 			if a.Active {
@@ -1199,7 +1279,11 @@ func (m watchModel) View() string {
 	case m.cmdFocus:
 		hintLine = dimStyle.Render(" type a name or a verb · esc back · help for the guide")
 	case m.tabKind == wsTab:
-		hintLine = dimStyle.Render(" ↵ preview · g go · b back · ←→ tabs · q close")
+		scope := "project"
+		if !m.wsScopeProject {
+			scope = "all"
+		}
+		hintLine = dimStyle.Render(" ↵ preview · g go · b back · s scope:" + scope + " · ←→ tabs")
 	default:
 		hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
 	}

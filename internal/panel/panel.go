@@ -772,20 +772,31 @@ func ShowRoutineDetail(run Runner, outer, name, meta, mdPath string) error {
 // via anchorOption, findable via placeholderOpt), (re)runs it with the given
 // full tmux command, and swaps it on display. Reused across ShowEmpty and
 // ShowWorkspacePreview so there is at most one filler pane per workspace.
+// The search covers BOTH the outer session and the companion lot: when a real
+// pane is selected the placeholder is swapped into the lot, and missing it
+// there would leak a fresh filler pane on every call.
 func showFiller(run Runner, outer, cmd string) error {
 	comp, err := EnsureCompanion(run, outer, "")
 	if err != nil {
 		return err
 	}
-	// Find an existing placeholder anywhere in the sidebar sessions.
+	// Find the existing placeholder: on display in the outer session, or
+	// parked in the lot. Errors (e.g. a missing session) are tolerated.
 	var pid string
-	if out, err := run("list-panes", "-s", "-t", outer, "-F", "#{pane_id}\t#{"+placeholderOpt+"}"); err == nil {
+	for _, sess := range []string{outer, comp} {
+		out, err := run("list-panes", "-s", "-t", sess, "-F", "#{pane_id}\t#{"+placeholderOpt+"}")
+		if err != nil {
+			continue
+		}
 		for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 			f := strings.SplitN(line, "\t", 2)
 			if len(f) == 2 && strings.TrimSpace(f[1]) != "" {
 				pid = f[0]
 				break
 			}
+		}
+		if pid != "" {
+			break
 		}
 	}
 	if pid == "" {
@@ -982,18 +993,30 @@ func dedupeRoles(run Runner, outer string, roles map[string]string) {
 }
 
 // Workspace is one duck session on this hub, as the roster's ws view shows.
+// The glyph/age/window fields feed model.RenderRow so a ws row reads exactly
+// like a --resume picker row; Project + InProject drive the scope toggle.
 type Workspace struct {
-	Name     string // internal tmux id (the switch target)
-	Display  string // resolved display name (user ▸ pane title ▸ codex ▸ dir)
-	MainPane string // first non-panel pane id (for the ⌂ ws preview snapshot)
-	Attached bool
-	Current  bool
+	Name       string // internal tmux id (the switch target)
+	Display    string // resolved display name (user ▸ pane title ▸ codex ▸ dir)
+	MainPane   string // first non-panel pane id (for the ⌂ ws preview snapshot)
+	Dir        string // tilde-form working dir (shown in the wide row)
+	Project    string // basename of Dir, for the this-project scope filter
+	InProject  bool   // Project == the roster's own project (or is the current ws)
+	Age        string // humanized last-active age, e.g. "2m", "1h"
+	LastActive time.Time
+	Windows    int
+	Looped     bool
+	Attached   bool
+	Current    bool
 }
 
-// Workspaces lists the hub's duck sessions (companions excluded), current
-// first, then attached, then name order preserved from tmux.
+// Workspaces lists the hub's duck sessions (companions excluded). It returns
+// ALL of them regardless of project — the roster's scope toggle (`s`) filters
+// by InProject in visible(); Workspaces just marks each row. Current first,
+// then attached, then tmux order.
 func Workspaces(run Runner, outer string) ([]Workspace, error) {
-	out, err := run("list-sessions", "-F", "#{session_name}\t#{session_attached}\t#{@duck_dir}\t#{"+panelOfOption+"}")
+	out, err := run("list-sessions", "-F",
+		"#{session_name}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{@duck_loop}\t#{@duck_dir}\t#{"+panelOfOption+"}")
 	if err != nil {
 		return nil, err
 	}
@@ -1004,37 +1027,60 @@ func Workspaces(run Runner, outer string) ([]Workspace, error) {
 	mains := mainPanes(run)
 	myProj := ProjectName(run, outer)
 	doc, _ := names.NewStore(shellRunner{}).Load() // display names; empty doc on any error
+	now := time.Now()
 	var ws []Workspace
 	// TrimRight newlines ONLY (TrimSpace eats the last line's trailing tab).
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 4)
-		if len(f) < 3 {
+		f := strings.SplitN(line, "\t", 7)
+		if len(f) < 6 {
 			continue
 		}
-		panelOf := ""
-		if len(f) >= 4 {
-			panelOf = strings.TrimSpace(f[3])
+		if strings.TrimSpace(f[6:][0]) != "" { // panelOf set → companion plumbing
+			continue
 		}
-		if panelOf != "" {
-			continue // companions are plumbing
-		}
-		dir := strings.TrimSpace(f[2])
+		dir := strings.TrimSpace(f[5])
 		proj := ""
 		if dir != "" {
 			proj = filepath.Base(dir)
 		}
-		if f[0] != outer && (proj == "" || proj != myProj) {
-			continue
-		}
+		last := time.Unix(parseInt(f[3]), 0)
 		ws = append(ws, Workspace{
-			Name:     f[0],
-			Display:  names.Resolve(doc, f[0], dir, managerTitles[f[0]]),
-			MainPane: mains[f[0]],
-			Attached: f[1] != "0" && f[1] != "",
-			Current:  f[0] == outer,
+			Name:       f[0],
+			Display:    names.Resolve(doc, f[0], dir, managerTitles[f[0]]),
+			MainPane:   mains[f[0]],
+			Dir:        paths.Contract(dir),
+			Project:    proj,
+			InProject:  f[0] == outer || (proj != "" && proj == myProj),
+			Age:        humanizeAge(now.Sub(last)),
+			LastActive: last,
+			Windows:    int(parseInt(f[2])),
+			Looped:     strings.TrimSpace(f[4]) != "",
+			Attached:   f[1] != "0" && f[1] != "",
+			Current:    f[0] == outer,
 		})
 	}
 	return ws, nil
+}
+
+// parseInt is a tolerant atoi for tmux numeric fields (0 on any garbage).
+func parseInt(s string) int64 {
+	n, _ := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	return n
+}
+
+// humanizeAge renders a duration the way the picker's rows do: "2m", "1h",
+// "3d". Sub-minute reads as "now".
+func humanizeAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "now"
+	case d < time.Hour:
+		return strconv.Itoa(int(d.Minutes())) + "m"
+	case d < 24*time.Hour:
+		return strconv.Itoa(int(d.Hours())) + "h"
+	default:
+		return strconv.Itoa(int(d.Hours()/24)) + "d"
+	}
 }
 
 // managerPaneTitles returns the Claude task-summary title from each workspace's

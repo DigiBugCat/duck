@@ -91,7 +91,7 @@ func TestWorkspacesUsesManagerClaudeTitle(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	outer := "duck-workspace-title"
 	f := &fakeRunner{out: map[string]string{
-		"list-sessions -F #{session_name}\t#{session_attached}\t#{@duck_dir}\t#{@duck_panel_of}": outer + "\t0\t/home/andrew/Obsidian/aviary/duck\t\n",
+		"list-sessions -F #{session_name}\t#{session_attached}\t#{session_windows}\t#{session_activity}\t#{@duck_loop}\t#{@duck_dir}\t#{@duck_panel_of}": outer + "\t0\t1\t1700000000\t\t/home/andrew/Obsidian/aviary/duck\t\n",
 		"list-panes -a -F #{session_name}\t#{pane_id}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}": outer + "\t%1\tviewport\tzsh\tpelican\n" +
 			outer + "\t%2\t\tclaude\t\u2733 Fix workspace names\n",
 		"list-panes -t " + outer + ": -F #{pane_current_path}\t#{@duck_panel_role}": "/home/andrew/Obsidian/aviary/duck\t\n",
@@ -243,5 +243,27 @@ func TestPadPathRelocation(t *testing.T) {
 	p2, _ := EnsurePad(tmp, "fresh")
 	if b, _ := os.ReadFile(p2); !strings.Contains(string(b), "# fresh") {
 		t.Errorf("EnsurePad should write header, got: %q", b)
+	}
+}
+
+func TestShowFillerReusesPlaceholderParkedInCompanion(t *testing.T) {
+	// The placeholder lives in the LOT (it was swapped out when a real pane
+	// went on display). showFiller must find it there and reuse it — a search
+	// of the outer session alone would leak a new pane per call.
+	fillerFmt := "#{pane_id}\t#{" + placeholderOpt + "}"
+	f := &fakeRunner{out: map[string]string{
+		"list-windows -t work-agents -F #{window_name}": "lot\n",
+		"list-panes -s -t work -F " + fillerFmt:         "%9\t\n",        // viewport: no placeholder
+		"list-panes -s -t work-agents -F " + fillerFmt:  "%1\t\n%7\t1\n", // parked placeholder
+		rolesKey: "%9\tviewport\n",
+	}}
+	if err := showFiller(f.run, "work", "cmd"); err != nil {
+		t.Fatalf("showFiller: %v", err)
+	}
+	if f.called("split-window") {
+		t.Errorf("must reuse the parked placeholder, not split a new pane: %v", f.calls)
+	}
+	if !f.called("respawn-pane -k -t %7") {
+		t.Errorf("expected respawn of parked placeholder %%7: %v", f.calls)
 	}
 }
