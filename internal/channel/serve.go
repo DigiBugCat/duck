@@ -56,8 +56,9 @@ type Host interface {
 
 	Preview(workspace, target, name string) (paneID string, err error)
 	Render(workspace, target string) error
+	Window(workspace, target string) (string, error)
 
-	Routines(workspace string) (string, error)         // human-readable listing
+	Routines(workspace string) (string, error)          // human-readable listing
 	FireRoutine(workspace, name string) (string, error) // run one now
 }
 
@@ -94,17 +95,17 @@ func Serve(run panel.Runner, workspace string, host Host, in io.Reader, out io.W
 
 type server struct {
 	run       panel.Runner
-	workspace string   // sweep only this duck session's agents ("" = machine-wide)
-	host      Host // backs spawn/resume/fork tools; nil omits them
+	workspace string // sweep only this duck session's agents ("" = machine-wide)
+	host      Host   // backs spawn/resume/fork tools; nil omits them
 	out       io.Writer
 	resolver  *Resolver     // memoized pairing/status — watch goroutine only
 	stop      chan struct{} // closed when Serve returns; stops the watch goroutine
 	started   time.Time     // sidecar start; panes spawned after this drain from 0
 
-	mu       sync.Mutex     // guards out and ready (watcher + handler both touch them)
+	mu       sync.Mutex       // guards out and ready (watcher + handler both touch them)
 	offsets  map[string]int64 // rollout → drained byte offset; watch goroutine only
-	ready    bool           // initialize handshake done — notifications may flow
-	inflight sync.WaitGroup // tools/call handlers dispatched in goroutines
+	ready    bool             // initialize handshake done — notifications may flow
+	inflight sync.WaitGroup   // tools/call handlers dispatched in goroutines
 }
 
 func (s *server) write(v any) {
@@ -342,6 +343,28 @@ func (s *server) tools() []tool {
 					return "", err
 				}
 				return "opened in the human's laptop browser", nil
+			},
+		},
+		tool{
+			name:        "window",
+			description: "Open a DYNAMIC artifact (animation, interactive page, realtime dashboard, anything the human should mark up) in the duck-owned window on the human's current client machine. duck keeps custody: the human can highlight/comment, and those marks arrive back to you as <channel source=\"duck-window\" type=\"mark\"> events — do not poll. ROUTING: static content → preview/render; dynamic or annotatable → window.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"target": map[string]any{"type": "string", "description": "file path or URL"},
+				},
+				"required": []string{"target"},
+			},
+			handler: func(raw json.RawMessage) (string, error) {
+				var a struct{ Target string }
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				shown, err := s.host.Window(ws, a.Target)
+				if err != nil {
+					return "", err
+				}
+				return "opened in the duck window: " + shown, nil
 			},
 		},
 		tool{

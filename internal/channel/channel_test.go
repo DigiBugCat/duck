@@ -282,11 +282,11 @@ func TestResolveRefusesAmbiguousConcurrentSpawns(t *testing.T) {
 	// and list-panes -a reports no claims yet (both fresh).
 	newFake := func(pane string) *fakeRunner {
 		return &fakeRunner{out: map[string]string{
-			"show-options -p -t " + pane + " -v @duck_rollout":     "\n",
-			"show-options -p -t " + pane + " -v @duck_cmd":         "codex --model gpt-5\n",
-			"show-options -p -t " + pane + " -v @duck_spawned_at":  fmt.Sprintf("%d\n", spawn.Unix()),
+			"show-options -p -t " + pane + " -v @duck_rollout":        "\n",
+			"show-options -p -t " + pane + " -v @duck_cmd":            "codex --model gpt-5\n",
+			"show-options -p -t " + pane + " -v @duck_spawned_at":     fmt.Sprintf("%d\n", spawn.Unix()),
 			"display-message -p -t " + pane + " #{pane_current_path}": "/work\n",
-			"list-panes -a -F #{@duck_rollout}":                     "\n", // nothing claimed
+			"list-panes -a -F #{@duck_rollout}":                       "\n", // nothing claimed
 		}}
 	}
 	// Pane %1: ambiguous (two unclaimed /work candidates) → must NOT pair.
@@ -967,10 +967,23 @@ func (f *fakeHost) Fork(ws, id, prompt string) (string, string, error) {
 	f.last = "fork:" + id
 	return "%10", "sid-fork", nil
 }
-func (f *fakeHost) Preview(ws, target, name string) (string, error) { f.last = "preview:" + name; return "%11", nil }
-func (f *fakeHost) Render(ws, target string) error                  { f.last = "render:" + target; return nil }
-func (f *fakeHost) Routines(ws string) (string, error)              { f.last = "routines"; return "beat\theartbeat\t15m", nil }
-func (f *fakeHost) FireRoutine(ws, name string) (string, error)     { f.last = "fire:" + name; return "fired " + name, nil }
+func (f *fakeHost) Preview(ws, target, name string) (string, error) {
+	f.last = "preview:" + name
+	return "%11", nil
+}
+func (f *fakeHost) Render(ws, target string) error { f.last = "render:" + target; return nil }
+func (f *fakeHost) Window(ws, target string) (string, error) {
+	f.last = "window:" + target
+	return "http://artifact", nil
+}
+func (f *fakeHost) Routines(ws string) (string, error) {
+	f.last = "routines"
+	return "beat\theartbeat\t15m", nil
+}
+func (f *fakeHost) FireRoutine(ws, name string) (string, error) {
+	f.last = "fire:" + name
+	return "fired " + name, nil
+}
 
 func TestServeToolsGatedOnLauncher(t *testing.T) {
 	// No launcher → only reply.
@@ -981,10 +994,47 @@ func TestServeToolsGatedOnLauncher(t *testing.T) {
 	// With a launcher → reply + spawn/resume/fork.
 	s1 := &server{workspace: "work", host: &fakeHost{}}
 	got := toolNames(s1.tools())
-	for _, want := range []string{"reply", "spawn", "resume", "fork", "preview", "render", "routines"} {
+	for _, want := range []string{"reply", "spawn", "resume", "fork", "preview", "render", "window", "routines"} {
 		found := false
-		for _, n := range got { if n == want { found = true } }
-		if !found { t.Errorf("missing tool %q in %v", want, got) }
+		for _, n := range got {
+			if n == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing tool %q in %v", want, got)
+		}
 	}
 }
-func toolNames(ts []tool) []string { var n []string; for _, t := range ts { n = append(n, t.name) }; return n }
+
+func TestWindowToolDispatchesToHost(t *testing.T) {
+	fh := &fakeHost{}
+	s := &server{workspace: "work", host: fh}
+	var win tool
+	for _, t := range s.tools() {
+		if t.name == "window" {
+			win = t
+			break
+		}
+	}
+	if win.name == "" {
+		t.Fatal("window tool missing")
+	}
+	got, err := win.handler(json.RawMessage(`{"target":"dash.html"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fh.last != "window:dash.html" {
+		t.Fatalf("host call = %q, want window:dash.html", fh.last)
+	}
+	if !strings.Contains(got, "http://artifact") {
+		t.Fatalf("receipt should include published URL, got %q", got)
+	}
+}
+func toolNames(ts []tool) []string {
+	var n []string
+	for _, t := range ts {
+		n = append(n, t.name)
+	}
+	return n
+}

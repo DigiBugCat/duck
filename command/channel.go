@@ -16,7 +16,9 @@ package command
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -197,6 +199,39 @@ func (mcpHost) Preview(workspace, target, name string) (string, error) {
 }
 func (mcpHost) Render(workspace, target string) error {
 	return openOnClient(target)
+}
+func (mcpHost) Window(workspace, target string) (string, error) {
+	if !isHTTPURL(target) && !filepath.IsAbs(target) && workspace != "" {
+		if dir, err := panel.SessionPath(panel.ExecRunner, workspace); err == nil && dir != "" {
+			target = filepath.Join(dir, target)
+		}
+	}
+	u, err := publishArtifact(target)
+	if err != nil {
+		return "", err
+	}
+	client, baseURL, targetHost := windowClient(workspace)
+	if err := ensureWindowTarget(targetHost); err != nil {
+		return "", err
+	}
+	form := url.Values{"url": {u}}
+	if workspace != "" {
+		form.Set("workspace", workspace)
+	}
+	resp, err := client.PostForm(baseURL+"/open", form)
+	if err != nil {
+		return "", fmt.Errorf("window host at %s: %w", targetHost.label(), err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("window host returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	return u, nil
+}
+
+func isHTTPURL(target string) bool {
+	return strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
 }
 
 // Routines / FireRoutine drive the workspace's scheduled executors (list, or run
