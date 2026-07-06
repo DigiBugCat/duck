@@ -239,6 +239,48 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
+// RenamePad moves a pad's backing .md from oldName to newName under the same
+// syncRoot, then respawns its roster pane (if live) with the viewer pointed at
+// the new file and re-stamps @duck_name so the roster label follows. Returns
+// the new path. Fails if newName already exists (never clobbers a pad) or the
+// old file is missing.
+func RenamePad(run Runner, outer, oldName, newName string) (string, error) {
+	if newName == "" || strings.ContainsAny(newName, "/\\") {
+		return "", fmt.Errorf("bad pad name %q", newName)
+	}
+	root := PadRoot(run, outer)
+	oldPath, err := PadPath(root, oldName)
+	if err != nil {
+		return "", err
+	}
+	newPath, err := PadPath(root, newName)
+	if err != nil {
+		return "", err
+	}
+	if !fileExists(oldPath) {
+		return "", fmt.Errorf("no pad %q", oldName)
+	}
+	if fileExists(newPath) {
+		return "", fmt.Errorf("pad %q already exists", newName)
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return "", err
+	}
+	// Repoint the live pane, if any: respawn its viewer on the new path and
+	// re-stamp the name so the roster row relabels.
+	for _, a := range func() []Agent { as, _ := Agents(run, outer); return as }() {
+		if a.Kind == KindBuffer && a.Name == oldName {
+			_, _ = run("respawn-pane", "-k", "-t", a.PaneID, PadCmd(newPath))
+			_, _ = run("set-option", "-p", "-t", a.PaneID, NameOption, newName)
+			break
+		}
+	}
+	return newPath, nil
+}
+
 // PadCmd builds the in-pane command for a pad: a VIEWER by default (glow-
 // rendered, styled, live) with an explicit EDIT affordance. A pad is a live
 // human⇄agent surface — an agent rewrites the file, and the viewer repaints on

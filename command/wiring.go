@@ -134,6 +134,7 @@ func build() (*wiring, error) {
 	// Arm the open-interceptor for every interactive attach this process makes:
 	// runAttachLoop wraps its attach in withOpenForwarding, which uses this hook.
 	startOpenForwarding = newOpenForwarding(client)
+	startWindowForwarding = newWindowForwarding(client)
 
 	sess := session.NewManager(client, client)
 	store := names.NewStore(client)

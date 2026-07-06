@@ -30,19 +30,91 @@ import (
 
 var windowHostFlag string
 
-// windowHost resolves the window host's address: --host flag,
-// $DUCK_WINDOW_HOST, config window_host, then the default loopback port.
+type windowTarget struct {
+	host string
+	sock string
+}
+
+func (t windowTarget) label() string {
+	if t.sock != "" {
+		return "unix:" + t.sock
+	}
+	return t.host
+}
+
+// windowHost resolves the window host's address for display/tests. A unix
+// socket target is reported as "unix:/path".
 func windowHost() string {
+	t := resolveWindowTarget("")
+	return t.label()
+}
+
+// resolveWindowTarget applies the window routing precedence. session may be
+// supplied by callers that already know the workspace; otherwise it is resolved
+// from this process's tmux pane, anchored through panel.CurrentSession.
+func resolveWindowTarget(session string) windowTarget {
+	return resolveWindowTargetWithRun(panel.ExecRunner, session)
+}
+
+func resolveWindowTargetWithRun(run panel.Runner, session string) windowTarget {
 	if windowHostFlag != "" {
-		return windowHostFlag
+		return windowTarget{host: windowHostFlag}
 	}
 	if h := os.Getenv("DUCK_WINDOW_HOST"); h != "" {
-		return h
+		return windowTarget{host: h}
+	}
+	if session == "" && panel.InsideTmux() {
+		if ws, err := panel.CurrentSession(run); err == nil {
+			session = ws
+		}
+	}
+	if sock := sessionWindowSock(run, session); sock != "" {
+		return windowTarget{sock: sock}
 	}
 	if cfg, err := config.Load(); err == nil && cfg.WindowHost != "" {
-		return cfg.WindowHost
+		return windowTarget{host: cfg.WindowHost}
 	}
-	return fmt.Sprintf("127.0.0.1:%d", window.DefaultPort)
+	return windowTarget{host: fmt.Sprintf("127.0.0.1:%d", window.DefaultPort)}
+}
+
+func sessionWindowSock(run panel.Runner, session string) string {
+	if session == "" {
+		return ""
+	}
+	out, err := run("show-environment", "-t", session, "DUCK_WINDOW_SOCK")
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(out)
+	const prefix = "DUCK_WINDOW_SOCK="
+	if !strings.HasPrefix(line, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+}
+
+func windowClient(session string) (*http.Client, string, windowTarget) {
+	return windowClientForTarget(resolveWindowTarget(session))
+}
+
+func windowClientForTarget(target windowTarget) (*http.Client, string, windowTarget) {
+	if target.sock == "" {
+		return &http.Client{}, "http://" + target.host, target
+	}
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", target.sock)
+		},
+	}
+	return &http.Client{Transport: tr}, "http://duck-window", target
+}
+
+func ensureWindowTarget(target windowTarget) error {
+	if target.host == "" {
+		return nil
+	}
+	return ensureWindowHost(target.host)
 }
 
 var (
@@ -138,22 +210,22 @@ terminal cells.`,
 		if err != nil {
 			return err
 		}
-		host := windowHost()
-		if err := ensureWindowHost(host); err != nil {
+		client, baseURL, target := windowClient("")
+		if err := ensureWindowTarget(target); err != nil {
 			return err
 		}
 		form := url.Values{"url": {u}}
 		if ws, err := panel.CurrentSession(panel.ExecRunner); err == nil && ws != "" {
 			form.Set("workspace", ws)
 		}
-		resp, err := http.PostForm("http://"+host+"/open", form)
+		resp, err := client.PostForm(baseURL+"/open", form)
 		if err != nil {
-			return fmt.Errorf("window host at %s: %w", host, err)
+			return fmt.Errorf("window host at %s: %w", target.label(), err)
 		}
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		fmt.Printf("shown: %s\n", u)
-		fmt.Printf("%s: %s\n", host, strings.TrimSpace(string(body)))
+		fmt.Printf("%s: %s\n", target.label(), strings.TrimSpace(string(body)))
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("window host returned %s", resp.Status)
 		}
@@ -202,17 +274,17 @@ var windowMarksCmd = &cobra.Command{
 	Short: "List annotations from the duck window (current page, or a given url)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		host := windowHost()
-		if err := ensureWindowHost(host); err != nil {
+		client, baseURL, target := windowClient("")
+		if err := ensureWindowTarget(target); err != nil {
 			return err
 		}
 		q := ""
 		if len(args) == 1 {
 			q = "?url=" + url.QueryEscape(args[0])
 		}
-		resp, err := http.Get("http://" + host + "/marks" + q)
+		resp, err := client.Get(baseURL + "/marks" + q)
 		if err != nil {
-			return fmt.Errorf("window host at %s: %w", host, err)
+			return fmt.Errorf("window host at %s: %w", target.label(), err)
 		}
 		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/DigiBugCat/duck/internal/openfwd"
 	"github.com/DigiBugCat/duck/internal/sshx"
+	"github.com/DigiBugCat/duck/internal/window"
 )
 
 // startOpenForwarding is the package hook the attach loop calls to begin routing
@@ -26,6 +27,12 @@ import (
 // attach loop defers. A setup failure degrades to a no-op stop — the
 // open-interceptor is a convenience, never a reason an attach fails.
 var startOpenForwarding func(session string) (stop func())
+
+// startWindowForwarding mirrors startOpenForwarding for the duck-owned window:
+// while a client is attached, the hub session gets DUCK_WINDOW_SOCK pointing at
+// a per-session unix socket reverse-forwarded to this client's local window
+// host. Nil outside attached/wired command paths.
+var startWindowForwarding func(session string) (stop func())
 
 // hubOpenSock is the hub-side unix socket a given session's opens rendezvous on:
 // an ABSOLUTE path under the hub's home. hubHome must already be resolved to a
@@ -38,6 +45,10 @@ var startOpenForwarding func(session string) (stop func())
 // Session names are duck-generated (safe for a path segment).
 func hubOpenSock(hubHome, session string) string {
 	return fmt.Sprintf("%s/.duck/run/open-%s.sock", strings.TrimRight(hubHome, "/"), session)
+}
+
+func hubWindowSock(hubHome, session string) string {
+	return fmt.Sprintf("%s/.duck/run/window-%s.sock", strings.TrimRight(hubHome, "/"), session)
 }
 
 // newOpenForwarding builds the production starter for the given client. On start
@@ -105,6 +116,56 @@ func stampOpenSock(client *sshx.Client, session, sock string) {
 func unstampOpenSock(client *sshx.Client, session string) {
 	_, _ = client.Run(fmt.Sprintf(
 		"tmux set-environment -u -t %s DUCK_OPEN_SOCK", shquote(session)))
+}
+
+// newWindowForwarding builds the attach-scoped window forwarder. The client
+// machine owns the actual window host on 127.0.0.1:7334; the hub receives only a
+// per-session unix socket that points back to that host for this attachment.
+func newWindowForwarding(client *sshx.Client) func(session string) (stop func()) {
+	return func(session string) (stop func()) {
+		noop := func() {}
+		if session == "" {
+			return noop
+		}
+		if err := ensureWindowHost(fmt.Sprintf("127.0.0.1:%d", window.DefaultPort)); err != nil {
+			fmt.Fprintf(os.Stderr, "duck: window forwarding disabled (host: %v); duck window will use hub-side fallback\n", err)
+			return noop
+		}
+		// When duck runs on the hub itself, there is no reverse tunnel to create.
+		// Leave DUCK_WINDOW_SOCK unset so hub commands fall through to the local
+		// loopback host instead of a non-existent unix socket.
+		if client.Local {
+			return noop
+		}
+		hubHome, err := hubHomeDir(client)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "duck: window forwarding disabled (hub home: %v); duck window will use hub-side fallback\n", err)
+			return noop
+		}
+		sock := hubWindowSock(hubHome, session)
+		_, _ = client.Run("mkdir -p -- " + shquote(strings.TrimRight(hubHome, "/")+"/.duck/run"))
+		if err := client.RemoteForwardSocket(sock, window.DefaultPort); err != nil {
+			fmt.Fprintf(os.Stderr, "duck: window forwarding disabled (reverse forward: %v); duck window will use hub-side fallback\n", err)
+			return noop
+		}
+		stampWindowSock(client, session, sock)
+		return func() {
+			unstampWindowSock(client, session)
+			_ = client.CancelRemoteForwardSocket(sock, window.DefaultPort)
+			_, _ = client.Run("rm -f -- " + shquote(sock))
+		}
+	}
+}
+
+func stampWindowSock(client *sshx.Client, session, sock string) {
+	_, _ = client.Run(fmt.Sprintf(
+		"tmux set-environment -t %s DUCK_WINDOW_SOCK %s",
+		shquote(session), shquote(sock)))
+}
+
+func unstampWindowSock(client *sshx.Client, session string) {
+	_, _ = client.Run(fmt.Sprintf(
+		"tmux set-environment -u -t %s DUCK_WINDOW_SOCK", shquote(session)))
 }
 
 // shquote single-quotes a value for safe embedding in the hub shell command.
@@ -183,10 +244,15 @@ func osOpen(target string) error {
 // (tests, or before build() wired it) it just runs fn. Centralizing it here
 // keeps runAttachLoop's call site a one-liner.
 func withOpenForwarding(session string, fn func() Outcome) Outcome {
-	if startOpenForwarding == nil {
-		return fn()
+	var stops []func()
+	if startOpenForwarding != nil {
+		stops = append(stops, startOpenForwarding(session))
 	}
-	stop := startOpenForwarding(session)
-	defer stop()
+	if startWindowForwarding != nil {
+		stops = append(stops, startWindowForwarding(session))
+	}
+	for i := len(stops) - 1; i >= 0; i-- {
+		defer stops[i]()
+	}
 	return fn()
 }

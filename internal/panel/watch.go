@@ -1,16 +1,22 @@
 // watch.go is the Bubble Tea program that runs INSIDE the panel's roster
 // pane (`duck panel watch <outer>`): the workspace's citizens as a list.
 //
-// Two modes, deliberately boring:
-//   - BROWSE (default): arrows pick, ←→/⇥ switch tabs, ↵ shows the selected
-//     item in the viewport, x (twice) kills it. Letters do nothing.
+// Two modes:
+//   - BROWSE (default): arrows pick, ←→/⇥ switch tabs, ↵ shows/acts on the
+//     selected item, x (twice) kills it. Some tabs add their own letter
+//     shortcuts — the hint line always shows the active tab's keys:
+//       · item tabs (agents/shells/artifacts/scratchpad): ↵ view · x kill
+//       · ⏰ routines: ↵ card · v run · e edit · f fire
+//       · ⌂ workspaces: ↵ preview · g go · b back · x kill · s scope
 //   - COMMAND: entered by typing `:` or clicking the box. The always-visible
 //     box at the bottom takes over: typing live-filters the list and jumps
-//     by name on ↵; verbs (spawn/edit/preview/render/kill/close/help/ws)
-//     ghost-complete with a hint line saying what ↵ will do. esc returns.
+//     by name on ↵; verbs (new/spawn/edit/preview/render/kill/workspaces/
+//     close/exit/help) ghost-complete with a hint saying what ↵ will do.
+//     esc returns.
 //
-// The last tab is ⌂ ws — the hub's workspaces; ↵ on one switches your
-// terminal there (pure switch-client: the workspace you leave is untouched).
+// On the ⌂ ws tab ↵ only PREVIEWS a workspace (a still capture in the
+// viewport); the explicit switch is `g` (pure switch-client — the workspace
+// you leave is untouched), and `b` returns to the previous one.
 package panel
 
 import (
@@ -63,6 +69,7 @@ var verbs = []struct{ name, usage string }{
 	{"new", ""}, // contextual: usage depends on the active tab (see newUsage)
 	{"spawn", "spawn <cmd…>  — launch an agent"},
 	{"edit", "edit [pad]  — open/create a pad (no name: workspace pad)"},
+	{"rename", "rename <pad> <new>  — rename a scratchpad's .md file"},
 	{"preview", "preview <file|url>  — render in the viewport"},
 	{"render", "render <file|url>  — open in your laptop browser"},
 	{"kill", "kill <name>  — kill an agent/buffer"},
@@ -614,6 +621,14 @@ func (m *watchModel) viewSelected() string {
 	return ""
 }
 
+// renamePad renames a scratchpad's backing .md and relabels its pane.
+func (m *watchModel) renamePad(oldName, newName string) string {
+	if _, err := RenamePad(m.run, m.outer, oldName, newName); err != nil {
+		return err.Error()
+	}
+	return "renamed " + oldName + " → " + newName
+}
+
 // runInput executes the command box's content.
 func (m *watchModel) runInput() string {
 	line := strings.TrimSpace(m.input.Value())
@@ -719,6 +734,11 @@ func (m *watchModel) runInput() string {
 			return err.Error()
 		}
 		return "pad " + name
+	case "rename":
+		if len(f) < 3 {
+			return "rename <pad> <new>"
+		}
+		return m.renamePad(f[1], f[2])
 	case "preview", "render":
 		if len(f) < 2 {
 			return verb + " what?"
@@ -994,6 +1014,31 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.previewWorkspace()
 				return m, nil
 			}
+		case "n": // new: a shell (shells tab) or a pad (scratchpad tab)
+			switch m.tabKind {
+			case KindShell:
+				m.input.SetValue("new")
+				m.lastMsg = m.runInput()
+				m.input.SetValue("")
+				return m, m.load
+			case KindBuffer:
+				// Pads need a name — prefill the command box with `edit ` so the
+				// next keystrokes name the new pad, then ↵ creates it.
+				m.cmdFocus = true
+				m.input.SetValue("edit ")
+				m.input.CursorEnd()
+				return m, m.input.Focus()
+			}
+		case "r": // rename: a pad's .md file (scratchpad tab only)
+			if m.tabKind == KindBuffer {
+				if idx := m.visible(); m.cursor < len(idx) {
+					old := m.agents[idx[m.cursor]].Name
+					m.cmdFocus = true
+					m.input.SetValue("rename " + old + " ")
+					m.input.CursorEnd()
+					return m, m.input.Focus()
+				}
+			}
 		case "x":
 			if m.tabKind == schedTab {
 				m.lastMsg = "retire schedules with: duck routines rm <name>"
@@ -1144,10 +1189,14 @@ func helpLines(m watchModel) []string {
 	h := []string{
 		activeStyle.Render(" this panel = your workspace"),
 		dimStyle.Render(" tabs group what's running; ▶ marks what the big pane shows;"),
-		dimStyle.Render(" ● working  ✔ done  ○ idle · ⌂ ws lists hub workspaces (↵ switches)"),
+		dimStyle.Render(" ● working  ✔ done  ○ idle · ⌂ ws lists hub workspaces"),
 		"",
 		activeStyle.Render(" browsing (default):"),
-		" ↑↓ pick · ←→/⇥ tabs · ↵ view/switch · x x kill · q close",
+		" ↑↓ pick · ←→/⇥ tabs · x x kill · q close",
+		dimStyle.Render(" ↵ acts on the row — and each tab adds its own keys:"),
+		dimStyle.Render("   agents/shells/… : ↵ view"),
+		dimStyle.Render("   ⏰ routines      : ↵ card · v run · e edit · f fire"),
+		dimStyle.Render("   ⌂ workspaces    : ↵ preview · g go · b back · s scope"),
 		"",
 		activeStyle.Render(" commands — press : (or click the box), then type:"),
 	}
@@ -1305,7 +1354,16 @@ func (m watchModel) View() string {
 		if !m.wsScopeProject {
 			scope = "all"
 		}
-		hintLine = dimStyle.Render(" ↵ preview · g go · b back · s scope:" + scope + " · ←→ tabs")
+		hintLine = dimStyle.Render(" ↵ preview · g go · b back · x kill · s scope:" + scope + " · ←→ tabs")
+	case m.tabKind == schedTab:
+		// The routines tab has the app's richest shortcut set (card/run/edit/fire);
+		// advertise them here — the generic default hint would hide v/e/f and
+		// mislead on ↵ (a card, not a "view") and x (rm, not kill).
+		hintLine = dimStyle.Render(" ↵ card · v run · e edit · f fire · ←→ tabs")
+	case m.tabKind == KindShell:
+		hintLine = dimStyle.Render(" ↵ view · n new · x kill · ←→ tabs · q close")
+	case m.tabKind == KindBuffer:
+		hintLine = dimStyle.Render(" ↵ view · n new · r rename · x kill · ←→ tabs")
 	default:
 		hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
 	}

@@ -267,3 +267,50 @@ func TestShowFillerReusesPlaceholderParkedInCompanion(t *testing.T) {
 		t.Errorf("expected respawn of parked placeholder %%7: %v", f.calls)
 	}
 }
+
+// TestRenamePadMovesFileAndRepointsPane: rename moves the .md on disk, relabels
+// the live pane, and refuses to clobber an existing pad.
+func TestRenamePadMovesFileAndRepointsPane(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	padDir := filepath.Join(home, ".duck", "scratchpad")
+	if err := os.MkdirAll(padDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(padDir, "notes.md")
+	if err := os.WriteFile(old, []byte("# notes\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// fakeRunner: no @duck_dir (PadRoot → flat pad), and one live pad pane named
+	// "notes" so the repoint path fires.
+	f := &fakeRunner{out: map[string]string{
+		agentsKey("work"):        "%3\tnotes\tscratchpad\t\t\tbash\t\n",
+		agentsKey("work-agents"): "",
+		rolesKey:                 "%3\tviewport\n",
+	}}
+	newPath, err := RenamePad(f.run, "work", "notes", "journal")
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if fileExists(old) {
+		t.Error("old pad file should be gone")
+	}
+	if !fileExists(newPath) {
+		t.Errorf("new pad file %s should exist", newPath)
+	}
+	b, _ := os.ReadFile(newPath)
+	if string(b) != "# notes\n\nbody\n" {
+		t.Errorf("content should survive the move, got %q", b)
+	}
+	if !f.called("set-option -p -t %3 @duck_name journal") {
+		t.Errorf("pane should be relabeled to the new name: %v", f.calls)
+	}
+	// Refuse to clobber: renaming onto an existing pad fails, source intact.
+	os.WriteFile(filepath.Join(padDir, "taken.md"), []byte("x"), 0o644)
+	if _, err := RenamePad(f.run, "work", "journal", "taken"); err == nil {
+		t.Error("rename onto an existing pad must fail")
+	}
+	if !fileExists(newPath) {
+		t.Error("failed rename must leave the source pad intact")
+	}
+}
