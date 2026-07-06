@@ -1,10 +1,10 @@
 # duck workflows — deterministic fan-out over headless codex fleets
 
 Status: IMPLEMENTED (2026-07-05, internal/workflow + command/workflows.go +
-sidecar `workflow` tool + roster section; validated live on deepseek-flash).
+sidecar `workflow` tool + roster section).
 Deltas from the original design, discovered while building:
-  - codex exec's native `--output-schema` is SILENTLY IGNORED by the
-    cross-provider deepseek profile (validated empirically) — so the schema
+  - codex exec's native `--output-schema` is SILENTLY IGNORED by
+    cross-provider profiles (validated empirically) — so the schema
     is also inlined into the prompt and the reply is parsed here, with up to
     two `codex exec resume` nudges on mismatch. The flag is still passed
     (enforced on gpt tiers).
@@ -89,7 +89,7 @@ Runner: a new `internal/workflow` package. goja for the script VM;
 `agent()` bridges to a Go scheduler. Concurrency: workers are light
 headless processes, not contexts on the local box, so the cap is NOT
 ultracode's min(16, cores) — the real ceiling is provider throughput
-(Moon Bridge for deepseek, OpenAI rate limits for gpt tiers). Start at
+(OpenAI rate limits for gpt tiers). Start at
 ~64 with a per-run `concurrency` knob, measure Moon Bridge under load,
 raise from there. Lifetime cap (~1000) stays as a runaway backstop.
 
@@ -100,7 +100,7 @@ Each `agent()` call runs:
 ```
 codex exec --json -o <dir>/last-message.json \
   [--output-schema <dir>/schema.json] \
-  [-p deepseek] [-m <alias>] -C <cwd> --skip-git-repo-check <prompt>
+  [-m <alias>] -C <cwd> --skip-git-repo-check <prompt>
 ```
 
 - `--json` JSONL on stdout is the per-worker journal: token counts, tool
@@ -108,10 +108,10 @@ codex exec --json -o <dir>/last-message.json \
 - `--output-schema` gives native StructuredOutput. Fallback for tiers that
   fumble it: validate, then `codex exec resume <id>` with a "return ONLY
   valid JSON for this schema" nudge, twice, then `null`.
-- Default model tier: **deepseek-flash via Moon Bridge** (`-p deepseek`) —
-  finders, transforms, mechanical stages. Per-call `model` opt-up to the
-  gpt default for judge/verify/synthesis stages. Same alias resolution as
-  spawn (`internal/agent/model.go`).
+- Default model tier: **gpt-5.5** (the codex config default). Per-call
+  `model`/`effort` opt-down to gpt-5.4-mini low-effort for finders,
+  transforms, and mechanical stages. Same alias resolution as spawn
+  (`internal/agent/model.go`).
 - Sandbox: `-s read-only` unless the script marks a stage `write: true`
   (then `workspace-write` in an isolated worktree — mirror of ultracode's
   worktree isolation; design later, read-only covers the audit/review/
@@ -173,8 +173,5 @@ journal let a human post-mortem any worker via the normal rollout files
 - Budget source: ultracode has a user "+500k" directive; duck's nearest
   analog is a `--budget` arg on the tool call. Default uncapped-with-report
   or a soft default (e.g. 2M tokens) that the digest flags when hit?
-- Concurrency vs. Moon Bridge throughput: dozens of parallel deepseek
-  streams through one Docker proxy is untested — measure, then tune the
-  ~64 default up or down.
 - Named/saved workflows (`~/.duck/workflows/lib/*.js`) — probably wanted
   the first time a workflow gets reused; punt until then.

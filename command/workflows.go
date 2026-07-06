@@ -1,6 +1,6 @@
 // `duck workflows` — deterministic multi-agent runs (DESIGN: docs/WORKFLOWS.md).
 // A workflow is a JS script fanning out over disposable headless codex
-// executors (deepseek-flash by default); the run — not its workers — is the
+// executors; the run — not its workers — is the
 // visible, addressable thing.
 //
 //	duck workflows                     list this workspace's runs (--all: every run)

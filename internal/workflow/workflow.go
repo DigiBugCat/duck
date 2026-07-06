@@ -2,7 +2,7 @@
 // (DESIGN: docs/WORKFLOWS.md): the manager writes a small JS script whose
 // control flow (loops, pipelines, barriers) is plain code, and each agent()
 // call inside it runs ONE disposable headless executor (`codex exec`,
-// deepseek-flash by default). Workers are processes, not panes — they never
+// the codex gpt default). Workers are processes, not panes — they never
 // enter the sidebar lot, the ledger, or the org chart. The RUN is the
 // addressable thing: it owns a run dir with the script, a journal (resume),
 // a status file (roster/CLI visibility), and the result.

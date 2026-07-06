@@ -96,7 +96,7 @@ func init() {
 	spawnCmd.Flags().StringVarP(&spawnPrompt, "prompt", "p", "", "first turn to deliver once the agent is ready (one-call spawn+send)")
 	spawnCmd.Flags().StringVar(&spawnResume, "resume", "", "resume a codex session by id — same conversation, same session id (a durable handle)")
 	spawnCmd.Flags().StringVar(&spawnFork, "fork", "", "fork a codex session by id — a new session that inherits the parent's context (cheap fan-out)")
-	spawnCmd.Flags().StringVarP(&spawnModel, "model", "m", "", "model for a codex agent (e.g. deepseek, deepseek-flash, gpt-5.4); default = codex config default (gpt-5.5)")
+	spawnCmd.Flags().StringVarP(&spawnModel, "model", "m", "", "model for a codex agent (e.g. gpt-5.4, gpt-5.4-mini); default = codex config default (gpt-5.5)")
 	spawnCmd.Flags().StringVar(&spawnEffort, "effort", "", "reasoning effort for a codex agent (low|medium|high); default = codex config default")
 	rootCmd.AddCommand(spawnCmd)
 }

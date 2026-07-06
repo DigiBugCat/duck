@@ -83,7 +83,7 @@ Fields (v1): `trigger = "cron" | "heartbeat" | "manual"`,
 executor; manager = the rare scheduled turn to claude, e.g. daily digest),
 `report = "digest" (default) | "none"`, `model`/`effort` (executor model
 alias + reasoning effort; target=run only, and CODEX-NATIVE aliases only —
-gpt-5.4-mini etc. Cross-provider models (deepseek via Moon Bridge) are a
+gpt-5.4-mini etc. Cross-provider models (via codex profiles) are a
 deliberate per-spawn choice, never a standing unattended duty).
 
 Clock semantics: cron schedules are evaluated in **America/Los_Angeles**

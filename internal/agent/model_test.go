@@ -9,7 +9,13 @@ import (
 // --profile (+ a catalog model override), same-provider aliases inject only
 // -c model=, the default injects nothing, effort is orthogonal, non-codex argv
 // is untouched, and a caller-set flag is never double-injected.
+//
+// No shipped alias is cross-provider today, so the profile mechanism is pinned
+// via a test-local alias.
 func TestWithModel(t *testing.T) {
+	models["test-remote"] = modelSpec{Profile: "remote", Model: "remote-pro"}
+	defer delete(models, "test-remote")
+
 	cases := []struct {
 		name   string
 		in     []string
@@ -19,22 +25,20 @@ func TestWithModel(t *testing.T) {
 	}{
 		{"default empty", []string{"codex"}, "", "", "codex"},
 		{"gpt-5.5 is the default → no inject", []string{"codex"}, "gpt-5.5", "", "codex"},
-		{"deepseek → profile + catalog model", []string{"codex"}, "deepseek", "",
-			`codex --profile deepseek -c model="deepseek-v4-pro"`},
-		{"deepseek-flash → flash catalog model", []string{"codex"}, "deepseek-flash", "",
-			`codex --profile deepseek -c model="deepseek-v4-flash"`},
+		{"cross-provider → profile + catalog model", []string{"codex"}, "test-remote", "",
+			`codex --profile remote -c model="remote-pro"`},
 		{"same-provider variant → model override only", []string{"codex"}, "gpt-5.4", "",
 			`codex -c model="gpt-5.4"`},
 		{"effort alone", []string{"codex"}, "", "high",
 			`codex -c model_reasoning_effort="high"`},
-		{"model + effort", []string{"codex"}, "deepseek", "low",
-			`codex --profile deepseek -c model="deepseek-v4-pro" -c model_reasoning_effort="low"`},
-		{"exec inserts after subcommand", []string{"codex", "exec", "do it"}, "deepseek", "",
-			`codex exec --profile deepseek -c model="deepseek-v4-pro" do it`},
-		{"non-codex untouched", []string{"cargo", "watch"}, "deepseek", "high", "cargo watch"},
-		{"caller-set --profile wins", []string{"codex", "--profile", "mine"}, "deepseek", "",
+		{"model + effort", []string{"codex"}, "gpt-5.4-mini", "low",
+			`codex -c model="gpt-5.4-mini" -c model_reasoning_effort="low"`},
+		{"exec inserts after subcommand", []string{"codex", "exec", "do it"}, "gpt-5.4", "",
+			`codex exec -c model="gpt-5.4" do it`},
+		{"non-codex untouched", []string{"cargo", "watch"}, "gpt-5.4", "high", "cargo watch"},
+		{"caller-set --profile wins", []string{"codex", "--profile", "mine"}, "test-remote", "",
 			// still injects the catalog model (only --profile was caller-set), not a second profile
-			`codex -c model="deepseek-v4-pro" --profile mine`},
+			`codex -c model="remote-pro" --profile mine`},
 		{"caller-set effort not doubled", []string{"codex", "-c", "model_reasoning_effort=medium"}, "", "high",
 			"codex -c model_reasoning_effort=medium"},
 	}
@@ -61,11 +65,11 @@ func TestDefaultArgs(t *testing.T) {
 		effort string
 		want   []string
 	}{
-		{"empty + model → codex", nil, "deepseek", "", []string{"codex"}},
+		{"empty + model → codex", nil, "gpt-5.4", "", []string{"codex"}},
 		{"empty + effort → codex", nil, "", "high", []string{"codex"}},
 		{"empty, no knobs → shell (unchanged)", nil, "", "", nil},
-		{"explicit command wins over model", []string{"htop"}, "deepseek", "", []string{"htop"}},
-		{"explicit codex unchanged", []string{"codex", "exec", "x"}, "deepseek", "", []string{"codex", "exec", "x"}},
+		{"explicit command wins over model", []string{"htop"}, "gpt-5.4", "", []string{"htop"}},
+		{"explicit codex unchanged", []string{"codex", "exec", "x"}, "gpt-5.4", "", []string{"codex", "exec", "x"}},
 	}
 	for _, c := range cases {
 		got := defaultArgs(c.args, c.model, c.effort)

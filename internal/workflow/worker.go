@@ -28,9 +28,10 @@ import (
 // codexBin is the executor binary — a var so tests substitute a stub.
 var codexBin = "codex"
 
-// DefaultModel is the worker tier when an agent() call names none: the cheap
-// mechanical executor. Judge/verify stages opt up per call.
-const DefaultModel = "deepseek-flash"
+// DefaultModel is the worker tier when an agent() call names none: the codex
+// gpt default. Scripts opt down to cheaper gpt tiers (e.g. gpt-5.4-mini) per
+// call when mechanical work warrants it.
+const DefaultModel = "gpt-5.5"
 
 // schemaRetries is how many resume-nudges a schema mismatch gets.
 const schemaRetries = 2

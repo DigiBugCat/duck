@@ -1,5 +1,5 @@
 // Model/effort selection for spawned codex agents. Callers pass a duck-level
-// model ALIAS (e.g. "deepseek", "gpt-5.4") plus an optional reasoning effort;
+// model ALIAS (e.g. "gpt-5.4") plus an optional reasoning effort;
 // this file maps that to the right codex mechanism and injects it into the argv.
 //
 // Two distinct codex levers hide behind one alias, which is the whole point of
@@ -29,16 +29,10 @@ type modelSpec struct {
 	Model   string // → -c model="<Model>"  (empty = profile/config default)
 }
 
-// models is the curated alias table. Keep entries in sync with the codex
-// profiles that actually exist in ~/.codex (deepseek.config.toml) and the gpt
-// models the default provider serves. Adding a provider = add a profile file +
-// a row here.
+// models is the curated alias table. Keep entries in sync with the gpt models
+// the default provider serves. Adding a provider = add a codex profile file +
+// a row here with Profile set.
 var models = map[string]modelSpec{
-	// DeepSeek V4 via the Moon Bridge proxy (see deepseek.config.toml).
-	"deepseek":       {Profile: "deepseek", Model: "deepseek-v4-pro"},
-	"deepseek-pro":   {Profile: "deepseek", Model: "deepseek-v4-pro"},
-	"deepseek-flash": {Profile: "deepseek", Model: "deepseek-v4-flash"},
-
 	// Default OpenAI provider — variant models via a plain model override.
 	// "gpt-5.5" is the config default → no override (empty modelSpec).
 	"gpt-5.5":            {},
