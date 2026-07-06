@@ -211,10 +211,75 @@ func (m *watchModel) switchTab(kind string) {
 	if n := len(m.visible()); m.cursor >= n { // list shrank while we were away
 		m.cursor = 0
 	}
-	if m.tabKind == schedTab || m.tabKind == wsTab || len(m.visible()) == 0 {
+	if m.tabKind == schedTab {
+		return
+	}
+	if m.tabKind == wsTab {
+		m.previewWorkspace()
+		return
+	}
+	if len(m.visible()) == 0 {
+		_ = ShowEmpty(m.run, m.outer, m.tabKind)
 		return
 	}
 	m.viewSelected()
+}
+
+// previewWorkspace shows a still snapshot of the workspace under the cursor on
+// the ⌂ ws tab — a colored capture of its main pane, so you can read what a
+// workspace is before switching to it. The current workspace previews itself
+// (harmless); an empty tab is a no-op.
+func (m *watchModel) previewWorkspace() {
+	idx := m.visible()
+	if m.cursor >= len(idx) {
+		return
+	}
+	w := m.workspaces[idx[m.cursor]]
+	_ = ShowWorkspacePreview(m.run, m.outer, w.Display, w.MainPane)
+}
+
+// goWorkspace commits the switch: teleport the terminal to the highlighted
+// workspace on the ⌂ ws tab. This is the explicit action (`g`) — arrow/Enter
+// only preview. No-op on the current workspace.
+func (m *watchModel) goWorkspace() string {
+	if m.tabKind != wsTab {
+		return ""
+	}
+	idx := m.visible()
+	if m.cursor >= len(idx) {
+		return ""
+	}
+	w := m.workspaces[idx[m.cursor]]
+	if w.Current {
+		return "already here"
+	}
+	// Restore the real viewport before leaving — the destination client must
+	// not inherit our hidden filler pane swapped into the slot.
+	RestoreViewport(m.run, m.outer)
+	self, _ := os.Executable()
+	if err := SwitchTo(m.run, m.outer, w.Name, self); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// backWorkspace returns to the previously-connected workspace via tmux's own
+// last-session (`switch-client -l`) — no self-tracked state, which would
+// evaporate anyway since the roster reinits per workspace.
+func (m *watchModel) backWorkspace() string {
+	RestoreViewport(m.run, m.outer)
+	out, err := m.run("list-clients", "-t", m.outer, "-F", "#{client_name}")
+	if err != nil {
+		return err.Error()
+	}
+	client := strings.TrimSpace(strings.Split(strings.TrimSpace(out), "\n")[0])
+	if client == "" {
+		return "no client"
+	}
+	if _, err := m.run("switch-client", "-c", client, "-l"); err != nil {
+		return "no previous workspace"
+	}
+	return ""
 }
 
 // filterText is the box content when it should act as a live filter.
@@ -416,14 +481,9 @@ func (m *watchModel) viewSelected() string {
 		return "fired " + r.Name
 	}
 	if m.tabKind == wsTab {
-		w := m.workspaces[idx[m.cursor]]
-		if w.Current {
-			return "already here"
-		}
-		self, _ := os.Executable()
-		if err := SwitchTo(m.run, m.outer, w.Name, self); err != nil {
-			return err.Error()
-		}
+		// Preview only — actually switching is the explicit `g` (go). Enter and
+		// click on a ws row bring its snapshot into the viewport, never teleport.
+		m.previewWorkspace()
 		return ""
 	}
 	wid := m.agents[idx[m.cursor]].PaneID
@@ -729,11 +789,17 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.armedKill = ""
 			if m.cursor > 0 {
 				m.cursor--
+				if m.tabKind == wsTab {
+					m.previewWorkspace()
+				}
 			}
 		case "down", "j":
 			m.armedKill = ""
 			if m.cursor < len(m.visible())-1 {
 				m.cursor++
+				if m.tabKind == wsTab {
+					m.previewWorkspace()
+				}
 			}
 		case "left", "shift+tab", "h":
 			m.cycleTab(-1)
@@ -742,6 +808,16 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.lastMsg = m.viewSelected()
 			return m, m.load
+		case "g": // go: commit switch to the highlighted workspace (ws tab only)
+			if m.tabKind == wsTab {
+				m.lastMsg = m.goWorkspace()
+				return m, m.load
+			}
+		case "b": // back: return to the previously-connected workspace
+			if m.tabKind == wsTab {
+				m.lastMsg = m.backWorkspace()
+				return m, m.load
+			}
 		case "x":
 			if m.tabKind == schedTab {
 				m.lastMsg = "retire schedules with: duck routines rm <name>"
@@ -985,6 +1061,8 @@ func (m watchModel) View() string {
 		hintLine = dimStyle.Render(" " + hint)
 	case m.cmdFocus:
 		hintLine = dimStyle.Render(" type a name or a verb · esc back · help for the guide")
+	case m.tabKind == wsTab:
+		hintLine = dimStyle.Render(" ↵ preview · g go · b back · ←→ tabs · q close")
 	default:
 		hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
 	}

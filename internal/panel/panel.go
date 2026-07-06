@@ -85,6 +85,7 @@ const (
 	PromptOption    = "@duck_last_prompt" // codex turn id of the last submitted prompt (Send submit-confirm)
 	CmdOption       = "@duck_cmd"        // spawn cmdline (channel pairing eligibility)
 	anchorOption    = "@duck_anchor"     // the lot's immortal keep-alive pane
+	placeholderOpt  = "@duck_placeholder" // the reusable "nothing here yet" viewport filler
 )
 
 // Kinds are ROSTER TAB NAMES, stored per pane in kindOption. The base set
@@ -690,6 +691,104 @@ func Select(run Runner, outer, paneID string) error {
 	return nil
 }
 
+// centerScript builds a shell one-liner that centers a single already-quoted
+// line in the pane (both axes) and redraws it whenever the pane is resized —
+// SIGWINCH fires when the placeholder is swapped from the lot into the larger
+// viewport, so it re-centers there instead of at the lot size it was born at.
+func centerScript(quotedMsg string) string {
+	body := `msg=` + quotedMsg + `; draw() { c=$(tput cols); r=$(tput lines); ` +
+		`len=${#msg}; col=$(( (c - len) / 2 )); [ $col -lt 0 ] && col=0; row=$(( r / 2 )); ` +
+		`clear; tput cup $row $col 2>/dev/null; printf '%s' "$msg"; }; ` +
+		`trap draw WINCH; draw; while :; do sleep 3600; done`
+	return "sh -c " + paths.Quote(body)
+}
+
+// ShowEmpty puts a "nothing here yet" placeholder on display — used when a tab
+// has no items, so the viewport says so instead of stranding the previous
+// tab's occupant.
+func ShowEmpty(run Runner, outer, label string) error {
+	return showFiller(run, outer, centerScript(paths.Quote("no "+label+" yet")))
+}
+
+// RestoreViewport swaps the default terminal back on display if the reusable
+// filler (empty/ws-preview) pane currently occupies the viewport slot. Called
+// before committing a workspace switch so the destination client never inherits
+// a stale preview. A no-op when the slot already holds a real occupant.
+func RestoreViewport(run Runner, outer string) {
+	roles, err := Panes(run, outer)
+	if err != nil {
+		return
+	}
+	slot := roles["viewport"]
+	if slot == "" {
+		return
+	}
+	if v, _ := run("show-options", "-p", "-t", slot, "-v", placeholderOpt); strings.TrimSpace(v) == "" {
+		return // a real pane is on display; nothing to restore
+	}
+	// Find the default terminal (name=terminal) and put it back on display.
+	for _, a := range func() []Agent { as, _ := Agents(run, outer); return as }() {
+		if a.Name == "terminal" {
+			_ = Select(run, outer, a.PaneID)
+			return
+		}
+	}
+}
+
+// ShowWorkspacePreview snapshots another workspace's main pane (colored text,
+// via capture-pane) and shows it in the placeholder viewport — a still preview
+// of that workspace as the human arrows across the ⌂ ws tab. `mainPane` is the
+// target's main (non-panel) pane id; empty renders a "no preview" message.
+func ShowWorkspacePreview(run Runner, outer, wsName, mainPane string) error {
+	if mainPane == "" {
+		return showFiller(run, outer, centerScript(paths.Quote("no preview for "+wsName)))
+	}
+	// capture-pane -e keeps ANSI colors, -p writes to stdout, -J joins wrapped
+	// lines. The placeholder runs it live so a resize re-captures at viewport
+	// size; a header names the workspace so the still is unambiguous.
+	cap := "tmux capture-pane -ep -t " + paths.Quote(mainPane)
+	body := `draw() { clear; printf '\033[7m ⌂ %s \033[0m\n\n' ` + paths.Quote(wsName) +
+		`; ` + cap + ` 2>/dev/null; }; trap draw WINCH; draw; while :; do sleep 3600; done`
+	return showFiller(run, outer, "sh -c "+paths.Quote(body))
+}
+
+// showFiller ensures the single reusable placeholder pane exists (roster-hidden
+// via anchorOption, findable via placeholderOpt), (re)runs it with the given
+// full tmux command, and swaps it on display. Reused across ShowEmpty and
+// ShowWorkspacePreview so there is at most one filler pane per workspace.
+func showFiller(run Runner, outer, cmd string) error {
+	comp, err := EnsureCompanion(run, outer, "")
+	if err != nil {
+		return err
+	}
+	// Find an existing placeholder anywhere in the sidebar sessions.
+	var pid string
+	if out, err := run("list-panes", "-s", "-t", outer, "-F", "#{pane_id}\t#{"+placeholderOpt+"}"); err == nil {
+		for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			f := strings.SplitN(line, "\t", 2)
+			if len(f) == 2 && strings.TrimSpace(f[1]) != "" {
+				pid = f[0]
+				break
+			}
+		}
+	}
+	if pid == "" {
+		id, err := run("split-window", "-d", "-t", comp+":lot", "-P", "-F", "#{pane_id}", cmd)
+		if err != nil {
+			return err
+		}
+		pid = strings.TrimSpace(id)
+		_, _ = run("set-option", "-p", "-t", pid, anchorOption, "1")
+		_, _ = run("set-option", "-p", "-t", pid, placeholderOpt, "1")
+		_, _ = run("select-layout", "-t", comp+":lot", "tiled")
+	} else {
+		// Reuse: respawn with the fresh command (the pane may be parked or, if
+		// already on display, respawn-pane rewrites it in place).
+		_, _ = run("respawn-pane", "-k", "-t", pid, cmd)
+	}
+	return Select(run, outer, pid)
+}
+
 // Kill terminates an agent pane. If it is currently on display, the terminal
 // (or any parked pane) is NOT auto-promoted — the slot pane dies and Open
 // recreates it on the next panel/spawn; killing parked panes is invisible.
@@ -870,6 +969,7 @@ func dedupeRoles(run Runner, outer string, roles map[string]string) {
 type Workspace struct {
 	Name     string // internal tmux id (the switch target)
 	Display  string // resolved display name (user ▸ pane title ▸ codex ▸ dir)
+	MainPane string // first non-panel pane id (for the ⌂ ws preview snapshot)
 	Attached bool
 	Current  bool
 }
@@ -885,6 +985,7 @@ func Workspaces(run Runner, outer string) ([]Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
+	mains := mainPanes(run)
 	myProj := ProjectName(run, outer)
 	doc, _ := names.NewStore(shellRunner{}).Load() // display names; empty doc on any error
 	var ws []Workspace
@@ -912,6 +1013,7 @@ func Workspaces(run Runner, outer string) ([]Workspace, error) {
 		ws = append(ws, Workspace{
 			Name:     f[0],
 			Display:  names.Resolve(doc, f[0], dir, managerTitles[f[0]]),
+			MainPane: mains[f[0]],
 			Attached: f[1] != "0" && f[1] != "",
 			Current:  f[0] == outer,
 		})
@@ -946,6 +1048,34 @@ func managerPaneTitles(run Runner) (map[string]string, error) {
 		}
 	}
 	return titles, nil
+}
+
+// mainPanes maps each session to its main pane: the first pane carrying no
+// panel role (the human's working pane, same anchor ProjectName/manager use).
+// Best-effort — a session missing from the map just gets no preview.
+func mainPanes(run Runner) map[string]string {
+	out, err := run("list-panes", "-a", "-F", "#{session_name}\t#{pane_id}\t#{"+roleOption+"}")
+	if err != nil {
+		return map[string]string{}
+	}
+	mains := map[string]string{}
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		f := strings.SplitN(line, "\t", 3)
+		if len(f) < 2 {
+			continue
+		}
+		if _, ok := mains[f[0]]; ok {
+			continue // first unstamped pane wins
+		}
+		role := ""
+		if len(f) == 3 {
+			role = strings.TrimSpace(f[2])
+		}
+		if role == "" {
+			mains[f[0]] = f[1]
+		}
+	}
+	return mains
 }
 
 // shellRunner adapts the names.Store Runner (shell-string commands) to
