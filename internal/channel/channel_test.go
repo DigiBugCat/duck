@@ -952,8 +952,11 @@ func TestSendConfirmsViaRollout(t *testing.T) {
 // fakeHost records calls for the action-tool tests.
 type fakeHost struct{ last string }
 
-func (f *fakeHost) Launch(ws string, argv []string, name, tab, prompt string) (string, string, error) {
+func (f *fakeHost) Launch(ws string, argv []string, name, tab, prompt, model, effort string) (string, string, error) {
 	f.last = "launch"
+	if model != "" || effort != "" {
+		f.last = "launch:" + model + "/" + effort
+	}
 	return "%9", "sid-new", nil
 }
 func (f *fakeHost) Resume(ws, id, prompt string) (string, string, error) {

@@ -50,7 +50,7 @@ const maxPush = 2000
 // laptop browser. Routines: list/fire the workspace's scheduled executors.
 // workspace is the outer duck session the action targets.
 type Host interface {
-	Launch(workspace string, argv []string, name, tab, prompt string) (paneID, sessionID string, err error)
+	Launch(workspace string, argv []string, name, tab, prompt, model, effort string) (paneID, sessionID string, err error)
 	Resume(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
 	Fork(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
 
@@ -217,21 +217,31 @@ func (s *server) tools() []tool {
 	ts = append(ts,
 		tool{
 			name:        "spawn",
-			description: "Launch a codex agent into this workspace's sidebar (a durable, human-watchable TUI pane) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
+			description: "Launch a codex agent into this workspace's sidebar (a durable, human-watchable TUI pane) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (e.g. deepseek for DeepSeek V4, a cheaper executor) and reasoning effort. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
 			schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"prompt": map[string]any{"type": "string", "description": "first task to hand the agent (recommended — triggers its first turn so the session id binds)"},
 					"name":   map[string]any{"type": "string", "description": "optional roster label (default: a unique codex-N)"},
 					"tab":    map[string]any{"type": "string", "description": "optional roster tab"},
+					"model": map[string]any{
+						"type":        "string",
+						"description": "optional model for this agent (default: the codex config default, gpt-5.5). Use deepseek/deepseek-flash to run on DeepSeek V4 via Moon Bridge, or a gpt alias.",
+						"enum":        []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "deepseek", "deepseek-pro", "deepseek-flash"},
+					},
+					"effort": map[string]any{
+						"type":        "string",
+						"description": "optional reasoning effort for this agent (default: the codex config default)",
+						"enum":        []string{"low", "medium", "high"},
+					},
 				},
 			},
 			handler: func(raw json.RawMessage) (string, error) {
-				var a struct{ Prompt, Name, Tab string }
+				var a struct{ Prompt, Name, Tab, Model, Effort string }
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				pane, sess, err := s.host.Launch(ws, []string{"codex"}, a.Name, a.Tab, a.Prompt)
+				pane, sess, err := s.host.Launch(ws, []string{"codex"}, a.Name, a.Tab, a.Prompt, a.Model, a.Effort)
 				if err != nil {
 					return "", err
 				}

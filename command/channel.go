@@ -175,8 +175,8 @@ func (mcpHost) launch(workspace string, spec agentpkg.Spec) (string, string, err
 	return res.PaneID, res.SessionID, nil
 }
 
-func (h mcpHost) Launch(workspace string, argv []string, name, tab, prompt string) (string, string, error) {
-	return h.launch(workspace, agentpkg.Spec{Args: argv, Name: name, Tab: tab, Prompt: prompt})
+func (h mcpHost) Launch(workspace string, argv []string, name, tab, prompt, model, effort string) (string, string, error) {
+	return h.launch(workspace, agentpkg.Spec{Args: argv, Name: name, Tab: tab, Prompt: prompt, Model: model, Effort: effort})
 }
 func (h mcpHost) Resume(workspace, sessionID, prompt string) (string, string, error) {
 	return h.launch(workspace, agentpkg.Spec{Args: agentpkg.ResumeArgs(sessionID), Prompt: prompt})

@@ -18,8 +18,12 @@ default viewport.
   server and opens in the human's laptop browser.
 - `duck edit <name|file>` — open a pad/file in micro; pads are a live
   human⇄agent surface (your writes appear in their open editor).
-- `duck spawn [-n name] <cmd...>` — launch a process into the sidebar
-  (agents/shells), NOT for showing content — use preview/render for that.
+- `duck spawn [-n name] [-m model] <cmd...>` — launch a process into the
+  sidebar (agents/shells), NOT for showing content — use preview/render for
+  that. `-m` picks a codex agent's model: `deepseek`/`deepseek-flash` run on
+  DeepSeek V4 (a cheaper executor, via Moon Bridge), else the gpt default;
+  `--effort low|medium|high` sets reasoning effort. Same knobs on the spawn
+  MCP tool (`model`, `effort`).
 - `duck snap` — human-side screenshot capture (arrives on the hub).
 
 ## Routing rules

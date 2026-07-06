@@ -172,6 +172,8 @@ type Spec struct {
 	Name   string   // roster label; "" → derived + made unique
 	Tab    string   // roster tab; "" → agents (or shells for a bare arg-less spawn)
 	Prompt string   // optional first turn, delivered after the composer is ready
+	Model  string   // optional model alias (see model.go); "" → codex config default
+	Effort string   // optional reasoning effort (low|medium|high); "" → codex default
 }
 
 // Result is the receipt of a launch: the pane id (instant, stable handle) and,
@@ -196,7 +198,18 @@ func Launch(run panel.Runner, outer, dir, duckBin string, spec Spec) (Result, er
 	if err := panel.Open(run, outer, comp, duckBin); err != nil {
 		return Result{}, err
 	}
-	args := Wire(spec.Args)
+	// Model/effort are codex-only concepts (see defaultArgs): setting one with no
+	// command means "a codex agent on this model", not a bare shell. Runs before
+	// the name/kind/injector logic below, all of which key off spec.Args.
+	spec.Args = defaultArgs(spec.Args, spec.Model, spec.Effort)
+	// Model/effort selection is applied BEFORE Wire so its injected -c/--profile
+	// flags sit at the same subcommand insertion point as the rest. An unknown
+	// alias fails the spawn loudly rather than launching the wrong model.
+	selected, err := WithModel(spec.Args, spec.Model, spec.Effort)
+	if err != nil {
+		return Result{}, err
+	}
+	args := Wire(selected)
 	quoted := make([]string, len(args))
 	for i, a := range args {
 		quoted[i] = paths.Quote(a)
