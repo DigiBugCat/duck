@@ -46,16 +46,19 @@ collision bug: two projects named `web` share pads).
   a project can locally ignore `.duck/scratchpad/` if it wants private scratch.
 
 ## ROUTINES
-- DEFINITIONS → `<sync-root>/.duck/routines/<name>.toml` + `.md` (project content,
-  synced, alongside pads). Matches docs/routines-design.html's original intent;
-  the impl drifted to workspace-owned `~/.duck/routines/<workspace>/`.
+- DEFINITIONS → `<sync-root>/.duck/routines/<workspace>/<name>.toml` + `.md`
+  (project content, synced, alongside pads) — but WORKSPACE-owned within the
+  project: several workspaces (teams) on one repo each keep their own routines
+  and separate fire history, so the def path is namespaced by workspace.
 - HUB INDEX (new, hub-local): `~/.duck/routines-projects.json` listing each
   project sync-root that has routines (+ preferred manager workspace). The tick
   CANNOT scan the whole filesystem for `.duck/routines`; it reads the index, then
   loads each project's defs. `add`/`rm` update the index.
 - FIRE-STATE stays hub-local (`~/.duck/routines-state.json`) but RE-KEYED from
-  `workspace+name` to `sync-root+name` (matches the new def location). state.go:47
-  `Key()` changes.
+  `workspace+name` to `sync-root+workspace+name` — 3-part, because defs live
+  per-project AND stay workspace-owned, so multiple workspaces on one project
+  keep SEPARATE fire history (sync-root+name alone could not). state.go `Key()`
+  changes.
 - REPORTS/SPOOLS stay hub-local (delivery queues, not content) — unchanged.
 
 ## Order (green suite each step)

@@ -6,9 +6,10 @@
 // filesystem. The index provides that: a hub-local list of the project sync
 // roots that carry routines, written by `add`/`rm` and read by the tick.
 //
-// This file is ADDITIVE — it introduces the new location + index without
-// changing tick/add/fire behavior yet; the cutover wires callers over in a
-// separate, isolated step so the live scheduler is never half-migrated.
+// The cutover is DONE: add() calls IndexAdd on write, rm() calls IndexRemove
+// once a root's last routine (across all its workspaces) is gone, and the tick's
+// AllWorkspaces() enumerates via LoadIndex. This index is also the future
+// machine-wide "what automations run here" roll-up.
 package routines
 
 import (

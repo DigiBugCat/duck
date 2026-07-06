@@ -2,14 +2,16 @@
 // description (DESIGN: docs/ROUTINES.md) — and computes due-ness against the
 // clock. A workspace is a manager (claude in the main pane) with a flock of
 // executors; its routines are what those employees do on a schedule. A
-// routine is a pair of files under ~/.duck/routines/<workspace>/:
+// routine is a pair of files under <project-sync-root>/.duck/routines/<workspace>/:
 // <name>.toml (trigger + target + overrides) and <name>.md (the prompt, the
-// actual job description). Stored hub-side, owned by the workspace — NOT the
-// project dir — so several workspaces on one repo each keep their own duties,
-// and fires/reports land exactly where they were scheduled. Parsing and
-// firing are deliberately split: this file owns LoadWorkspace (files -> Def)
-// and Due (Def + clock -> bool); the tick loop, state persistence, and pane
-// creation live elsewhere.
+// actual job description). Stored as PROJECT CONTENT (synced + versioned
+// alongside pads under the same .duck/), but OWNED by the workspace and fired
+// there — so several workspaces on one repo each keep their own duties, and
+// fires/reports land exactly where they were scheduled. The hub keeps only the
+// last-fire state and a project index (both under ~/.duck), never the defs.
+// Parsing and firing are deliberately split: this file owns LoadWorkspace
+// (files -> Def) and Due (Def + clock -> bool); the tick loop, state
+// persistence, and pane creation live elsewhere.
 package routines
 
 import (
@@ -22,6 +24,9 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/robfig/cron/v3"
+
+	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/DigiBugCat/duck/internal/paths"
 )
 
 // Trigger selects what makes a routine due.
@@ -44,6 +49,7 @@ const (
 // Def is one parsed routine definition.
 type Def struct {
 	Name      string // file basename without .toml
+	Root      string // covering project sync-root (tilde-form) the def was loaded from
 	Workspace string // owning workspace (tmux session name) it was loaded from
 	Trigger   Trigger
 	Schedule  string        // cron expression, required when Trigger==cron
@@ -66,55 +72,127 @@ type rawDef struct {
 	Report   string `toml:"report"`
 }
 
-// Home returns the workspace-routines root: $DUCK_HOME/routines (or
-// ~/.duck/routines). Each subdirectory is one workspace's job description.
-func Home() (string, error) {
-	d, err := dir()
+// SyncRootFn resolves the longest mutagen sync root covering a workspace's dir
+// (tilde-form) — where its project content (routine defs, pads) belongs.
+// Injected by command (flow.CoveringSyncRoot) so this low-level package needn't
+// import flow/mutagen. The default returns "" (no sync info) → SyncRoot falls
+// back to the workspace's own dir. Mirrors panel.SyncRootFn exactly, so a
+// workspace's routine defs and its pads resolve to the identical root.
+var SyncRootFn = func(dir string) string { return "" }
+
+// SyncRoot resolves the project sync-root a workspace's routine defs live
+// under: the covering sync root when the workspace is synced, else the
+// workspace's own dir (@duck_dir). Always tilde-form. Requires a LIVE
+// workspace (@duck_dir readable); callers on the tick's global path use the
+// index instead. Mirrors panel.PadRoot so defs co-locate with pads.
+func SyncRoot(run panel.Runner, ws string) (string, error) {
+	dir, err := workspaceCwd(run, ws)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(d, "routines"), nil
+	tilde := paths.Contract(dir)
+	if root := SyncRootFn(tilde); root != "" {
+		return root, nil
+	}
+	return tilde, nil
 }
 
-// WorkspaceDir returns the routines dir for one workspace.
-func WorkspaceDir(ws string) (string, error) {
-	root, err := Home()
+// WorkspaceDir returns the routines dir for one workspace under a project root:
+// <expand(root)>/.duck/routines/<ws>/. root is tilde-form (as returned by
+// SyncRoot / stored in the index); it is expanded here so callers always pass
+// tilde-form.
+func WorkspaceDir(root, ws string) (string, error) {
+	absRoot, err := paths.Expand(root)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, ws), nil
+	return filepath.Join(ProjectRoutinesDir(absRoot), ws), nil
 }
 
-// ListWorkspaces returns the workspaces that have routine definitions (the
-// subdirectories of Home()). Missing root => (nil, nil).
-func ListWorkspaces() ([]string, error) {
-	root, err := Home()
+// WSRef pairs a project sync-root (tilde-form) with an owning workspace. The
+// tick and `routines --all` enumerate these — a workspace name alone no longer
+// locates a def dir, since two projects can share a workspace name.
+type WSRef struct {
+	Root      string // tilde-form project sync-root
+	Workspace string // tmux session name
+}
+
+// AllWorkspaces enumerates every (root, workspace) that has routine
+// definitions, driven by the hub-local project index (LoadIndex) — NOT a
+// filesystem scan. For each indexed root it reads <root>/.duck/routines/ and
+// returns one WSRef per workspace subdirectory. A stale/unreadable root is
+// SKIPPED, never fatal (the tick must survive one bad project). Missing index
+// => (nil, nil).
+func AllWorkspaces() ([]WSRef, error) {
+	roots, err := LoadIndex()
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+	var out []WSRef
+	for _, root := range roots {
+		absRoot, err := paths.Expand(root)
+		if err != nil {
+			continue // stale index entry (bad tilde) — skip, don't crash the sweep
 		}
-		return nil, err
-	}
-	var out []string
-	for _, e := range entries {
-		if e.IsDir() {
-			out = append(out, e.Name())
+		entries, err := os.ReadDir(ProjectRoutinesDir(absRoot))
+		if err != nil {
+			continue // project dir gone / unreadable — skip
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				out = append(out, WSRef{Root: root, Workspace: e.Name()})
+			}
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Root != out[j].Root {
+			return out[i].Root < out[j].Root
+		}
+		return out[i].Workspace < out[j].Workspace
+	})
 	return out, nil
 }
 
-// LoadWorkspace parses every *.toml under ~/.duck/routines/<ws>/. Missing
-// dir => (nil, nil). A malformed routine returns an error naming the file. A
-// .toml without a sibling .md is an error (the prompt is the job description;
-// a routine without one is meaningless).
-func LoadWorkspace(ws string) ([]Def, error) {
-	dir, err := WorkspaceDir(ws)
+// RootHasRoutines reports whether a project root still has ANY routine
+// definition across ALL its workspaces (a *.toml under any <root>/.duck/
+// routines/<ws>/). rm uses it to decide whether to drop the root from the index:
+// the index is keyed by PROJECT, so it must survive until the project's LAST
+// routine — across every workspace under it — is gone. root is tilde-form.
+func RootHasRoutines(root string) (bool, error) {
+	absRoot, err := paths.Expand(root)
+	if err != nil {
+		return false, err
+	}
+	wsEntries, err := os.ReadDir(ProjectRoutinesDir(absRoot))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, we := range wsEntries {
+		if !we.IsDir() {
+			continue
+		}
+		defEntries, err := os.ReadDir(filepath.Join(ProjectRoutinesDir(absRoot), we.Name()))
+		if err != nil {
+			continue
+		}
+		for _, de := range defEntries {
+			if !de.IsDir() && filepath.Ext(de.Name()) == ".toml" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// LoadWorkspace parses every *.toml under <root>/.duck/routines/<ws>/. root is
+// tilde-form. Missing dir => (nil, nil). A malformed routine returns an error
+// naming the file. A .toml without a sibling .md is an error (the prompt is the
+// job description; a routine without one is meaningless).
+func LoadWorkspace(root, ws string) ([]Def, error) {
+	dir, err := WorkspaceDir(root, ws)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +213,7 @@ func LoadWorkspace(ws string) ([]Def, error) {
 		tomlPath := filepath.Join(dir, e.Name())
 		mdPath := filepath.Join(dir, name+".md")
 
-		d, err := loadOne(name, ws, tomlPath, mdPath)
+		d, err := loadOne(root, name, ws, tomlPath, mdPath)
 		if err != nil {
 			return nil, fmt.Errorf("routine %s: %w", e.Name(), err)
 		}
@@ -146,7 +224,7 @@ func LoadWorkspace(ws string) ([]Def, error) {
 	return defs, nil
 }
 
-func loadOne(name, ws, tomlPath, mdPath string) (Def, error) {
+func loadOne(root, name, ws, tomlPath, mdPath string) (Def, error) {
 	var raw rawDef
 	meta, err := toml.DecodeFile(tomlPath, &raw)
 	if err != nil {
@@ -162,6 +240,7 @@ func loadOne(name, ws, tomlPath, mdPath string) (Def, error) {
 
 	d := Def{
 		Name:      name,
+		Root:      root,
 		Workspace: ws,
 		Trigger:   Trigger(raw.Trigger),
 		Schedule:  raw.Schedule,

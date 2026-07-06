@@ -42,7 +42,11 @@ func (f *fakeRunner) called(prefix string) bool {
 // state change.
 func TestTickIgnoresManual(t *testing.T) {
 	t.Setenv("DUCK_HOME", t.TempDir())
-	writeRoutine(t, "work", "manualjob", "trigger = \"manual\"\n", "do a thing")
+	root := t.TempDir()
+	writeRoutine(t, root, "work", "manualjob", "trigger = \"manual\"\n", "do a thing")
+	if err := IndexAdd(root); err != nil {
+		t.Fatal(err)
+	}
 
 	f := &fakeRunner{responder: func(args []string) (string, bool) {
 		if args[0] == "list-sessions" {
@@ -67,7 +71,11 @@ func TestTickIgnoresManual(t *testing.T) {
 // (and not healable) fires nothing — its duties sleep, logged.
 func TestTickSkipsDormantWorkspace(t *testing.T) {
 	t.Setenv("DUCK_HOME", t.TempDir())
-	writeRoutine(t, "ghost", "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "p")
+	root := t.TempDir()
+	writeRoutine(t, root, "ghost", "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "p")
+	if err := IndexAdd(root); err != nil {
+		t.Fatal(err)
+	}
 
 	f := &fakeRunner{responder: func(args []string) (string, bool) {
 		if args[0] == "list-sessions" {
@@ -122,7 +130,11 @@ func TestTickFiresHeartbeat(t *testing.T) {
 	t.Setenv("DUCK_HOME", t.TempDir())
 	t.Setenv("DUCK_CODEX_BIN", "echo-codex")
 	defer channel.SetSleepFn(func(time.Duration) {})()
-	writeRoutine(t, "work", "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "report status")
+	root := t.TempDir()
+	writeRoutine(t, root, "work", "beat", "trigger = \"heartbeat\"\ninterval = \"5m\"\n", "report status")
+	if err := IndexAdd(root); err != nil {
+		t.Fatal(err)
+	}
 
 	var spawnCmd string
 	f := &fakeRunner{responder: heartbeatResponder(&spawnCmd)}
@@ -152,7 +164,7 @@ func TestTickFiresHeartbeat(t *testing.T) {
 	}
 	// And the beat was recorded under the workspace key.
 	st, _ := LoadState()
-	if st.LastFire[Key("work", "beat")].IsZero() {
+	if st.LastFire[Key(root, "work", "beat")].IsZero() {
 		t.Fatalf("heartbeat beat not recorded: %v", st.LastFire)
 	}
 }
@@ -162,8 +174,12 @@ func TestTickFiresHeartbeat(t *testing.T) {
 // with report="none" routines filtered out.
 func TestCourierDeliversBatchedDigest(t *testing.T) {
 	t.Setenv("DUCK_HOME", t.TempDir())
-	writeRoutine(t, "work", "loud", "trigger = \"manual\"\n", "p")
-	writeRoutine(t, "work", "quiet", "trigger = \"manual\"\nreport = \"none\"\n", "p")
+	root := t.TempDir()
+	writeRoutine(t, root, "work", "loud", "trigger = \"manual\"\n", "p")
+	writeRoutine(t, root, "work", "quiet", "trigger = \"manual\"\nreport = \"none\"\n", "p")
+	if err := IndexAdd(root); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, r := range []channel.RunReport{
 		{Routine: "loud", Message: "42 tests passed\nlong detail", At: time.Now()},
@@ -313,11 +329,15 @@ func TestTickFiresDueCron(t *testing.T) {
 	t.Setenv("DUCK_HOME", t.TempDir())
 	// No codex on the test box; the cmdline is inspected, never run.
 	t.Setenv("DUCK_CODEX_BIN", "echo-codex")
-	writeRoutine(t, "work", "nightly", "trigger = \"cron\"\nschedule = \"* * * * *\"\n", "run the nightly job")
+	root := t.TempDir()
+	writeRoutine(t, root, "work", "nightly", "trigger = \"cron\"\nschedule = \"* * * * *\"\n", "run the nightly job")
+	if err := IndexAdd(root); err != nil {
+		t.Fatal(err)
+	}
 
 	// Seed a last-fire well in the past so "* * * * *" is due now.
 	st, _ := LoadState()
-	st.LastFire[Key("work", "nightly")] = time.Now().Add(-time.Hour)
+	st.LastFire[Key(root, "work", "nightly")] = time.Now().Add(-time.Hour)
 	if err := SaveState(st); err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +381,7 @@ func TestTickFiresDueCron(t *testing.T) {
 	}
 	// last-fire advanced to ~now, under the workspace key.
 	st2, _ := LoadState()
-	if got := st2.LastFire[Key("work", "nightly")]; time.Since(got) > time.Minute {
+	if got := st2.LastFire[Key(root, "work", "nightly")]; time.Since(got) > time.Minute {
 		t.Fatalf("last-fire not advanced: %v", got)
 	}
 }

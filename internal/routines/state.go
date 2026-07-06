@@ -38,14 +38,17 @@ func statePath() (string, error) {
 // State records last-fire times, persisted at ~/.duck/routines-state.json
 // (or $DUCK_HOME/routines-state.json when DUCK_HOME is set, for tests).
 type State struct {
-	LastFire map[string]time.Time `json:"last_fire"` // key: Key(workspace, name)
+	LastFire map[string]time.Time `json:"last_fire"` // key: Key(root, workspace, name)
 }
 
-// Key builds the state map key for a routine: the owning workspace (tmux
-// session name) plus a tab plus the routine name. Tabs can't appear in either
-// (session names and filenames), so this is collision-free without escaping.
-func Key(ws, name string) string {
-	return filepath.Clean(ws) + "\t" + name
+// Key builds the state map key for a routine: the project sync-root (tilde-form)
+// plus a tab plus the owning workspace (tmux session name) plus a tab plus the
+// routine name. Three parts because defs now live per-project and two projects
+// can share a workspace name — root disambiguates. Tabs can't appear in tilde
+// paths, session names, or filenames, so this stays collision-free without
+// escaping.
+func Key(root, ws, name string) string {
+	return filepath.Clean(root) + "\t" + filepath.Clean(ws) + "\t" + name
 }
 
 // LoadState reads the state file. A missing file is not an error: it

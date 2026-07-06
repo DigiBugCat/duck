@@ -8,12 +8,14 @@ import (
 	"time"
 )
 
-// writeRoutine writes $DUCK_HOME/routines/<ws>/<name>.toml (and, unless
-// md=="", a sibling <name>.md) for test setup. Callers must have pointed
-// DUCK_HOME at a scratch dir (t.Setenv) first.
-func writeRoutine(t *testing.T, ws, name, tomlBody, md string) {
+// writeRoutine writes <root>/.duck/routines/<ws>/<name>.toml (and, unless
+// md=="", a sibling <name>.md) for test setup. root is a project sync-root
+// (an absolute t.TempDir() works — paths.Expand returns it unchanged). Hub-
+// local state/index still land under DUCK_HOME, so callers isolating those
+// point DUCK_HOME at a scratch dir (t.Setenv) first.
+func writeRoutine(t *testing.T, root, ws, name, tomlBody, md string) {
 	t.Helper()
-	dir, err := WorkspaceDir(ws)
+	dir, err := WorkspaceDir(root, ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,8 +33,7 @@ func writeRoutine(t *testing.T, ws, name, tomlBody, md string) {
 }
 
 func TestLoadWorkspace_MissingDir(t *testing.T) {
-	t.Setenv("DUCK_HOME", t.TempDir())
-	defs, err := LoadWorkspace("nowhere")
+	defs, err := LoadWorkspace(t.TempDir(), "nowhere")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,25 +43,25 @@ func TestLoadWorkspace_MissingDir(t *testing.T) {
 }
 
 func TestLoadWorkspace_HappyPath(t *testing.T) {
-	t.Setenv("DUCK_HOME", t.TempDir())
-	writeRoutine(t, "work", "b-heartbeat", `
+	root := t.TempDir()
+	writeRoutine(t, root, "work", "b-heartbeat", `
 trigger = "heartbeat"
 interval = "15m"
 target = "run"
 report = "none"
 `, "beat the drum")
-	writeRoutine(t, "work", "a-cron", `
+	writeRoutine(t, root, "work", "a-cron", `
 trigger = "cron"
 schedule = "0 9 * * *"
 `, "good morning")
-	writeRoutine(t, "work", "c-manual", `
+	writeRoutine(t, root, "work", "c-manual", `
 trigger = "manual"
 target = "manager"
 `, "manual job")
 	// Another workspace's routine must not leak into work's list.
-	writeRoutine(t, "elsewhere", "z-other", `trigger = "manual"`, "other")
+	writeRoutine(t, root, "elsewhere", "z-other", `trigger = "manual"`, "other")
 
-	defs, err := LoadWorkspace("work")
+	defs, err := LoadWorkspace(root, "work")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,26 +99,38 @@ target = "manager"
 	}
 }
 
-func TestListWorkspaces(t *testing.T) {
-	t.Setenv("DUCK_HOME", t.TempDir())
-	if wss, err := ListWorkspaces(); err != nil || wss != nil {
-		t.Fatalf("missing root should be (nil, nil), got %v %v", wss, err)
+func TestAllWorkspaces(t *testing.T) {
+	t.Setenv("DUCK_HOME", t.TempDir()) // isolate the hub-local index
+	// Empty index => (nil, nil): AllWorkspaces is index-driven, not a scan.
+	if refs, err := AllWorkspaces(); err != nil || refs != nil {
+		t.Fatalf("empty index should be (nil, nil), got %v %v", refs, err)
 	}
-	writeRoutine(t, "beta", "r", `trigger = "manual"`, "p")
-	writeRoutine(t, "alpha", "r", `trigger = "manual"`, "p")
-	wss, err := ListWorkspaces()
+	root := t.TempDir()
+	writeRoutine(t, root, "beta", "r", `trigger = "manual"`, "p")
+	writeRoutine(t, root, "alpha", "r", `trigger = "manual"`, "p")
+	// Defs exist on disk but the root is not indexed yet — still invisible.
+	if refs, err := AllWorkspaces(); err != nil || refs != nil {
+		t.Fatalf("unindexed root must stay invisible, got %v %v", refs, err)
+	}
+	if err := IndexAdd(root); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := AllWorkspaces()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(wss, ",") != "alpha,beta" {
-		t.Fatalf("got %v want [alpha beta]", wss)
+	// One WSRef per workspace subdir under the indexed root, sorted.
+	if len(refs) != 2 ||
+		refs[0].Root != root || refs[0].Workspace != "alpha" ||
+		refs[1].Root != root || refs[1].Workspace != "beta" {
+		t.Fatalf("got %+v want alpha,beta under %q", refs, root)
 	}
 }
 
 func TestLoadWorkspace_PromptTrimmed(t *testing.T) {
-	t.Setenv("DUCK_HOME", t.TempDir())
-	writeRoutine(t, "w", "r", `trigger = "manual"`, "\n\n  hello world  \n\n")
-	defs, err := LoadWorkspace("w")
+	root := t.TempDir()
+	writeRoutine(t, root, "w", "r", `trigger = "manual"`, "\n\n  hello world  \n\n")
+	defs, err := LoadWorkspace(root, "w")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,9 +140,9 @@ func TestLoadWorkspace_PromptTrimmed(t *testing.T) {
 }
 
 func TestLoadWorkspace_MissingMd(t *testing.T) {
-	t.Setenv("DUCK_HOME", t.TempDir())
-	writeRoutine(t, "w", "r", `trigger = "manual"`, "")
-	_, err := LoadWorkspace("w")
+	root := t.TempDir()
+	writeRoutine(t, root, "w", "r", `trigger = "manual"`, "")
+	_, err := LoadWorkspace(root, "w")
 	if err == nil {
 		t.Fatal("expected error for missing .md")
 	}
@@ -165,9 +178,9 @@ frobnicate = true`},
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("DUCK_HOME", t.TempDir())
-			writeRoutine(t, "w", "r", tc.toml, "prompt")
-			_, err := LoadWorkspace("w")
+			root := t.TempDir()
+			writeRoutine(t, root, "w", "r", tc.toml, "prompt")
+			_, err := LoadWorkspace(root, "w")
 			if err == nil {
 				t.Fatalf("expected error for case %q", tc.name)
 			}
@@ -179,9 +192,9 @@ frobnicate = true`},
 }
 
 func TestLoadWorkspace_MalformedToml(t *testing.T) {
-	t.Setenv("DUCK_HOME", t.TempDir())
-	writeRoutine(t, "w", "r", `trigger = "manual`, "prompt") // unterminated string
-	_, err := LoadWorkspace("w")
+	root := t.TempDir()
+	writeRoutine(t, root, "w", "r", `trigger = "manual`, "prompt") // unterminated string
+	_, err := LoadWorkspace(root, "w")
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
@@ -191,9 +204,9 @@ func TestLoadWorkspace_MalformedToml(t *testing.T) {
 }
 
 func TestLoadWorkspace_IgnoresNonTomlFiles(t *testing.T) {
-	t.Setenv("DUCK_HOME", t.TempDir())
-	writeRoutine(t, "w", "r", `trigger = "manual"`, "prompt")
-	dir, _ := WorkspaceDir("w")
+	root := t.TempDir()
+	writeRoutine(t, root, "w", "r", `trigger = "manual"`, "prompt")
+	dir, _ := WorkspaceDir(root, "w")
 	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +214,7 @@ func TestLoadWorkspace_IgnoresNonTomlFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	defs, err := LoadWorkspace("w")
+	defs, err := LoadWorkspace(root, "w")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,11 +253,11 @@ func TestDue_Heartbeat(t *testing.T) {
 }
 
 func TestDue_Cron(t *testing.T) {
-	t.Setenv("DUCK_HOME", t.TempDir())
+	root := t.TempDir()
 	// every day at 09:00
-	writeRoutine(t, "w", "r", `trigger = "cron"
+	writeRoutine(t, root, "w", "r", `trigger = "cron"
 schedule = "0 9 * * *"`, "prompt")
-	defs, err := LoadWorkspace("w")
+	defs, err := LoadWorkspace(root, "w")
 	if err != nil {
 		t.Fatal(err)
 	}

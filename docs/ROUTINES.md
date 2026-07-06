@@ -59,17 +59,19 @@ set composes them freely; trust is merely the default.
   already render it). Status dots / kill / channel send all work today.
 - Run history = codex rollouts (~/.codex/sessions) — codex already persists
   every thread; duck reads, never writes a second ledger.
-- Definitions are FILES on the hub, owned by the workspace
-  (~/.duck/routines/<workspace>/ — self-modifiable by agents via
-  `duck routines add`). tmux + files stay the only databases. `add` marks
-  the workspace Persistent in the ledger, so its schedule (and the
-  workspace itself) survives hub reboots.
+- Definitions are FILES that are PROJECT CONTENT, owned by the workspace
+  (<project-sync-root>/.duck/routines/<workspace>/ — synced + versioned
+  alongside pads, self-modifiable by agents via `duck routines add`). The hub
+  keeps only last-fire state and a project index (both under ~/.duck), never
+  the defs. tmux + files stay the only databases. `add` marks the workspace
+  Persistent in the ledger, so its schedule (and the workspace itself) survives
+  hub reboots.
 
 ## Routine format — duck-native (flock never shipped; no compat debt)
 
 ```
-~/.duck/routines/<workspace>/<name>.toml   ← trigger + target + overrides
-~/.duck/routines/<workspace>/<name>.md     ← the prompt (the job description)
+<project-sync-root>/.duck/routines/<workspace>/<name>.toml   ← trigger + target + overrides
+<project-sync-root>/.duck/routines/<workspace>/<name>.md     ← the prompt (the job description)
 ```
 
 Created with `duck routines add <name> [--cron "…" | --every 15m | --manual]
@@ -115,10 +117,12 @@ default.
 1. Heal: every Persistent ledger record whose session is gone is recreated
    headless under its own name (manager relaunched) — so scheduled
    workspaces survive reboots.
-2. Workspaces: subdirectories of ~/.duck/routines/. One not live after the
-   heal (no Persistent record) is DORMANT — logged, skipped, never fired.
+2. Workspaces: enumerated via the hub-local project index
+   (~/.duck/routines-projects.json) → for each project root, the workspace
+   subdirs of <root>/.duck/routines/. One not live after the heal (no
+   Persistent record) is DORMANT — logged, skipped, never fired.
 3. Per live workspace: parse its *.toml; compute due-ness from last-fire
-   state in ~/.duck/routines-state.json (keyed workspace+name); fire due
+   state in ~/.duck/routines-state.json (keyed root+workspace+name); fire due
    routines per semantics above, INTO that workspace.
 
 ## Verbs

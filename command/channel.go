@@ -202,7 +202,11 @@ func (mcpHost) Render(workspace, target string) error {
 // Routines / FireRoutine drive the workspace's scheduled executors (list, or run
 // one now) via internal/routines — the same paths `duck routines`/`fire` use.
 func (mcpHost) Routines(workspace string) (string, error) {
-	defs, err := routines.LoadWorkspace(workspace)
+	root, err := routines.SyncRoot(panel.ExecRunner, workspace)
+	if err != nil {
+		return "", err
+	}
+	defs, err := routines.LoadWorkspace(root, workspace)
 	if err != nil {
 		return "", err
 	}
@@ -220,7 +224,11 @@ func (mcpHost) Routines(workspace string) (string, error) {
 	return strings.TrimRight(b.String(), "\n"), nil
 }
 func (mcpHost) FireRoutine(workspace, name string) (string, error) {
-	defs, err := routines.LoadWorkspace(workspace)
+	root, err := routines.SyncRoot(panel.ExecRunner, workspace)
+	if err != nil {
+		return "", err
+	}
+	defs, err := routines.LoadWorkspace(root, workspace)
 	if err != nil {
 		return "", err
 	}

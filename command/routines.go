@@ -1,9 +1,11 @@
 // `duck routines` — the workspace's job description (DESIGN: docs/ROUTINES.md).
 // A workspace is a manager (claude in the main pane) with a flock of
 // executors; routines are what those employees do on a schedule. Definitions
-// are pairs of files under ~/.duck/routines/<workspace>/ (<name>.toml +
-// <name>.md), owned by the WORKSPACE — the hub fires the due ones on a
-// systemd/launchd timer, each fire landing in that workspace's `runs` tab.
+// are pairs of files under <project-sync-root>/.duck/routines/<workspace>/
+// (<name>.toml + <name>.md) — project content, synced+versioned alongside pads,
+// but owned by the WORKSPACE. The hub fires the due ones on a systemd/launchd
+// timer (finding them via a hub-local project index), each fire landing in that
+// workspace's `runs` tab.
 //
 //	duck routines                 list this workspace's routines (--all: every workspace)
 //	duck routines add <name> …    create a routine here (writes the files, marks the workspace persistent)
@@ -58,19 +60,26 @@ func currentWorkspace(run panel.Runner) (string, error) {
 func listRoutines(c *cobra.Command) error {
 	run := panel.ExecRunner
 
-	var wss []string
+	// Enumerate (root, workspace) pairs. --all is a cross-project roll-up from
+	// the index + on-disk dirs (never touches tmux); the single case resolves
+	// the current workspace's root via the sync resolver.
+	var refs []routines.WSRef
 	if routinesAll {
-		all, err := routines.ListWorkspaces()
+		all, err := routines.AllWorkspaces()
 		if err != nil {
 			return err
 		}
-		wss = all
+		refs = all
 	} else {
 		ws, err := currentWorkspace(run)
 		if err != nil {
 			return err
 		}
-		wss = []string{ws}
+		root, err := routines.SyncRoot(run, ws)
+		if err != nil {
+			return err
+		}
+		refs = []routines.WSRef{{Root: root, Workspace: ws}}
 	}
 
 	state, err := routines.LoadState()
@@ -84,8 +93,9 @@ func listRoutines(c *cobra.Command) error {
 		fmt.Fprintln(tw, "WORKSPACE\tROUTINE\tTRIGGER\tSCHEDULE\tLAST FIRE\tSTATUS")
 	}
 	any := false
-	for _, ws := range wss {
-		defs, lerr := routines.LoadWorkspace(ws)
+	for _, ref := range refs {
+		ws := ref.Workspace
+		defs, lerr := routines.LoadWorkspace(ref.Root, ws)
 		if lerr != nil {
 			fmt.Fprintf(c.ErrOrStderr(), "routines: skip %s: %v\n", ws, lerr)
 			continue
@@ -100,7 +110,7 @@ func listRoutines(c *cobra.Command) error {
 				sched = "—"
 			}
 			last := "never"
-			if t, ok := state.LastFire[routines.Key(ws, d.Name)]; ok && !t.IsZero() {
+			if t, ok := state.LastFire[routines.Key(ref.Root, ws, d.Name)]; ok && !t.IsZero() {
 				last = t.Local().Format("Jan 2 15:04")
 			}
 			status := routineStatus(run, ws, d.Name)
@@ -145,8 +155,9 @@ var routinesAddCmd = &cobra.Command{
 	Use:   "add <name> [flags] <prompt…>",
 	Short: "Create a routine in this workspace (a standing duty for its executor flock)",
 	Long: `Create a routine owned by the current workspace: writes
-~/.duck/routines/<workspace>/<name>.toml + <name>.md and marks the workspace
-persistent in the ledger so its schedule survives hub reboots.
+<project-sync-root>/.duck/routines/<workspace>/<name>.toml + <name>.md (project
+content, synced alongside pads), records the project in the hub-local index, and
+marks the workspace persistent in the ledger so its schedule survives hub reboots.
 
 Pick exactly one trigger (default --manual):
   --cron "0 9 * * *"   fire on a cron schedule (waits for its next slot)
@@ -197,7 +208,17 @@ Pick exactly one trigger (default --manual):
 			fmt.Fprintf(&body, "report = %q\n", addReport)
 		}
 
-		dir, err := routines.WorkspaceDir(ws)
+		// Resolve the project sync-root this workspace's defs live under BEFORE
+		// writing — a routine with no owning location cannot be written (unlike
+		// the best-effort markWorkspacePersistent below, this is a hard error).
+		root, err := routines.SyncRoot(run, ws)
+		if err != nil {
+			return fmt.Errorf("resolve project root for %s: %w", ws, err)
+		}
+		if root == "" {
+			return fmt.Errorf("workspace %s has no resolvable project root — cannot place routine", ws)
+		}
+		dir, err := routines.WorkspaceDir(root, ws)
 		if err != nil {
 			return err
 		}
@@ -218,10 +239,19 @@ Pick exactly one trigger (default --manual):
 		}
 		// Validate by parsing exactly as the tick will; a bad definition must
 		// not survive on disk.
-		if _, err := routines.LoadWorkspace(ws); err != nil {
+		if _, err := routines.LoadWorkspace(root, ws); err != nil {
 			os.Remove(tomlPath)
 			os.Remove(mdPath)
 			return err
+		}
+		// Record the project in the hub-local index so the tick finds it (and
+		// the future machine-wide view can roll it up). A failed IndexAdd means
+		// the tick never sees the routine — worse than a clean failure, so roll
+		// back the files.
+		if err := routines.IndexAdd(root); err != nil {
+			os.Remove(tomlPath)
+			os.Remove(mdPath)
+			return fmt.Errorf("index project %s: %w", root, err)
 		}
 
 		markWorkspacePersistent(c, run, ws)
@@ -277,16 +307,50 @@ func markWorkspacePersistent(c *cobra.Command, run panel.Runner, ws string) {
 	}
 }
 
+// rmRootForWorkspace resolves the project sync-root for rm. The live path is
+// routines.SyncRoot (reads @duck_dir). If the workspace's tmux session is gone
+// — SyncRoot fails — it falls back to the workspaces ledger record's Dir (the
+// same authoritative source healPersistent trusts), running it through the sync
+// resolver so it lands on the identical root add used. Errors out rather than
+// guessing when nothing resolves.
+func rmRootForWorkspace(run panel.Runner, ws string) (string, error) {
+	if root, err := routines.SyncRoot(run, ws); err == nil && root != "" {
+		return root, nil
+	}
+	// Dead session: recover the dir from the ledger by workspace NAME (we have
+	// no dir to key Load on — that's precisely what's missing). Match across all
+	// records; a name is unique per hub.
+	store := workspaces.NewStore(workspaces.LocalRunner{})
+	recs, err := store.All()
+	if err != nil {
+		return "", fmt.Errorf("workspace %s is not live and the ledger is unreadable: %w", ws, err)
+	}
+	for _, rec := range recs {
+		if rec.Name == ws && rec.Dir != "" {
+			if r := routines.SyncRootFn(rec.Dir); r != "" {
+				return r, nil
+			}
+			return rec.Dir, nil
+		}
+	}
+	return "", fmt.Errorf("workspace %s is not live and has no ledger record — cannot locate its routines", ws)
+}
+
 var routinesRmCmd = &cobra.Command{
 	Use:   "rm <name>",
 	Short: "Delete a routine of this workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		ws, err := currentWorkspace(panel.ExecRunner)
+		run := panel.ExecRunner
+		ws, err := currentWorkspace(run)
 		if err != nil {
 			return err
 		}
-		dir, err := routines.WorkspaceDir(ws)
+		root, err := rmRootForWorkspace(run, ws)
+		if err != nil {
+			return err
+		}
+		dir, err := routines.WorkspaceDir(root, ws)
 		if err != nil {
 			return err
 		}
@@ -298,6 +362,18 @@ var routinesRmCmd = &cobra.Command{
 			return err
 		}
 		_ = os.Remove(filepath.Join(dir, args[0]+".md"))
+		// Tidy the now-possibly-empty workspace subdir (best-effort — os.Remove
+		// only succeeds if it's empty, which is exactly what we want).
+		_ = os.Remove(dir)
+		// Drop the project from the index ONLY when its LAST routine — across
+		// EVERY workspace under this root — is gone. Another workspace on the
+		// same root (the aviary umbrella case) may still have live routines;
+		// dropping the entry then would make the tick silently skip that project.
+		if has, herr := routines.RootHasRoutines(root); herr == nil && !has {
+			if ierr := routines.IndexRemove(root); ierr != nil {
+				fmt.Fprintf(c.ErrOrStderr(), "routines: removed %s but could not prune index for %s: %v\n", args[0], root, ierr)
+			}
+		}
 		fmt.Fprintf(c.OutOrStdout(), "removed %s from %s\n", args[0], ws)
 		return nil
 	},
@@ -308,25 +384,30 @@ var routinesFireCmd = &cobra.Command{
 	Short: "Manually trigger a routine of this workspace (also forces a cron one)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		ws, err := currentWorkspace(panel.ExecRunner)
+		run := panel.ExecRunner
+		ws, err := currentWorkspace(run)
 		if err != nil {
 			return err
 		}
-		defs, err := routines.LoadWorkspace(ws)
+		root, err := routines.SyncRoot(run, ws)
+		if err != nil {
+			return err
+		}
+		defs, err := routines.LoadWorkspace(root, ws)
 		if err != nil {
 			return err
 		}
 		for _, d := range defs {
 			if d.Name == args[0] {
 				now := time.Now()
-				if !routines.Fire(panel.ExecRunner, d, now, c.OutOrStdout()) {
+				if !routines.Fire(run, d, now, c.OutOrStdout()) {
 					return fmt.Errorf("fire %s failed (see output above)", d.Name)
 				}
 				// A forced fire is a real beat: record it so a cron routine
 				// doesn't double-fire at its next slot.
 				state, serr := routines.LoadState()
 				if serr == nil {
-					state.LastFire[routines.Key(ws, d.Name)] = now
+					state.LastFire[routines.Key(root, ws, d.Name)] = now
 					serr = routines.SaveState(state)
 				}
 				if serr != nil {

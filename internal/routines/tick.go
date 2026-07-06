@@ -72,7 +72,7 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 	// session this same tick rather than waiting for the next one.
 	healPersistent(run, logw)
 
-	wss, err := ListWorkspaces()
+	refs, err := AllWorkspaces()
 	if err != nil {
 		return fmt.Errorf("enumerate routine workspaces: %w", err)
 	}
@@ -84,24 +84,24 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 
 	live := liveSessionNames(run)
 	changed := false
-	for _, ws := range wss {
-		if !live[ws] {
+	for _, ref := range refs {
+		if !live[ref.Workspace] {
 			// Not live and not healed above (no Persistent record): the
 			// employee's office is gone — its duties sleep until the workspace
 			// is back (or its routines dir is removed).
-			fmt.Fprintf(logw, "routines: workspace %s gone — its routines are dormant\n", ws)
+			fmt.Fprintf(logw, "routines: workspace %s gone — its routines are dormant\n", ref.Workspace)
 			continue
 		}
-		defs, err := LoadWorkspace(ws)
+		defs, err := LoadWorkspace(ref.Root, ref.Workspace)
 		if err != nil {
-			fmt.Fprintf(logw, "routines: skip workspace %s: %v\n", ws, err)
+			fmt.Fprintf(logw, "routines: skip workspace %s: %v\n", ref.Workspace, err)
 			continue
 		}
 		for _, d := range defs {
 			if d.Trigger == TriggerManual {
 				continue // manual never auto-fires
 			}
-			last := state.LastFire[Key(ws, d.Name)]
+			last := state.LastFire[Key(ref.Root, ref.Workspace, d.Name)]
 			if d.Trigger == TriggerCron && last.IsZero() {
 				// First sight of a cron routine: seed last-fire so it waits for
 				// its next cron slot. Without the seed a zero last is never due
@@ -109,7 +109,7 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 				// way that wouldn't refire forever). Heartbeats skip the seed —
 				// a fresh heartbeat is due NOW (Due treats zero-last as due), so
 				// its persistent pane exists from the first tick.
-				state.LastFire[Key(ws, d.Name)] = now
+				state.LastFire[Key(ref.Root, ref.Workspace, d.Name)] = now
 				changed = true
 				continue
 			}
@@ -123,7 +123,7 @@ func Tick(run panel.Runner, now time.Time, logw io.Writer) error {
 				// Recording last-fire here is what makes that true — otherwise a
 				// routine skipped for concurrency would re-evaluate as due every
 				// minute and pile up the instant its predecessor finished.
-				state.LastFire[Key(ws, d.Name)] = now
+				state.LastFire[Key(ref.Root, ref.Workspace, d.Name)] = now
 				changed = true
 			}
 		}
@@ -182,6 +182,30 @@ func Fire(run panel.Runner, d Def, now time.Time, logw io.Writer) bool {
 	}
 	fmt.Fprintf(logw, "routines: fired %s/%s\n", outer, d.Name)
 	return true
+}
+
+// rootForWorkspace reverse-resolves which indexed project root owns a
+// workspace's routine defs, by finding the indexed root whose
+// <root>/.duck/routines/<ws>/ dir exists. Returns tilde-form root. Used by the
+// courier, which enumerates report breadcrumbs by workspace name only and needs
+// the root to load each workspace's report policy. A workspace with no indexed
+// routine dir (an ad-hoc run) yields (,"" false) — the courier then reports its
+// completions as digest, matching today's tolerance.
+func rootForWorkspace(ws string) (string, bool) {
+	roots, err := LoadIndex()
+	if err != nil {
+		return "", false
+	}
+	for _, root := range roots {
+		dir, err := WorkspaceDir(root, ws)
+		if err != nil {
+			continue
+		}
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			return root, true
+		}
+	}
+	return "", false
 }
 
 // workspaceCwd resolves a workspace's working directory: its @duck_dir
@@ -261,9 +285,11 @@ func courier(run panel.Runner, logw io.Writer) {
 			continue
 		}
 		policy := map[string]string{}
-		if defs, lerr := LoadWorkspace(ws); lerr == nil {
-			for _, d := range defs {
-				policy[d.Name] = d.Report
+		if root, ok := rootForWorkspace(ws); ok {
+			if defs, lerr := LoadWorkspace(root, ws); lerr == nil {
+				for _, d := range defs {
+					policy[d.Name] = d.Report
+				}
 			}
 		}
 		var lines []string
