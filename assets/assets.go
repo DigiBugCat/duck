@@ -37,3 +37,12 @@ var DuckOpen string
 //
 //go:embed agent-notes.md
 var AgentNotes string
+
+// ExecutorNotes is the codex-executor briefing. Codex has no @-import
+// mechanism (that's Claude-only), so the FULL content is pasted into
+// ~/.codex/AGENTS.md between managed markers and re-pasted whenever it
+// changes — the same "whole markdown every time" pattern the Codex app
+// itself uses for automations.
+//
+//go:embed executor-notes.md
+var ExecutorNotes string

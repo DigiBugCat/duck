@@ -41,6 +41,7 @@ const schedTab = "routines"
 // routineRow is one schedule as shown on the ⏰ routines tab.
 type routineRow struct {
 	Name, Trigger, Sched, Model, Last, Next, Status string
+	Path                                            string // the prompt .md (trailing TSV field; may be empty)
 }
 
 type tickMsg time.Time
@@ -146,11 +147,15 @@ func loadRoutines() []routineRow {
 	}
 	var rows []routineRow
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		f := strings.Split(line, "\t")
+		f := strings.SplitN(line, "\t", 9)
 		if len(f) < 8 {
 			continue
 		}
-		rows = append(rows, routineRow{Name: f[1], Trigger: f[2], Sched: f[3], Model: f[4], Last: f[5], Next: f[6], Status: f[7]})
+		r := routineRow{Name: f[1], Trigger: f[2], Sched: f[3], Model: f[4], Last: f[5], Next: f[6], Status: f[7]}
+		if len(f) > 8 { // trailing free-text field: tolerate its absence
+			r.Path = f[8]
+		}
+		rows = append(rows, r)
 	}
 	return rows
 }
@@ -216,13 +221,10 @@ func (m *watchModel) switchTab(kind string) {
 		m.cursor = 0
 	}
 	if m.tabKind == schedTab {
-		// Arriving on ⏰ shows the selected routine's run (its nested view)
-		// when one exists; firing stays behind the explicit `f`.
+		// Arriving on ⏰ shows the selected routine's card.
 		if idx := m.visible(); m.cursor < len(idx) {
-			if a, ok := m.routineRun(m.routines[idx[m.cursor]].Name); ok {
-				_ = Select(m.run, m.outer, a.PaneID)
-				return
-			}
+			m.showRoutineCard(m.routines[idx[m.cursor]])
+			return
 		}
 		_ = ShowEmpty(m.run, m.outer, m.tabKind)
 		return
@@ -382,6 +384,19 @@ func (m watchModel) routineNames() map[string]bool {
 	return names
 }
 
+// showRoutineCard puts the routine's detail card in the viewport: header +
+// schedule/model/fire-times meta line + the glow-rendered prompt md. Arrow
+// keys, ↵, clicks, and tab-arrival all land here; the raw run pane stays one
+// keypress away (`v`).
+func (m *watchModel) showRoutineCard(r routineRow) {
+	meta := string(r.Trigger) + " " + r.Sched
+	if r.Model != "" && r.Model != "—" {
+		meta += " · " + r.Model
+	}
+	meta += " · last " + r.Last + " · next " + r.Next + " · " + r.Status
+	_ = ShowRoutineDetail(m.run, m.outer, r.Name, meta, r.Path)
+}
+
 // routineRun finds the live executor pane backing a routine, if any.
 func (m watchModel) routineRun(name string) (Agent, bool) {
 	for _, a := range m.agents {
@@ -513,14 +528,10 @@ func (m *watchModel) viewSelected() string {
 		return ""
 	}
 	if m.tabKind == schedTab {
-		// ↵/click = the routine's nested view: swap its executor pane in.
-		// Firing is the explicit `f` (fireSelected) — viewing must be safe.
-		r := m.routines[idx[m.cursor]]
-		if a, ok := m.routineRun(r.Name); ok {
-			_ = Select(m.run, m.outer, a.PaneID)
-			return ""
-		}
-		return "no run yet for " + r.Name + " — press f to fire it"
+		// ↵/click = the routine's CARD (prompt md + schedule meta), like the
+		// Codex automation detail view. The live run is `v`; firing is `f`.
+		m.showRoutineCard(m.routines[idx[m.cursor]])
+		return ""
 	}
 	if m.tabKind == wsTab {
 		// Preview only — actually switching is the explicit `g` (go). Enter and
@@ -833,6 +844,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 				if m.tabKind == wsTab {
 					m.previewWorkspace()
+				} else if m.tabKind == schedTab {
+					if idx := m.visible(); m.cursor < len(idx) {
+						m.showRoutineCard(m.routines[idx[m.cursor]])
+					}
 				}
 			}
 		case "down", "j":
@@ -841,6 +856,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 				if m.tabKind == wsTab {
 					m.previewWorkspace()
+				} else if m.tabKind == schedTab {
+					if idx := m.visible(); m.cursor < len(idx) {
+						m.showRoutineCard(m.routines[idx[m.cursor]])
+					}
 				}
 			}
 		case "left", "shift+tab", "h":
@@ -850,6 +869,32 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.lastMsg = m.viewSelected()
 			return m, m.load
+		case "v": // view the highlighted routine's live run pane (⏰ tab only)
+			if m.tabKind == schedTab {
+				if idx := m.visible(); m.cursor < len(idx) {
+					r := m.routines[idx[m.cursor]]
+					if a, ok := m.routineRun(r.Name); ok {
+						_ = Select(m.run, m.outer, a.PaneID)
+					} else {
+						m.lastMsg = "no run yet for " + r.Name + " — press f to fire it"
+					}
+					return m, nil
+				}
+			}
+		case "e": // edit the highlighted routine's prompt md (⏰ tab only)
+			if m.tabKind == schedTab {
+				if idx := m.visible(); m.cursor < len(idx) {
+					r := m.routines[idx[m.cursor]]
+					if r.Path == "" {
+						m.lastMsg = "no prompt file known for " + r.Name
+						return m, nil
+					}
+					if out := m.duckExec("edit", r.Path); out != "" {
+						m.lastMsg = out
+					}
+					return m, m.load
+				}
+			}
 		case "f": // fire the highlighted routine now (⏰ tab only)
 			if m.tabKind == schedTab {
 				if idx := m.visible(); m.cursor < len(idx) {
@@ -913,7 +958,12 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 			activeKind = a.Kind
 		}
 	}
-	for ti, kind := range m.tabs() {
+	// First pass: render every cell and note the active one.
+	kinds := m.tabs()
+	cells := make([]string, len(kinds))
+	widths := make([]int, len(kinds))
+	activeIdx := 0
+	for ti, kind := range kinds {
 		n := 0
 		if kind == wsTab {
 			n = len(m.workspaces)
@@ -937,11 +987,36 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 		cell := tabStyle.Render(label)
 		if kind == m.tabKind {
 			cell = tabActiveStyle.Render(label)
+			activeIdx = ti
 		}
-		w := lipgloss.Width(cell)
-		spans = append(spans, tabSpan{start: x, end: x + w, tab: ti})
-		b.WriteString(cell)
-		x += w
+		cells[ti] = cell
+		widths[ti] = lipgloss.Width(cell) + 1 // +1 = inter-tab space
+	}
+	// Second pass: window the bar so the ACTIVE tab is always on screen (a
+	// narrow pane must never hide where you are — see the ⏰-tab-invisible
+	// incident). Drop leading tabs until active fits; "‹" marks the cut.
+	start := 0
+	if m.width > 0 {
+		total := func(from int) int {
+			t := 0
+			for i := from; i <= activeIdx; i++ {
+				t += widths[i]
+			}
+			return t
+		}
+		for start < activeIdx && total(start)+2 > m.width { // +2 = "‹ " marker
+			start++
+		}
+	}
+	if start > 0 {
+		marker := dimStyle.Render("‹ ")
+		b.WriteString(marker)
+		x += lipgloss.Width(marker)
+	}
+	for ti := start; ti < len(kinds); ti++ {
+		spans = append(spans, tabSpan{start: x, end: x + widths[ti] - 1, tab: ti})
+		b.WriteString(cells[ti])
+		x += widths[ti] - 1
 		b.WriteString(" ")
 		x++
 	}
@@ -1050,9 +1125,9 @@ func (m watchModel) View() string {
 			label := r.Name + dimStyle.Render(" · "+meta+" · next "+r.Next+" · "+r.Status)
 			line = "  " + label
 			if row == m.cursor {
-				hint := " ↵ view run · f fire"
-				if _, ok := m.routineRun(r.Name); !ok {
-					hint = " f fire"
+				hint := " ↵ card · e edit · f fire"
+				if _, ok := m.routineRun(r.Name); ok {
+					hint = " ↵ card · v run · e edit · f fire"
 				}
 				line = "  " + selectedStyle.Render(" "+r.Name+" ") + dimStyle.Render(hint)
 			}

@@ -61,3 +61,49 @@ func ensureAgentNotes(home string) {
 	}
 	_ = os.WriteFile(claudeMd, []byte(body+agentNotesBlock), 0o644)
 }
+
+// Codex reads ~/.codex/AGENTS.md as standing instructions but has no import
+// syntax, so the executor briefing is pasted IN FULL between these markers
+// and re-pasted whenever the embedded copy changes. Anything the user keeps
+// outside the markers is preserved verbatim.
+const (
+	executorNotesBegin = "<!-- duck:executor-notes begin (managed by duck; edits inside are overwritten) -->"
+	executorNotesEnd   = "<!-- duck:executor-notes end -->"
+)
+
+// ensureExecutorNotes keeps the managed block in <home>/.codex/AGENTS.md in
+// sync with assets.ExecutorNotes. Same contract as ensureAgentNotes: cheap,
+// idempotent, errors swallowed.
+func ensureExecutorNotes(home string) {
+	if home == "" {
+		return
+	}
+	block := executorNotesBegin + "\n" + assets.ExecutorNotes + executorNotesEnd + "\n"
+	agentsMd := filepath.Join(home, ".codex", "AGENTS.md")
+	cur, err := os.ReadFile(agentsMd)
+	body := string(cur)
+	if err == nil {
+		if i := strings.Index(body, executorNotesBegin); i >= 0 {
+			if j := strings.Index(body, executorNotesEnd); j > i {
+				old := body[i : j+len(executorNotesEnd)+1]
+				if old == block || body[i:j+len(executorNotesEnd)]+"\n" == block {
+					return // already current
+				}
+				body = body[:i] + block + body[j+len(executorNotesEnd):]
+				body = strings.TrimSuffix(body, "\n") + "\n"
+				_ = os.WriteFile(agentsMd, []byte(body), 0o644)
+				return
+			}
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(agentsMd), 0o755); err != nil {
+		return
+	}
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	if body != "" {
+		body += "\n"
+	}
+	_ = os.WriteFile(agentsMd, []byte(body+block), 0o644)
+}

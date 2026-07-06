@@ -71,3 +71,41 @@ func TestEnsureAgentNotesHonorsConfigDir(t *testing.T) {
 		t.Fatalf("import not in CLAUDE_CONFIG_DIR: %v", err)
 	}
 }
+
+func TestEnsureExecutorNotes(t *testing.T) {
+	home := t.TempDir()
+
+	// Fresh install: file created with the managed block.
+	ensureExecutorNotes(home)
+	agentsMd := filepath.Join(home, ".codex", "AGENTS.md")
+	cur, err := os.ReadFile(agentsMd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cur), "duck:executor-notes begin") || !strings.Contains(string(cur), "you are an executor") {
+		t.Fatalf("managed block missing:\n%s", cur)
+	}
+
+	// Idempotent: second run leaves it byte-identical.
+	ensureExecutorNotes(home)
+	again, _ := os.ReadFile(agentsMd)
+	if string(again) != string(cur) {
+		t.Fatal("second run changed the file")
+	}
+
+	// User content outside the markers survives a re-paste of a stale block.
+	stale := "# my own codex notes\n\n" +
+		executorNotesBegin + "\nOLD CONTENT\n" + executorNotesEnd + "\n\n# more of mine\n"
+	if err := os.WriteFile(agentsMd, []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ensureExecutorNotes(home)
+	got, _ := os.ReadFile(agentsMd)
+	s := string(got)
+	if !strings.Contains(s, "# my own codex notes") || !strings.Contains(s, "# more of mine") {
+		t.Fatalf("user content lost:\n%s", s)
+	}
+	if strings.Contains(s, "OLD CONTENT") || !strings.Contains(s, "you are an executor") {
+		t.Fatalf("stale block not replaced:\n%s", s)
+	}
+}

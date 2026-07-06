@@ -139,9 +139,13 @@ default.
 - `duck routines add <name> …` — create one here (writes files, marks the
   workspace persistent); `rm <name>` deletes
 - `duck routines fire <name>` — manual trigger (roster ⏰ tab: `f`)
-- Roster ⏰ tab nests each routine's RUN: ↵/click swaps the executor pane
-  into the viewport; routine-backed runs fold here (no separate runs-tab
-  entry — only ad-hoc runs still surface a runs tab)
+- Roster ⏰ tab is the routine's home: ↵/click/arrows show its CARD (glow-
+  rendered prompt md + schedule/model/last/next meta, live-reloading on
+  edits), `v` swaps in the live run pane, `e` opens the prompt as a pad,
+  `f` fires. Routine-backed runs fold here (only ad-hoc runs surface a
+  separate runs tab)
+- `duck routines edit <name>` — open the prompt .md as a pad; the next
+  fire reads it fresh
 - `duck routines install` — systemd timer, evict-install pattern
 - `duck routines tick` — hidden; the timer's entrypoint
 

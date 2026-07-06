@@ -752,6 +752,22 @@ func ShowWorkspacePreview(run Runner, outer, wsName, mainPane string) error {
 	return showFiller(run, outer, "sh -c "+paths.Quote(body))
 }
 
+// ShowRoutineDetail renders a routine's CARD in the placeholder viewport —
+// the Codex-automation-style detail view: a header naming the routine, a meta
+// line (schedule · model · last/next fire · status), then the job description
+// itself (the def's .md) glow-rendered. Live: WINCH redraws, and an mtime
+// poll repaints when the .md is edited underneath.
+func ShowRoutineDetail(run Runner, outer, name, meta, mdPath string) error {
+	q := paths.Quote(mdPath)
+	render := `(glow -w "$(tput cols 2>/dev/null || echo 100)" ` + q + ` 2>/dev/null || cat ` + q + ` 2>/dev/null || printf 'no prompt file: %s\n' ` + q + `)`
+	body := `draw() { clear; printf '\033[7m ⏰ %s \033[0m\n\033[2m%s\033[0m\n\n' ` +
+		paths.Quote(name) + ` ` + paths.Quote(meta) + `; ` + render + `; }; ` +
+		`trap draw WINCH; draw; m=$(stat -c %Y ` + q + ` 2>/dev/null); ` +
+		`while :; do sleep 1; n=$(stat -c %Y ` + q + ` 2>/dev/null); ` +
+		`if [ "$n" != "$m" ]; then m=$n; draw; fi; done`
+	return showFiller(run, outer, "sh -c "+paths.Quote(body))
+}
+
 // showFiller ensures the single reusable placeholder pane exists (roster-hidden
 // via anchorOption, findable via placeholderOpt), (re)runs it with the given
 // full tmux command, and swaps it on display. Reused across ShowEmpty and

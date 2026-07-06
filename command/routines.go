@@ -125,7 +125,14 @@ func listRoutines(c *cobra.Command) error {
 			}
 			status := routineStatus(run, ws, d.Name)
 			if routinesTSV {
-				fmt.Fprintf(c.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, model, last, next, status)
+				// Machine row carries one extra trailing field: the prompt .md
+				// path (free-text LAST, per the tmux-parsing house rule) — the
+				// roster's card/edit affordances need it.
+				mdPath := ""
+				if dir, derr := routines.WorkspaceDir(ref.Root, ws); derr == nil {
+					mdPath = filepath.Join(dir, d.Name+".md")
+				}
+				fmt.Fprintf(c.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, model, last, next, status, mdPath)
 			} else {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ws, d.Name, d.Trigger, sched, model, last, next, status)
 			}
@@ -397,6 +404,61 @@ var routinesRmCmd = &cobra.Command{
 	},
 }
 
+// routinesEditCmd opens a routine's job description (.md) as a buffer pane —
+// the same live viewer/editor pads get. The next fire reads the file fresh,
+// so an edit takes effect without any re-registration.
+var routinesEditCmd = &cobra.Command{
+	Use:   "edit <name>",
+	Short: "Open a routine's prompt (.md) in a buffer pane; next fire picks it up",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(c *cobra.Command, args []string) error {
+		run := panel.ExecRunner
+		ws, err := currentWorkspace(run)
+		if err != nil {
+			return err
+		}
+		root, err := routines.SyncRoot(run, ws)
+		if err != nil {
+			return err
+		}
+		dir, err := routines.WorkspaceDir(root, ws)
+		if err != nil {
+			return err
+		}
+		mdPath := filepath.Join(dir, args[0]+".md")
+		if _, err := os.Stat(mdPath); err != nil {
+			return fmt.Errorf("no routine %q in workspace %s (see: duck routines)", args[0], ws)
+		}
+		return openBufferPath(c, mdPath)
+	},
+}
+
+// openBufferPath opens a file with the PAD treatment (glow viewer, e-to-edit,
+// live reload on disk writes) as a buffer pane in the current workspace —
+// mirrors `duck edit <path>` but keeps the pad-style viewer, which suits
+// routine prompts (an agent edit repaints an open card/pad instantly).
+func openBufferPath(c *cobra.Command, path string) error {
+	run := panel.ExecRunner
+	outer, dir, err := panelContext(run)
+	if err != nil {
+		return err
+	}
+	comp, err := panel.EnsureCompanion(run, outer, dir)
+	if err != nil {
+		return err
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		bin = "duck"
+	}
+	if err := panel.Open(run, outer, comp, bin); err != nil {
+		return err
+	}
+	name := strings.TrimSuffix(filepath.Base(path), ".md")
+	_, err = panel.Spawn(run, outer, name, dir, panel.PadCmd(path), panel.KindBuffer)
+	return err
+}
+
 var routinesFireCmd = &cobra.Command{
 	Use:   "fire <name>",
 	Short: "Manually trigger a routine of this workspace (also forces a cron one)",
@@ -625,6 +687,6 @@ func init() {
 	routinesAddCmd.Flags().StringVar(&addEffort, "effort", "", "executor reasoning effort: low|medium|high; default = codex config default")
 	routinesInstallCmd.Flags().BoolVar(&routinesUninstall, "uninstall", false, "remove the hub routines timer")
 	routinesInstallCmd.Flags().DurationVar(&routinesEvery, "every", time.Minute, "tick interval for the installed hub timer")
-	routinesCmd.AddCommand(routinesAddCmd, routinesRmCmd, routinesFireCmd, routinesTickCmd, routinesInstallCmd)
+	routinesCmd.AddCommand(routinesAddCmd, routinesRmCmd, routinesFireCmd, routinesEditCmd, routinesTickCmd, routinesInstallCmd)
 	rootCmd.AddCommand(routinesCmd)
 }
