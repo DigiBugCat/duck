@@ -162,7 +162,11 @@ const headerLines = 2
 // the pinned ⌂ ws tab last.
 func (m watchModel) tabs() []string {
 	count := map[string]int{}
+	owned := m.routineNames()
 	for _, a := range m.agents {
+		if a.Kind == KindRun && owned[a.Name] {
+			continue // folded under the ⏰ tab (see routineNames)
+		}
 		count[a.Kind]++
 	}
 	out := append([]string{}, BaseKinds...)
@@ -212,6 +216,15 @@ func (m *watchModel) switchTab(kind string) {
 		m.cursor = 0
 	}
 	if m.tabKind == schedTab {
+		// Arriving on ⏰ shows the selected routine's run (its nested view)
+		// when one exists; firing stays behind the explicit `f`.
+		if idx := m.visible(); m.cursor < len(idx) {
+			if a, ok := m.routineRun(m.routines[idx[m.cursor]].Name); ok {
+				_ = Select(m.run, m.outer, a.PaneID)
+				return
+			}
+		}
+		_ = ShowEmpty(m.run, m.outer, m.tabKind)
 		return
 	}
 	if m.tabKind == wsTab {
@@ -341,9 +354,13 @@ func (m watchModel) visible() []int {
 		}
 		return idx
 	}
+	owned := m.routineNames()
 	for i, a := range m.agents {
 		if a.Kind != m.tabKind {
 			continue
+		}
+		if a.Kind == KindRun && owned[a.Name] {
+			continue // routine-backed run: lives under the ⏰ tab, not here
 		}
 		if q != "" && !isSubseq(strings.ToLower(a.Name), q) {
 			continue
@@ -351,6 +368,28 @@ func (m watchModel) visible() []int {
 		idx = append(idx, i)
 	}
 	return idx
+}
+
+// routineNames is the set of this workspace's routine names. Executor panes
+// (kind=runs) named after a routine are that routine's NESTED view: they fold
+// under the ⏰ tab (↵ on the routine shows the run) instead of cluttering a
+// separate runs tab. Ad-hoc runs (no matching routine) still get the runs tab.
+func (m watchModel) routineNames() map[string]bool {
+	names := make(map[string]bool, len(m.routines))
+	for _, r := range m.routines {
+		names[r.Name] = true
+	}
+	return names
+}
+
+// routineRun finds the live executor pane backing a routine, if any.
+func (m watchModel) routineRun(name string) (Agent, bool) {
+	for _, a := range m.agents {
+		if a.Kind == KindRun && a.Name == name {
+			return a, true
+		}
+	}
+	return Agent{}, false
 }
 
 func (m watchModel) isVerb() bool {
@@ -474,11 +513,14 @@ func (m *watchModel) viewSelected() string {
 		return ""
 	}
 	if m.tabKind == schedTab {
+		// ↵/click = the routine's nested view: swap its executor pane in.
+		// Firing is the explicit `f` (fireSelected) — viewing must be safe.
 		r := m.routines[idx[m.cursor]]
-		if out := m.duckExec("routines", "fire", r.Name); out != "" {
-			return out
+		if a, ok := m.routineRun(r.Name); ok {
+			_ = Select(m.run, m.outer, a.PaneID)
+			return ""
 		}
-		return "fired " + r.Name
+		return "no run yet for " + r.Name + " — press f to fire it"
 	}
 	if m.tabKind == wsTab {
 		// Preview only — actually switching is the explicit `g` (go). Enter and
@@ -808,6 +850,18 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.lastMsg = m.viewSelected()
 			return m, m.load
+		case "f": // fire the highlighted routine now (⏰ tab only)
+			if m.tabKind == schedTab {
+				if idx := m.visible(); m.cursor < len(idx) {
+					r := m.routines[idx[m.cursor]]
+					if out := m.duckExec("routines", "fire", r.Name); out != "" {
+						m.lastMsg = out
+					} else {
+						m.lastMsg = "fired " + r.Name
+					}
+					return m, m.load
+				}
+			}
 		case "g": // go: commit switch to the highlighted workspace (ws tab only)
 			if m.tabKind == wsTab {
 				m.lastMsg = m.goWorkspace()
@@ -996,7 +1050,11 @@ func (m watchModel) View() string {
 			label := r.Name + dimStyle.Render(" · "+meta+" · next "+r.Next+" · "+r.Status)
 			line = "  " + label
 			if row == m.cursor {
-				line = "  " + selectedStyle.Render(" "+r.Name+" ") + dimStyle.Render(" ↵ fire")
+				hint := " ↵ view run · f fire"
+				if _, ok := m.routineRun(r.Name); !ok {
+					hint = " f fire"
+				}
+				line = "  " + selectedStyle.Render(" "+r.Name+" ") + dimStyle.Render(hint)
 			}
 			b.WriteString(truncate(line, m.width) + "\n")
 			continue

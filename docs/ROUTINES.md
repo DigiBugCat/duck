@@ -138,7 +138,10 @@ default.
 - `duck routines` — list this workspace's routines (`--all`: every workspace)
 - `duck routines add <name> …` — create one here (writes files, marks the
   workspace persistent); `rm <name>` deletes
-- `duck routines fire <name>` — manual trigger (also from roster: `new`/fire)
+- `duck routines fire <name>` — manual trigger (roster ⏰ tab: `f`)
+- Roster ⏰ tab nests each routine's RUN: ↵/click swaps the executor pane
+  into the viewport; routine-backed runs fold here (no separate runs-tab
+  entry — only ad-hoc runs still surface a runs tab)
 - `duck routines install` — systemd timer, evict-install pattern
 - `duck routines tick` — hidden; the timer's entrypoint
 
