@@ -234,7 +234,7 @@ func ensureHubOrOfferSetup() error {
 	if err != nil {
 		return err
 	}
-	if cfg.Hub != "" {
+	if cfg.Hub != "" || config.LocalHub(cfg) {
 		return nil
 	}
 	if !isInteractive() {

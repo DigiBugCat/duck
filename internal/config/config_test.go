@@ -303,3 +303,75 @@ func TestPushAnchorWritesSharedSubset(t *testing.T) {
 		t.Fatalf("streamed JSON = %q, want the shared config subset", lastInput)
 	}
 }
+
+// TestLocalHub pins hub-local self-detection (see LocalHub): explicit is_hub
+// wins outright; the names.json probe fires ONLY when no hub is configured; a
+// configured hub short-circuits the probe even if a stray names.json exists.
+func TestLocalHub(t *testing.T) {
+	t.Run("nil config is not a hub", func(t *testing.T) {
+		if LocalHub(nil) {
+			t.Fatal("LocalHub(nil) = true, want false")
+		}
+	})
+	t.Run("explicit is_hub wins", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		if !LocalHub(&Config{IsHub: true}) {
+			t.Fatal("LocalHub with IsHub=true = false, want true")
+		}
+	})
+	t.Run("no hub, no names.json: not a hub", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		if LocalHub(&Config{}) {
+			t.Fatal("LocalHub on a bare machine = true, want false")
+		}
+	})
+	t.Run("no hub, local names.json: is a hub", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if err := os.MkdirAll(filepath.Join(home, ".duck"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".duck", "names.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if !LocalHub(&Config{}) {
+			t.Fatal("LocalHub with local names.json and no hub = false, want true")
+		}
+	})
+	t.Run("configured hub suppresses the probe", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if err := os.MkdirAll(filepath.Join(home, ".duck"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".duck", "names.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if LocalHub(&Config{Hub: "me@hub"}) {
+			t.Fatal("LocalHub with a configured hub = true, want false (probe must not fire)")
+		}
+	})
+}
+
+// TestIsHubRoundTrips pins that is_hub survives Save/Load and that the
+// hub-setup stamp form (`is_hub = true` appended as plain text) decodes.
+func TestIsHubRoundTrips(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if err := Save(&Config{IsHub: true}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.IsHub {
+		t.Fatal("IsHub lost through Save/Load")
+	}
+	c2 := &Config{}
+	if _, err := toml.Decode("hub = \"\"\nis_hub = true\n", c2); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !c2.IsHub {
+		t.Fatal("is_hub = true did not decode")
+	}
+}

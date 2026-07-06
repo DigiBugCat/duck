@@ -79,27 +79,52 @@ func effectiveTsshAttach(transport string, lookPath func(string) (string, error)
 // build assembles the wiring from the configured hub, warming the SSH
 // control-master so the subsequent calls reuse it.
 func build() (*wiring, error) {
-	cfg, err := config.RequireHub()
+	// Hub-local mode first: when THIS machine is the hub (explicit is_hub, or
+	// the names.json probe — see config.LocalHub), no hub address is needed and
+	// every call runs against the local tmux server. Checked BEFORE RequireHub so
+	// running duck on the hub itself never fails with "no hub configured".
+	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
+	}
+	localHub := config.LocalHub(cfg)
+	if localHub {
+		if !cfg.IsHub {
+			// Self-heal: turn the names.json inference into a durable, visible
+			// fact so future runs (and `duck config`) don't re-infer. Best-effort.
+			cfg.IsHub = true
+			_ = config.Save(cfg)
+		}
+		if cfg.HubName == "" {
+			cfg.HubName, _ = os.Hostname()
+		}
+	} else {
+		cfg, err = config.RequireHub()
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Resolve the EFFECTIVE attach transport once: tssh only when the user opted
 	// in AND the local `tssh` client is installed; otherwise fall back to ssh with
 	// a one-line warning so the user is never locked out by a missing client. The
 	// hub side (tsshd) and UDP reachability surface at connect time via tssh's own
-	// stderr. Only the interactive attach is affected — see Client.Tssh.
-	useTssh, warn := effectiveTsshAttach(cfg.Transport(), exec.LookPath)
+	// stderr. Only the interactive attach is affected — see Client.Tssh. Hub-local
+	// mode always uses the local attach path, so tssh never applies there.
+	useTssh, warn := false, ""
+	if !localHub {
+		useTssh, warn = effectiveTsshAttach(cfg.Transport(), exec.LookPath)
+	}
 	if warn != "" {
 		fmt.Fprintln(os.Stderr, warn)
 	}
 	client := sshx.NewWithTransport(cfg.Hub, useTssh, cfg.HubTsshdPath)
-	// If we're running ON the hub itself (this machine's hostname matches the one
-	// captured at `duck hub setup`), skip ssh entirely and run every command/attach
-	// locally. Lets `duck` on the host behave like duck everywhere else instead of
-	// round-tripping ssh to itself (and so the host installs its own claude-hook.sh
-	// rather than only the remote one). Best-effort: any hostname error leaves it
-	// off and duck ssh's as before.
-	if onHub(cfg.HubName) {
+	// If we're running ON the hub itself — hub-local mode, or this machine's
+	// hostname matches the one captured at `duck hub setup` — skip ssh entirely
+	// and run every command/attach locally. Lets `duck` on the host behave like
+	// duck everywhere else instead of round-tripping ssh to itself (and so the
+	// host installs its own claude-hook.sh rather than only the remote one).
+	// Best-effort: any hostname error leaves it off and duck ssh's as before.
+	if localHub || onHub(cfg.HubName) {
 		client.Local = true
 	}
 	// Best-effort warm-up; failures surface on the first real call with a

@@ -287,6 +287,14 @@ func runHubSetup(addr string, h *hub.Hub) error {
 		return fmt.Errorf("installing open-interceptor: %w", err)
 	}
 
+	// 4.5. stamp the hub's own config with is_hub = true so `duck` run ON the
+	// hub goes hub-local (local tmux, no hub address needed) instead of failing
+	// with "no hub configured". Best-effort and idempotent: config.LocalHub's
+	// names.json probe self-heals it anyway once the hub has sessions.
+	if _, err := h.Run(stampIsHubCmd()); err != nil {
+		fmt.Printf("note: could not stamp is_hub on the hub config (%v); duck will self-detect once sessions exist\n", err)
+	}
+
 	// 5. bootstrap `duck` itself onto the hub so cross-machine claude-history
 	// reconcile can run there (making laptop-started sessions resumable on the
 	// hub). Best-effort: the hub still works without it (reconcile just won't run
@@ -510,6 +518,15 @@ func installTsshdLinuxScript() string {
 // Linux hub where tssh auto-installs tsshd) is fine — the attach omits the flag.
 func tsshdPathProbeCmd() string {
 	return `command -v tsshd 2>/dev/null || true`
+}
+
+// stampIsHubCmd appends `is_hub = true` to the HUB's own duck config (creating
+// the file if needed) so duck run on the hub goes hub-local without needing a
+// hub address (see config.LocalHub). Idempotent: the append is gated on the key
+// being absent. Plain-text append rather than toml rewrite because the hub may
+// not have duck installed yet at this point in provisioning.
+func stampIsHubCmd() string {
+	return `mkdir -p ~/.config/duck; touch ~/.config/duck/config.toml; grep -q '^is_hub' ~/.config/duck/config.toml || printf 'is_hub = true\n' >> ~/.config/duck/config.toml`
 }
 
 // installTPMScript clones the Tmux Plugin Manager if it is not already present.

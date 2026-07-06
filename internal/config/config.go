@@ -27,6 +27,13 @@ type Config struct {
 	// the reconciler detects it lazily and writes it back. See command/claudehistory.go.
 	HubHome string `toml:"hub_home,omitempty"`
 
+	// IsHub marks THIS machine as the hub itself: every command runs against the
+	// local tmux server directly (sshx.Client.Local) and no Hub address is
+	// required. Written two ways: `duck hub setup` stamps it on the remote it
+	// provisions, and LocalHub self-heals it when it detects hub-only state
+	// (~/.duck/names.json) on a machine with no hub configured.
+	IsHub bool `toml:"is_hub,omitempty"`
+
 	// AnchorHost is the anchor host address (user@host), independently
 	// configurable from Hub: it holds ~/.duck/anchor.json, a small shared-state
 	// file (the hub address + a subset of user-level config) that every laptop
@@ -218,6 +225,36 @@ func RequireHub() (*Config, error) {
 		return nil, fmt.Errorf("no hub configured. run: duck hub setup <user@host>")
 	}
 	return c, nil
+}
+
+// LocalHub reports whether THIS machine is the hub itself, so commands should
+// run against the local tmux server instead of requiring a configured hub
+// address. Two signals, both machine-local:
+//
+//  1. an explicit `is_hub = true` in the config (stamped by `duck hub setup`
+//     on the machine it provisions, or self-healed by signal 2), or
+//  2. no hub configured AND ~/.duck/names.json exists locally — names.json is
+//     hub-only state by design (every laptop reads/writes it over SSH, never
+//     locally), so its local presence is proof this machine hosts the fleet.
+//
+// The probe only fires when Hub is empty: a laptop with a configured hub never
+// evaluates it, so a stray copied names.json cannot hijack a working client.
+func LocalHub(c *Config) bool {
+	if c == nil {
+		return false
+	}
+	if c.IsHub {
+		return true
+	}
+	if c.Hub != "" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".duck", "names.json"))
+	return err == nil
 }
 
 // anchorConfigKeys is the shared config subset synced through the anchor:
