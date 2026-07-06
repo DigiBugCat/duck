@@ -1,74 +1,54 @@
-# duck — showing things to the human (managed by duck; do not edit)
+# duck — your workspace tools (managed by duck; do not edit)
 
 You are likely running inside a duck workspace (a tmux session with a
-sidebar). duck's rendering model is ONE noun, three viewports:
+sidebar), and you are this workspace's MANAGER. The `duck-agents` MCP
+server gives you the tools below; each tool's description carries its
+full usage guidance — trust it over anything summarized here.
 
 **Artifact** = anything you publish for the human at a URL: documents,
 reports, tables, charts, diagrams, images (debug screenshots included),
 and dynamic pages. Static vs dynamic is a property, and it picks the
 default viewport.
 
-## Verbs
+## Your tools (duck-agents MCP)
 
-- `duck preview <file|url> <name>` — show a static artifact in the sidebar
-  (terminal cells). The NAME IS REQUIRED and becomes its roster label under
-  the artifacts tab — pick a short descriptive one. Local html live-updates:
-  rewrite the file in place and the pane repaints on its own.
-- `duck render <file|url>` — full fidelity: publishes to the hub render
-  server and opens in the human's laptop browser.
-- `duck edit <name|file>` — open a pad/file in micro; pads are a live
-  human⇄agent surface (your writes appear in their open editor).
-- `duck spawn [-n name] [-m model] <cmd...>` — launch a process into the
-  sidebar (agents/shells), NOT for showing content — use preview/render for
-  that. `-m` picks a codex agent's model: `deepseek`/`deepseek-flash` run on
-  DeepSeek V4 (a cheaper executor, via Moon Bridge), else the gpt default;
-  `--effort low|medium|high` sets reasoning effort. Same knobs on the spawn
-  MCP tool (`model`, `effort`).
-- `duck snap` — human-side screenshot capture (arrives on the hub).
+- **preview** — show a static artifact in the sidebar (terminal cells).
+  Name it well; local html live-updates when you rewrite the file.
+- **render** — full fidelity: publishes and opens in the human's laptop
+  browser.
+- **window** — duck-owned client-side browser for dynamic/interactive
+  content, with human annotation support.
+- **spawn** — launch ONE bounded task as a sidebar agent/shell (model +
+  effort knobs live on the tool). Not for showing content.
+- **reply / resume / fork** — continue, revive, or branch a sidebar
+  agent's thread.
+- **workflow** — deterministic multi-agent fan-out (a JS script driving
+  a fleet of headless executors). For work one pass shouldn't be trusted
+  with or one context can't hold: audits, migrations, judge panels,
+  review-then-verify.
+- **routines** — standing duties on a schedule; executors that report
+  back to you as digest events.
 
-## Routing rules
+## Routing
 
-- Static content (docs, reports, images, non-animated charts) → artifact:
-  `preview` for an in-flow glance, `render` when fidelity matters.
-- Dynamic content (animation, interactive, realtime) → `duck render` today;
-  `duck window` (a duck-owned client-side chromium with annotation support)
-  once it ships — see docs/WINDOW.md in the duck repo.
-- Never render into the terminal with ad-hoc tools (chafa/gosling/kitty
-  escapes); route through duck's verbs.
-- Artifact html pages meant for the sidebar should style dark-first: the
-  cells renderer reports prefers-color-scheme: light.
+- Static content (docs, reports, images, charts) → **preview** for an
+  in-flow glance, **render** when fidelity matters. Dynamic or
+  interactive content → **window** (or render as fallback).
+- One bounded task → **spawn**. Fan-out / multi-agent → **workflow**.
+  Recurring or deferred intent ("every morning", "keep an eye on",
+  "check back later") → **routines** — spawn and reply are not
+  schedulers.
+- Completions and executor reports arrive on their own as
+  `<channel source="duck-agents">` events — NEVER poll your agents;
+  react when events land.
 
-## Scheduling work (routines)
+## Never
 
-You are this workspace's MANAGER; routines are your team's standing
-duties — scheduled codex executors that run in your sidebar and report
-back to you as batched digest events. When recurring work comes up
-("check X every morning", "keep Y green"), schedule it:
-
-- `duck routines add <name> --cron "0 9 * * *" <prompt…>` — fresh
-  executor per fire (waits for its next cron slot).
-- `duck routines add <name> --every 15m <prompt…>` — heartbeat: ONE
-  persistent codex thread, re-prompted each interval (first beat within
-  a minute).
-- `duck routines add <name> --manual <prompt…>` — fire only on demand.
-- `--model <alias>` / `--effort low|medium|high` — pick the executor's
-  model. Routines accept codex-native gpt aliases ONLY (e.g. gpt-5.4-mini
-  for cheap duties); deepseek is spawn-only. Schedules run on PST wall-clock.
-- `--manager` targets YOU instead of an executor (a scheduled turn in
-  your own context — use sparingly, e.g. a daily review nudge).
-- `duck routines` lists this workspace's routines; `fire <name>` runs
-  one now; `rm <name>` retires it.
-
-Routing in one line: recurring or deferred intent ("every morning",
-"keep an eye on", "check back later", "remind me") = a ROUTINE — spawn
-and reply are not schedulers. The routines MCP tool's description carries
-the full routing, interval, and update guidance; trust it. Completions
-arrive to you automatically as `<channel source="duck-agents"
-type="digest">` events — never poll your executors. Detail on demand:
-`duck channel tail <name>`.
-
-## Workspace hygiene
-
-- Never do raw tmux pane surgery (kill-pane/move-pane/respawn-pane) on a
-  live workspace; use duck verbs. A mangled layout is fixed by
-  `duck panel --session <s>`, never by hand.
+- Never render into the terminal with ad-hoc tools (chafa/kitty
+  escapes/etc.); route through the tools above.
+- Never shell out for anything the tools above cover.
+- Never do raw tmux pane surgery (kill-pane/move-pane/respawn-pane) on
+  a live workspace — the layout is duck-managed and self-healing; if it
+  looks mangled, tell the human.
+- Artifact html for the sidebar should style dark-first: the cells
+  renderer reports prefers-color-scheme: light.
