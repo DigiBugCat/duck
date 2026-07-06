@@ -56,7 +56,7 @@ type Host interface {
 
 	Preview(workspace, target, name string) (paneID string, err error)
 	Render(workspace, target string) error
-	Window(workspace, target string) (string, error)
+	Window(workspace, target, name string) (string, error)
 
 	Routines(workspace string) (string, error)          // human-readable listing
 	FireRoutine(workspace, name string) (string, error) // run one now
@@ -352,15 +352,16 @@ func (s *server) tools() []tool {
 				"type": "object",
 				"properties": map[string]any{
 					"target": map[string]any{"type": "string", "description": "file path or URL"},
+					"name":   map[string]any{"type": "string", "description": "optional roster label (default: basename or host)"},
 				},
 				"required": []string{"target"},
 			},
 			handler: func(raw json.RawMessage) (string, error) {
-				var a struct{ Target string }
+				var a struct{ Target, Name string }
 				if err := json.Unmarshal(raw, &a); err != nil {
 					return "", err
 				}
-				shown, err := s.host.Window(ws, a.Target)
+				shown, err := s.host.Window(ws, a.Target, a.Name)
 				if err != nil {
 					return "", err
 				}

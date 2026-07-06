@@ -5,9 +5,9 @@
 //   - BROWSE (default): arrows pick, ←→/⇥ switch tabs, ↵ shows/acts on the
 //     selected item, x (twice) kills it. Some tabs add their own letter
 //     shortcuts — the hint line always shows the active tab's keys:
-//       · item tabs (agents/shells/artifacts/scratchpad): ↵ view · x kill
-//       · ⏰ routines: ↵ card · v run · e edit · f fire
-//       · ⌂ workspaces: ↵ preview · g go · b back · x kill · s scope
+//     · item tabs (agents/shells/artifacts/scratchpad): ↵ view · x kill
+//     · ⏰ routines: ↵ card · v run · e edit · f fire
+//     · ⌂ workspaces: ↵ preview · g go · b back · x kill · s scope
 //   - COMMAND: entered by typing `:` or clicking the box. The always-visible
 //     box at the bottom takes over: typing live-filters the list and jumps
 //     by name on ↵; verbs (new/spawn/edit/preview/render/kill/workspaces/
@@ -84,17 +84,17 @@ type watchModel struct {
 	outer    string
 	statusFn StatusFn
 
-	agents     []Agent
-	statuses   map[string]string
-	workspaces []Workspace
-	routines   []routineRow
+	agents         []Agent
+	statuses       map[string]string
+	workspaces     []Workspace
+	routines       []routineRow
 	tabKind        string         // active tab BY NAME
 	cursor         int            // index into visible() rows
 	tabCursor      map[string]int // last cursor per tab, so switching back restores it
 	wsScopeProject bool           // ⌂ ws tab: true = this project only, false = all sessions (s toggles)
 	lastActive     string         // pane id of the last observed viewport occupant (see syncToOccupant)
-	width      int
-	height     int
+	width          int
+	height         int
 
 	input       textinput.Model
 	cmdFocus    bool   // command mode: the box owns the keyboard
@@ -103,6 +103,7 @@ type watchModel struct {
 	lastMsg     string // last command result/error, until next keypress
 	focused     bool
 	swallowNext bool // the click that focuses the pane must not also select
+	duckExecFn  func(args ...string) string
 }
 
 // Watch runs the roster TUI until close/ctrl+c.
@@ -586,6 +587,17 @@ func (m watchModel) fuzzyAgent(q string) *Agent {
 	return subseq
 }
 
+func (m watchModel) selectedAgent() (Agent, bool) {
+	if m.tabKind == schedTab || m.tabKind == wsTab {
+		return Agent{}, false
+	}
+	idx := m.visible()
+	if m.cursor >= len(idx) {
+		return Agent{}, false
+	}
+	return m.agents[idx[m.cursor]], true
+}
+
 func isSubseq(hay, needle string) bool {
 	i := 0
 	for _, c := range hay {
@@ -615,10 +627,26 @@ func (m *watchModel) viewSelected() string {
 		m.previewWorkspace()
 		return ""
 	}
-	wid := m.agents[idx[m.cursor]].PaneID
+	a := m.agents[idx[m.cursor]]
+	wid := a.PaneID
 	_ = Select(m.run, m.outer, wid) // swap first: previews respawn at slot geometry
-	RefreshIfStale(m.run, wid, FileMtime)
+	if !IsWindowArtifact(a) {
+		RefreshIfStale(m.run, wid, FileMtime)
+	}
 	return ""
+}
+
+func (m *watchModel) focusWindowSelected() string {
+	a, ok := m.selectedAgent()
+	if !ok || !IsWindowArtifact(a) {
+		return m.viewSelected()
+	}
+	_ = Select(m.run, m.outer, a.PaneID)
+	u := WindowArtifactURL(m.run, a.PaneID)
+	if u == "" {
+		return "window artifact has no URL"
+	}
+	return m.duckExec("window", u, a.Name)
 }
 
 // renamePad renames a scratchpad's backing .md and relabels its pane.
@@ -780,6 +808,9 @@ func (m *watchModel) runInput() string {
 
 // duckExec shells out to this duck binary for command-layer verbs.
 func (m *watchModel) duckExec(args ...string) string {
+	if m.duckExecFn != nil {
+		return m.duckExecFn(args...)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err.Error()
@@ -957,7 +988,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "tab", "l":
 			m.cycleTab(1)
 		case "enter":
-			m.lastMsg = m.viewSelected()
+			m.lastMsg = m.focusWindowSelected()
 			return m, m.load
 		case "v": // view the highlighted routine's live run pane (⏰ tab only)
 			if m.tabKind == schedTab {
@@ -1066,10 +1097,20 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if idx := m.visible(); m.cursor < len(idx) {
-				wid := m.agents[idx[m.cursor]].PaneID
+				a := m.agents[idx[m.cursor]]
+				wid := a.PaneID
+				if IsWindowArtifact(a) {
+					wasActive := a.Active
+					_ = Kill(m.run, wid)
+					if wasActive {
+						EnsureSlot(m.run, m.outer)
+					}
+					m.lastMsg = "removed " + a.Name
+					return m, m.load
+				}
 				if m.armedKill == wid {
 					m.armedKill = ""
-					wasActive := m.agents[idx[m.cursor]].Active
+					wasActive := a.Active
 					_ = Kill(m.run, wid)
 					if wasActive {
 						EnsureSlot(m.run, m.outer)
@@ -1306,7 +1347,9 @@ func (m watchModel) View() string {
 				marker = activeStyle.Render("▶ ")
 			}
 			label := a.Name
-			if a.Command != "" && !strings.EqualFold(a.Command, a.Name) {
+			if IsWindowArtifact(a) {
+				label += dimStyle.Render(" · window")
+			} else if a.Command != "" && !strings.EqualFold(a.Command, a.Name) {
 				label += dimStyle.Render(" · " + a.Command)
 			}
 			line = marker + statusGlyph(m.statuses[a.PaneID]) + " " + label
@@ -1364,6 +1407,12 @@ func (m watchModel) View() string {
 		hintLine = dimStyle.Render(" ↵ view · n new · x kill · ←→ tabs · q close")
 	case m.tabKind == KindBuffer:
 		hintLine = dimStyle.Render(" ↵ view · n new · r rename · x kill · ←→ tabs")
+	case m.tabKind == KindArtifact:
+		if a, ok := m.selectedAgent(); ok && IsWindowArtifact(a) {
+			hintLine = dimStyle.Render(" ↵ focus · x remove · ←→ tabs · : commands · q close")
+		} else {
+			hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
+		}
 	default:
 		hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
 	}

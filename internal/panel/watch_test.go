@@ -1,6 +1,11 @@
 package panel
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 func syncModel(agents []Agent, routines []routineRow) watchModel {
 	return watchModel{
@@ -61,5 +66,63 @@ func TestSyncToOccupantIgnoresPlaceholder(t *testing.T) {
 	}
 	if m.lastActive != "%5" {
 		t.Errorf("lastActive should still advance, got %q", m.lastActive)
+	}
+}
+
+func TestWindowArtifactEnterRefocusesClientWindow(t *testing.T) {
+	f := &fakeRunner{out: map[string]string{
+		rolesKey:                                        "%5\tviewport\n",
+		"show-options -p -t %8 -v @duck_url":            "http://hub:7327/dash\n",
+		"list-clients -t work -F #{client_name}":        "",
+		"select-layout -t work-agents:lot tiled":        "",
+		"swap-pane -d -s %8 -t %5":                      "",
+		"set-option -p -t %5 -u @duck_panel_role":       "",
+		"set-option -p -t %8 @duck_panel_role viewport": "",
+	}}
+	var got []string
+	m := watchModel{
+		run:       f.run,
+		outer:     "work",
+		tabKind:   KindArtifact,
+		tabCursor: map[string]int{},
+		agents: []Agent{
+			{PaneID: "%8", Name: "dashboard", Kind: KindArtifact, RawKind: KindWindow},
+		},
+		duckExecFn: func(args ...string) string {
+			got = append([]string{}, args...)
+			return "shown: http://hub:7327/dash"
+		},
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(watchModel)
+	if !reflect.DeepEqual(got, []string{"window", "http://hub:7327/dash", "dashboard"}) {
+		t.Fatalf("duck exec args = %#v", got)
+	}
+	if m.lastMsg != "shown: http://hub:7327/dash" {
+		t.Fatalf("lastMsg = %q", m.lastMsg)
+	}
+}
+
+func TestWindowArtifactXRemovesPlaceholderRow(t *testing.T) {
+	f := &fakeRunner{}
+	m := watchModel{
+		run:       f.run,
+		outer:     "work",
+		tabKind:   KindArtifact,
+		tabCursor: map[string]int{},
+		agents: []Agent{
+			{PaneID: "%8", Name: "dashboard", Kind: KindArtifact, RawKind: KindWindow},
+		},
+	}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	m = next.(watchModel)
+	if !f.called("kill-pane -t %8") {
+		t.Fatalf("x should remove the placeholder pane: %v", f.calls)
+	}
+	if m.armedKill != "" {
+		t.Fatalf("window removal should not use x-twice arming, got %q", m.armedKill)
+	}
+	if m.lastMsg != "removed dashboard" {
+		t.Fatalf("lastMsg = %q", m.lastMsg)
 	}
 }

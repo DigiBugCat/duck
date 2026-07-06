@@ -195,7 +195,7 @@ func defaultStartWindowHost() error {
 }
 
 var windowCmd = &cobra.Command{
-	Use:   "window <file|url>",
+	Use:   "window <file|url> [name]",
 	Short: "Show a dynamic artifact in the duck-owned client window (see docs/WINDOW.md)",
 	Long: `Publishes the target (a local file goes through the same render-server
 symlink trick as duck render; a URL passes through unchanged) and tells the
@@ -204,33 +204,79 @@ CDP-driven chromium duck keeps custody of: it supports highlight/comment
 annotations you can query back with "duck window marks". Unlike duck
 preview, the window is a real browser window on the client machine, not
 terminal cells.`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.RangeArgs(1, 2),
 	RunE: func(c *cobra.Command, args []string) error {
-		u, err := publishArtifact(args[0])
+		name := ""
+		if len(args) == 2 {
+			name = args[1]
+		}
+		u, target, body, err := showWindow(args[0], name, "")
 		if err != nil {
 			return err
 		}
-		client, baseURL, target := windowClient("")
-		if err := ensureWindowTarget(target); err != nil {
-			return err
-		}
-		form := url.Values{"url": {u}}
-		if ws, err := panel.CurrentSession(panel.ExecRunner); err == nil && ws != "" {
-			form.Set("workspace", ws)
-		}
-		resp, err := client.PostForm(baseURL+"/open", form)
-		if err != nil {
-			return fmt.Errorf("window host at %s: %w", target.label(), err)
-		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
 		fmt.Printf("shown: %s\n", u)
 		fmt.Printf("%s: %s\n", target.label(), strings.TrimSpace(string(body)))
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("window host returned %s", resp.Status)
-		}
 		return nil
 	},
+}
+
+func showWindow(rawTarget, rawName, workspace string) (string, windowTarget, []byte, error) {
+	name := defaultWindowArtifactName(rawTarget, rawName)
+	u, err := publishArtifact(rawTarget)
+	if err != nil {
+		return "", windowTarget{}, nil, err
+	}
+	client, baseURL, target := windowClient(workspace)
+	if err := ensureWindowTarget(target); err != nil {
+		return "", windowTarget{}, nil, err
+	}
+	form := url.Values{"url": {u}}
+	ws := workspace
+	if ws == "" && panel.InsideTmux() {
+		if cur, err := panel.CurrentSession(panel.ExecRunner); err == nil {
+			ws = cur
+		}
+	}
+	if ws != "" {
+		form.Set("workspace", ws)
+	}
+	resp, err := client.PostForm(baseURL+"/open", form)
+	if err != nil {
+		return "", target, nil, fmt.Errorf("window host at %s: %w", target.label(), err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", target, body, fmt.Errorf("window host returned %s", resp.Status)
+	}
+	if ws != "" {
+		dir := ""
+		if workspace != "" {
+			dir, _ = panel.SessionPath(panel.ExecRunner, ws)
+		} else if panel.InsideTmux() {
+			dir, _ = panel.CurrentPanePath(panel.ExecRunner)
+		}
+		if _, err := panel.EnsureWindowArtifact(panel.ExecRunner, ws, dir, name, u); err != nil {
+			return "", target, body, err
+		}
+	}
+	return u, target, body, nil
+}
+
+func defaultWindowArtifactName(target, rawName string) string {
+	if name := strings.TrimSpace(rawName); name != "" {
+		return name
+	}
+	if parsed, err := url.Parse(target); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if base := filepath.Base(strings.TrimRight(parsed.Path, "/")); base != "." && base != "/" && base != "" {
+			return base
+		}
+		return parsed.Hostname()
+	}
+	if base := filepath.Base(strings.TrimRight(target, string(filepath.Separator))); base != "." && base != string(filepath.Separator) && base != "" {
+		return base
+	}
+	return "window"
 }
 
 var (

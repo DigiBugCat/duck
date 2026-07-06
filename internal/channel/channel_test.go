@@ -972,8 +972,8 @@ func (f *fakeHost) Preview(ws, target, name string) (string, error) {
 	return "%11", nil
 }
 func (f *fakeHost) Render(ws, target string) error { f.last = "render:" + target; return nil }
-func (f *fakeHost) Window(ws, target string) (string, error) {
-	f.last = "window:" + target
+func (f *fakeHost) Window(ws, target, name string) (string, error) {
+	f.last = "window:" + target + ":" + name
 	return "http://artifact", nil
 }
 func (f *fakeHost) Routines(ws string) (string, error) {
@@ -1020,12 +1020,12 @@ func TestWindowToolDispatchesToHost(t *testing.T) {
 	if win.name == "" {
 		t.Fatal("window tool missing")
 	}
-	got, err := win.handler(json.RawMessage(`{"target":"dash.html"}`))
+	got, err := win.handler(json.RawMessage(`{"target":"dash.html","name":"dash"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fh.last != "window:dash.html" {
-		t.Fatalf("host call = %q, want window:dash.html", fh.last)
+	if fh.last != "window:dash.html:dash" {
+		t.Fatalf("host call = %q, want window:dash.html:dash", fh.last)
 	}
 	if !strings.Contains(got, "http://artifact") {
 		t.Fatalf("receipt should include published URL, got %q", got)

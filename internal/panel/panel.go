@@ -77,14 +77,15 @@ const roleOption = "@duck_panel_role"
 // Pane user options carrying each agent's identity (they travel with the
 // pane through swaps):
 const (
-	NameOption      = "@duck_name"       // roster label
-	kindOption      = "@duck_kind"       // roster tab (see Kinds)
-	SpawnedAtOption = "@duck_spawned_at" // unix epoch of spawn (channel pairing)
-	RolloutOption   = "@duck_rollout"    // cached codex rollout path
-	SessionOption   = "@duck_session"    // codex session id (durable resume/fork handle)
+	NameOption      = "@duck_name"        // roster label
+	kindOption      = "@duck_kind"        // roster tab (see Kinds)
+	URLOption       = "@duck_url"         // artifact URL (window artifacts)
+	SpawnedAtOption = "@duck_spawned_at"  // unix epoch of spawn (channel pairing)
+	RolloutOption   = "@duck_rollout"     // cached codex rollout path
+	SessionOption   = "@duck_session"     // codex session id (durable resume/fork handle)
 	PromptOption    = "@duck_last_prompt" // codex turn id of the last submitted prompt (Send submit-confirm)
-	CmdOption       = "@duck_cmd"        // spawn cmdline (channel pairing eligibility)
-	anchorOption    = "@duck_anchor"     // the lot's immortal keep-alive pane
+	CmdOption       = "@duck_cmd"         // spawn cmdline (channel pairing eligibility)
+	anchorOption    = "@duck_anchor"      // the lot's immortal keep-alive pane
 	placeholderOpt  = "@duck_placeholder" // the reusable "nothing here yet" viewport filler
 )
 
@@ -110,6 +111,8 @@ func normalizeKind(k string) string {
 	case "", "agent":
 		return KindAgent
 	case "artifact":
+		return KindArtifact
+	case "window":
 		return KindArtifact
 	case "shell":
 		return KindShell
@@ -582,6 +585,7 @@ type Agent struct {
 	Active  bool   // currently in the viewport slot
 	Command string // pane_current_command, e.g. "codex", "node", "zsh"
 	Kind    string // roster tab (@duck_kind)
+	RawKind string // literal @duck_kind; "window" folds into artifacts
 	Title   string // pane_title — agents like Claude Code write status here
 }
 
@@ -603,6 +607,7 @@ func parseAgents(out, slotID string) []Agent {
 			PaneID:  f[0],
 			Name:    strings.TrimSpace(f[1]),
 			Kind:    normalizeKind(strings.TrimSpace(f[2])),
+			RawKind: strings.TrimSpace(f[2]),
 			Active:  f[0] == slotID,
 			Command: f[5],
 			Title:   f[6],
@@ -697,6 +702,76 @@ func Spawn(run Runner, outer, name, dir, cmdline, kind string) (paneID string, e
 	// Show the newcomer.
 	_ = Select(run, outer, paneID)
 	return paneID, nil
+}
+
+// Window artifacts are dynamic artifact rows: they live in the artifacts tab
+// but carry @duck_kind=window and @duck_url so Enter can refocus the client
+// window instead of trying to render dynamic content in terminal cells.
+const KindWindow = "window"
+
+// IsWindowArtifact reports whether a roster row is the dynamic window flavor.
+func IsWindowArtifact(a Agent) bool { return a.RawKind == KindWindow }
+
+// WindowArtifactURL reads the published URL stamped on a window artifact row.
+func WindowArtifactURL(run Runner, paneID string) string {
+	out, err := run("show-options", "-p", "-t", paneID, "-v", URLOption)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// WindowArtifactCmd builds the cheap placeholder shown in the viewport for a
+// dynamic artifact row. The real surface lives in the client window.
+func WindowArtifactCmd(name, url string) string {
+	body := `draw() { clear; ` +
+		`printf '\033[7m window artifact \033[0m\n\n'; ` +
+		`printf '%s\n\n%s\n\n\033[2mopen on client -- Enter to focus\033[0m\n' ` +
+		paths.Quote(name) + ` ` + paths.Quote(url) + `; }; ` +
+		`trap draw WINCH; draw; while :; do sleep 3600; done`
+	return "sh -c " + paths.Quote(body)
+}
+
+// EnsureWindowArtifact creates or updates the parked placeholder pane backing a
+// dynamic artifact row. Reusing by name mirrors preview ergonomics and prevents
+// repeated `duck window same-name` calls from stacking duplicates.
+func EnsureWindowArtifact(run Runner, outer, dir, name, artifactURL string) (string, error) {
+	name = strings.TrimSpace(name)
+	artifactURL = strings.TrimSpace(artifactURL)
+	if name == "" {
+		return "", fmt.Errorf("artifact name must be non-empty")
+	}
+	if artifactURL == "" {
+		return "", fmt.Errorf("artifact URL must be non-empty")
+	}
+	comp, err := EnsureCompanion(run, outer, dir)
+	if err != nil {
+		return "", err
+	}
+	cmd := WindowArtifactCmd(name, artifactURL)
+	for _, a := range func() []Agent { as, _ := Agents(run, outer); return as }() {
+		if IsWindowArtifact(a) && a.Name == name {
+			_, _ = run("respawn-pane", "-k", "-t", a.PaneID, cmd)
+			_, _ = run("set-option", "-p", "-t", a.PaneID, URLOption, artifactURL)
+			return a.PaneID, nil
+		}
+	}
+	id, err := run("split-window", "-d", "-t", comp+":lot", "-P", "-F", "#{pane_id}", cmd)
+	if err != nil {
+		return "", err
+	}
+	pid := strings.TrimSpace(id)
+	for _, opt := range [][2]string{
+		{NameOption, name},
+		{kindOption, KindWindow},
+		{URLOption, artifactURL},
+		{SpawnedAtOption, strconv.FormatInt(time.Now().Unix(), 10)},
+		{CmdOption, cmd},
+	} {
+		_, _ = run("set-option", "-p", "-t", pid, opt[0], opt[1])
+	}
+	_, _ = run("select-layout", "-t", comp+":lot", "tiled")
+	return pid, nil
 }
 
 // Select puts the given pane on display: an atomic swap-pane between it and

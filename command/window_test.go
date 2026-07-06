@@ -121,6 +121,24 @@ func TestWindowHostDefaultsToLoopback(t *testing.T) {
 	}
 }
 
+func TestDefaultWindowArtifactName(t *testing.T) {
+	tests := []struct {
+		target string
+		name   string
+		want   string
+	}{
+		{"http://example.test/dash.html", "", "dash.html"},
+		{"https://example.test/", "", "example.test"},
+		{"/tmp/report.html", "", "report.html"},
+		{"http://example.test/dash.html", "Revenue", "Revenue"},
+	}
+	for _, tt := range tests {
+		if got := defaultWindowArtifactName(tt.target, tt.name); got != tt.want {
+			t.Fatalf("defaultWindowArtifactName(%q, %q) = %q, want %q", tt.target, tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestEnsureWindowHostStartsDetachedLocalSingleton(t *testing.T) {
 	restoreWindowTestGlobals(t)
 	var started int
