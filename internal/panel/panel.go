@@ -885,6 +885,18 @@ func ShowRoutineDetail(run Runner, outer, name, meta, mdPath string) error {
 	return showFiller(run, outer, "sh -c "+paths.Quote(body))
 }
 
+// ShowWorkflowDetail renders a live progress view of a workflow run in the
+// placeholder viewport: `duck workflows tail <run-id>` (status header + the
+// run's phase/agent log), redrawn every 2s while the run advances. selfBin is
+// the duck binary the tail shells out to.
+func ShowWorkflowDetail(run Runner, outer, selfBin, runID string) error {
+	tail := paths.Quote(selfBin) + " workflows tail " + paths.Quote(runID)
+	body := `draw() { clear; printf '\033[7m ⚙ %s \033[0m\n\n' ` + paths.Quote(runID) +
+		`; ` + tail + ` 2>&1 | tail -n "$(($(tput lines 2>/dev/null || echo 40) - 3))"; }; ` +
+		`trap draw WINCH; while :; do draw; sleep 2; done`
+	return showFiller(run, outer, "sh -c "+paths.Quote(body))
+}
+
 // showFiller ensures the single reusable placeholder pane exists (roster-hidden
 // via anchorOption, findable via placeholderOpt), (re)runs it with the given
 // full tmux command, and swaps it on display. Reused across ShowEmpty and

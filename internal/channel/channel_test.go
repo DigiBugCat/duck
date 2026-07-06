@@ -984,6 +984,10 @@ func (f *fakeHost) FireRoutine(ws, name string) (string, error) {
 	f.last = "fire:" + name
 	return "fired " + name, nil
 }
+func (f *fakeHost) Workflow(ws, script, argsJSON, resumeFrom string, budget int64) (string, error) {
+	f.last = "workflow"
+	return "wf_20260101-000000-abcdef", nil
+}
 
 func TestServeToolsGatedOnLauncher(t *testing.T) {
 	// No launcher → only reply.

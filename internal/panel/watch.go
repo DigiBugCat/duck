@@ -52,12 +52,35 @@ type routineRow struct {
 	Path                                            string // the prompt .md (trailing TSV field; may be empty)
 }
 
+// workflowRow is one workflow run as shown in the agents tab's dedicated
+// "── workflows ──" section (docs/WORKFLOWS.md): the run — not its headless
+// workers — is the visible thing.
+type workflowRow struct {
+	RunID, State, Elapsed, Agents, Tokens string
+	Name                                  string // trailing free-text TSV field
+}
+
+// Negative visible() encodings for the agents tab's workflows section: the
+// (non-selectable) divider, and workflow rows offset past it. Everything
+// non-negative stays a plain m.agents index, so the existing paths are
+// untouched.
+const wfDividerRow = -1
+
+func wfEncode(i int) int { return -(i + 2) }
+func wfDecode(v int) (int, bool) {
+	if v <= -2 {
+		return -v - 2, true
+	}
+	return 0, false
+}
+
 type tickMsg time.Time
 type agentsMsg struct {
 	agents     []Agent
 	statuses   map[string]string
 	workspaces []Workspace
 	routines   []routineRow
+	workflows  []workflowRow
 	err        error
 }
 
@@ -88,6 +111,7 @@ type watchModel struct {
 	statuses       map[string]string
 	workspaces     []Workspace
 	routines       []routineRow
+	workflows      []workflowRow
 	tabKind        string         // active tab BY NAME
 	cursor         int            // index into visible() rows
 	tabCursor      map[string]int // last cursor per tab, so switching back restores it
@@ -145,7 +169,46 @@ func (m watchModel) load() tea.Msg {
 		}
 	}
 	ws, _ := Workspaces(m.run, m.outer)
-	return agentsMsg{agents: agents, statuses: statuses, workspaces: ws, routines: loadRoutines(), err: err}
+	return agentsMsg{agents: agents, statuses: statuses, workspaces: ws, routines: loadRoutines(), workflows: loadWorkflowRows(), err: err}
+}
+
+// loadWorkflowRows fetches this workspace's workflow runs for the agents
+// tab's workflows section via `duck workflows --tsv` (same shell-out rule as
+// loadRoutines — the roster can't import command). Live runs always show;
+// terminal ones age out after ten minutes so the section reads as "what's
+// happening", not history (that's `duck workflows`). Best-effort: failures
+// render as no section.
+func loadWorkflowRows() []workflowRow {
+	self, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	out, err := exec.Command(self, "workflows", "--tsv").Output()
+	if err != nil {
+		return nil
+	}
+	var rows []workflowRow
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		// Columns: runid ws state elapsed done/total tokens since-update name.
+		f := strings.SplitN(line, "\t", 8)
+		if len(f) < 7 {
+			continue
+		}
+		live := f[2] == "running" || f[2] == "starting"
+		age, aerr := time.ParseDuration(f[6] + "s")
+		if !live && (aerr != nil || age > 10*time.Minute) {
+			continue
+		}
+		r := workflowRow{RunID: f[0], State: f[2], Elapsed: f[3], Agents: f[4], Tokens: f[5]}
+		if len(f) > 7 { // trailing free-text field: tolerate its absence
+			r.Name = f[7]
+		}
+		if r.Name == "" {
+			r.Name = r.RunID
+		}
+		rows = append(rows, r)
+	}
+	return rows
 }
 
 // loadRoutines fetches this workspace's schedules for the ⏰ routines tab by
@@ -388,7 +451,50 @@ func (m watchModel) visible() []int {
 		}
 		idx = append(idx, i)
 	}
+	// The agents tab carries the workflows section below the real panes: a
+	// non-selectable divider, then one row per (recent) run — encoded as
+	// negative indexes so every m.agents consumer stays untouched.
+	if m.tabKind == KindAgent && len(m.workflows) > 0 {
+		var wf []int
+		for i, w := range m.workflows {
+			if q != "" && !isSubseq(strings.ToLower(w.Name), q) {
+				continue
+			}
+			wf = append(wf, wfEncode(i))
+		}
+		if len(wf) > 0 {
+			idx = append(idx, wfDividerRow)
+			idx = append(idx, wf...)
+		}
+	}
 	return idx
+}
+
+// selectedWorkflow resolves the cursor to a workflow row, when it is one.
+func (m watchModel) selectedWorkflow() (workflowRow, bool) {
+	idx := m.visible()
+	if m.cursor >= len(idx) {
+		return workflowRow{}, false
+	}
+	if i, ok := wfDecode(idx[m.cursor]); ok && i < len(m.workflows) {
+		return m.workflows[i], true
+	}
+	return workflowRow{}, false
+}
+
+// skipDivider nudges the cursor off the divider sentinel in the direction of
+// travel (falling back the other way at a list edge).
+func (m *watchModel) skipDivider(delta int) {
+	idx := m.visible()
+	if m.cursor < len(idx) && idx[m.cursor] == wfDividerRow {
+		next := m.cursor + delta
+		if next < 0 || next >= len(idx) {
+			next = m.cursor - delta
+		}
+		if next >= 0 && next < len(idx) {
+			m.cursor = next
+		}
+	}
 }
 
 // syncToOccupant makes the tab bar follow the viewport: when the OCCUPANT
@@ -437,6 +543,9 @@ func (m *watchModel) syncToOccupant() {
 		m.cursor = m.tabCursor[target]
 	}
 	for pos, i := range m.visible() {
+		if i < 0 {
+			continue // workflows section rows have no pane to match
+		}
 		if target == schedTab {
 			if m.routines[i].Name == occ.Name {
 				m.cursor = pos
@@ -592,7 +701,7 @@ func (m watchModel) selectedAgent() (Agent, bool) {
 		return Agent{}, false
 	}
 	idx := m.visible()
-	if m.cursor >= len(idx) {
+	if m.cursor >= len(idx) || idx[m.cursor] < 0 { // workflows section rows aren't agents
 		return Agent{}, false
 	}
 	return m.agents[idx[m.cursor]], true
@@ -625,6 +734,18 @@ func (m *watchModel) viewSelected() string {
 		// Preview only — actually switching is the explicit `g` (go). Enter and
 		// click on a ws row bring its snapshot into the viewport, never teleport.
 		m.previewWorkspace()
+		return ""
+	}
+	if idx[m.cursor] == wfDividerRow {
+		return ""
+	}
+	if i, ok := wfDecode(idx[m.cursor]); ok {
+		// A workflow row: put the run's live progress view in the viewport.
+		self, err := os.Executable()
+		if err != nil {
+			return err.Error()
+		}
+		_ = ShowWorkflowDetail(m.run, m.outer, self, m.workflows[i].RunID)
 		return ""
 	}
 	a := m.agents[idx[m.cursor]]
@@ -852,10 +973,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statuses = msg.statuses
 		m.workspaces = msg.workspaces
 		m.routines = msg.routines
+		m.workflows = msg.workflows
 		m.syncToOccupant()
 		if n := len(m.visible()); m.cursor >= n {
 			m.cursor = max(0, n-1)
 		}
+		m.skipDivider(1) // never rest on the workflows divider (e.g. empty agents tab)
 	case tea.FocusMsg:
 		m.focused, m.swallowNext = true, true
 	case tea.BlurMsg:
@@ -963,6 +1086,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.armedKill = ""
 			if m.cursor > 0 {
 				m.cursor--
+				m.skipDivider(-1)
 				if m.tabKind == wsTab {
 					m.previewWorkspace()
 				} else if m.tabKind == schedTab {
@@ -975,6 +1099,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.armedKill = ""
 			if m.cursor < len(m.visible())-1 {
 				m.cursor++
+				m.skipDivider(1)
 				if m.tabKind == wsTab {
 					m.previewWorkspace()
 				} else if m.tabKind == schedTab {
@@ -1096,7 +1221,24 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if idx := m.visible(); m.cursor < len(idx) {
+			if w, ok := m.selectedWorkflow(); ok {
+				// Stop a workflow run, same x-twice arm as agents (armed on the
+				// run id — pane ids and wf_ ids can't collide).
+				if w.State != "running" && w.State != "starting" {
+					m.lastMsg = w.RunID + " is not running"
+					return m, nil
+				}
+				if m.armedKill == w.RunID {
+					m.armedKill = ""
+					if out := m.duckExec("workflows", "stop", w.RunID); out != "" {
+						m.lastMsg = out
+					}
+					return m, m.load
+				}
+				m.armedKill = w.RunID
+				return m, nil
+			}
+			if idx := m.visible(); m.cursor < len(idx) && idx[m.cursor] >= 0 {
 				a := m.agents[idx[m.cursor]]
 				wid := a.PaneID
 				if IsWindowArtifact(a) {
@@ -1340,6 +1482,26 @@ func (m watchModel) View() string {
 			}, row == m.cursor, m.width) + "\n")
 			continue
 		}
+		if i == wfDividerRow {
+			b.WriteString(truncate(dimStyle.Render("  ── workflows ──"), m.width) + "\n")
+			continue
+		}
+		if wi, ok := wfDecode(i); ok {
+			// Workflow rows render through the SAME shared row model as
+			// workspaces (and the --resume picker) — one visual language for
+			// "a living thing with a name, a state, and an age". Attached
+			// doubles as "running" (green glyph); the meta line rides the Dir
+			// slot on wide panes.
+			w := m.workflows[wi]
+			b.WriteString(rowmodel.RenderRow(rowmodel.Row{
+				Display:  "⚙ " + w.Name,
+				Dir:      w.State + " · agents " + w.Agents + " · " + w.Tokens + " tok",
+				Age:      w.Elapsed,
+				Attached: w.State == "running" || w.State == "starting",
+				LastSeen: time.Now(),
+			}, row == m.cursor, m.width) + "\n")
+			continue
+		}
 		{
 			a := m.agents[i]
 			marker := "  "
@@ -1414,7 +1576,11 @@ func (m watchModel) View() string {
 			hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
 		}
 	default:
-		hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
+		if _, ok := m.selectedWorkflow(); ok {
+			hintLine = dimStyle.Render(" ↵ progress · x stop · ←→ tabs · q close")
+		} else {
+			hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
+		}
 	}
 
 	body := b.String()

@@ -263,6 +263,13 @@ func (mcpHost) FireRoutine(workspace, name string) (string, error) {
 	return "", fmt.Errorf("no routine %q in this workspace", name)
 }
 
+// Workflow starts a detached workflow run for the manager's workspace. The
+// sidecar process runs in the workspace's project dir, so os.Getwd (inside
+// StartWorkflowRun) is the right default worker cwd.
+func (mcpHost) Workflow(workspace, script, argsJSON, resumeFrom string, budget int64) (string, error) {
+	return StartWorkflowRun(workspace, script, argsJSON, resumeFrom, budget)
+}
+
 var channelHookCmd = &cobra.Command{
 	Use:    "hook",
 	Hidden: true, // plumbing: codex's SessionStart hook target, wired in by duck spawn

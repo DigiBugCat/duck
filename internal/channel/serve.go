@@ -60,6 +60,10 @@ type Host interface {
 
 	Routines(workspace string) (string, error)          // human-readable listing
 	FireRoutine(workspace, name string) (string, error) // run one now
+
+	// Workflow starts a detached workflow run (docs/WORKFLOWS.md) and returns
+	// its run id; completion arrives later as a workflow_complete event.
+	Workflow(workspace, script, argsJSON, resumeFrom string, budget int64) (string, error)
 }
 
 // Serve runs the channel sidecar until stdin closes (Claude exiting kills
@@ -386,6 +390,39 @@ func (s *server) tools() []tool {
 					return s.host.FireRoutine(ws, a.Fire)
 				}
 				return s.host.Routines(ws)
+			},
+		},
+		tool{
+			name: "workflow",
+			description: "Run a deterministic multi-agent workflow: a JS script you write whose control flow (loops, fan-out, barriers) is plain code, where each agent() call runs ONE disposable headless codex executor (DeepSeek V4 flash by default — cheap; opt up per call for judge/verify stages, and REQUIRED for web research: gpt-tier workers have native web search, deepseek workers do NOT — their search tool-calls break at the proxy). Workers are processes, not sidebar panes: the RUN is the one visible thing (roster workflows section + `duck workflows`). Returns a wf_ run id in a couple seconds; the RESULT is not in the reply — the run reports through the channel (workflow_started, workflow_phase per phase() transition, and workflow_complete carrying the result summary), so do NOT poll or tail; react when events land. " +
+				"ROUTING: use a workflow for fan-out work one pass shouldn't be trusted with or one context can't hold — audits, migrations, review-then-adversarially-verify, judge panels, loop-until-dry discovery — and only at the human's scale of ask; a single bounded task is a spawn, anything recurring is a routine. " +
+				"SCRIPT SURFACE (plain JS, no TS): must begin `export const meta = {name, description}` as a PURE literal. Globals: agent(prompt, opts?) -> Promise (opts: {label, model, effort, cwd, write, schema} — schema forces a validated JSON object return, retried via session-resume on mismatch; workers are sandboxed read-only unless write:true; a failed worker resolves to null, so .filter(Boolean)); pipeline(items, ...stages) (per-item chains, NO barrier between stages — the default for multi-stage work; stages get (prev, item, i)); parallel(thunks) (a BARRIER — only when a stage needs ALL prior results, e.g. dedup); phase(title) + log(msg) (progress narration); args (the args input, verbatim); budget {total, spent(), remaining()} in tokens — agent() throws once total is exhausted. " +
+				"The script's return value becomes the run's result (persisted to result.json, summarized in the completion event). Every completed agent() call is journaled; pass resume_from with a prior run id to replay unchanged calls from its journal and only run what changed. Default worker concurrency 64; runaway backstop 1000 agents. To inspect or kill a run: duck workflows tail|stop <run-id>.",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"script": map[string]any{"type": "string", "description": "the workflow script (JS). Must start with `export const meta = {name, description}`"},
+					"args":   map[string]any{"type": "string", "description": "optional JSON value exposed to the script as `args` (encode objects/arrays as JSON text)"},
+					"budget": map[string]any{"type": "integer", "description": "optional token cap across all workers (0/omit = uncapped)"},
+					"resume_from": map[string]any{"type": "string", "description": "optional prior wf_ run id whose journal seeds the replay cache (edit-and-resume)"},
+				},
+				"required": []string{"script"},
+			},
+			handler: func(raw json.RawMessage) (string, error) {
+				var a struct {
+					Script     string `json:"script"`
+					Args       string `json:"args"`
+					Budget     int64  `json:"budget"`
+					ResumeFrom string `json:"resume_from"`
+				}
+				if err := json.Unmarshal(raw, &a); err != nil {
+					return "", err
+				}
+				id, err := s.host.Workflow(ws, a.Script, a.Args, a.ResumeFrom, a.Budget)
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("started %s. The result arrives as a workflow_complete event — do NOT poll; react when it lands. Progress meanwhile: the roster's workflows section or `duck workflows tail %s`; stop it with `duck workflows stop %s`.", id, id, id), nil
 			},
 		},
 	)

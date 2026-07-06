@@ -112,9 +112,14 @@ func RenderRow(r Row, selected bool, width int) string {
 	}
 
 	// Full (picker): caret + glyph + name + dir + right-aligned age + windows.
+	// Rows for things without windows (workflow runs) omit the suffix rather
+	// than reading "0w".
 	ageStr := r.Age
-	winStr := itoa(r.Windows) + "w"
-	rightW := lipgloss.Width(ageStr) + 2 + lipgloss.Width(winStr)
+	right := ageStr
+	if r.Windows > 0 {
+		right = ageStr + "  " + itoa(r.Windows) + "w"
+	}
+	rightW := lipgloss.Width(right)
 
 	avail := w - 8 - rightW
 	if avail < 20 {
@@ -137,7 +142,7 @@ func RenderRow(r Row, selected bool, width int) string {
 	if pad < 1 {
 		pad = 1
 	}
-	return left + strings.Repeat(" ", pad) + AgeStyle.Render(ageStr) + "  " + AgeStyle.Render(winStr)
+	return left + strings.Repeat(" ", pad) + AgeStyle.Render(right)
 }
 
 // padTrunc fits s into exactly w display columns: truncating with an ellipsis

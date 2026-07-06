@@ -126,3 +126,47 @@ func TestWindowArtifactXRemovesPlaceholderRow(t *testing.T) {
 		t.Fatalf("lastMsg = %q", m.lastMsg)
 	}
 }
+
+func TestWorkflowsSectionInAgentsTab(t *testing.T) {
+	m := watchModel{
+		tabKind:   KindAgent,
+		tabCursor: map[string]int{},
+		agents: []Agent{
+			{PaneID: "%1", Name: "claude", Kind: KindAgent},
+			{PaneID: "%2", Name: "chart", Kind: KindArtifact},
+		},
+		workflows: []workflowRow{
+			{RunID: "wf_x", Name: "audit", State: "running", Agents: "3/9", Tokens: "120k"},
+			{RunID: "wf_y", Name: "sweep", State: "done", Agents: "4/4", Tokens: "80k"},
+		},
+	}
+	// Agents tab: one agent row, the divider, two workflow rows.
+	want := []int{0, wfDividerRow, wfEncode(0), wfEncode(1)}
+	if got := m.visible(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("visible = %v, want %v", got, want)
+	}
+	// Other tabs never grow the section.
+	m.tabKind = KindArtifact
+	if got := m.visible(); !reflect.DeepEqual(got, []int{1}) {
+		t.Fatalf("artifact tab visible = %v", got)
+	}
+	m.tabKind = KindAgent
+
+	// Down from the agent row skips the divider onto the first run.
+	m.cursor = 1 // as if the down key landed on the divider
+	m.skipDivider(1)
+	if w, ok := m.selectedWorkflow(); !ok || w.RunID != "wf_x" {
+		t.Fatalf("after skip: selectedWorkflow = %v %v", w, ok)
+	}
+	// Up from the first run skips back onto the agent row.
+	m.cursor = 1
+	m.skipDivider(-1)
+	if m.cursor != 0 {
+		t.Fatalf("skip up: cursor = %d", m.cursor)
+	}
+	// Workflow rows are not agents.
+	m.cursor = 2
+	if _, ok := m.selectedAgent(); ok {
+		t.Fatal("workflow row must not resolve to an agent")
+	}
+}
