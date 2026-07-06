@@ -102,7 +102,7 @@ const DefaultConcurrency = 64
 const maxAgents = 1000
 
 // home resolves the duck home dir ($DUCK_HOME test seam, else ~/.duck) —
-// mirrors internal/routines and the channel spool.
+// mirrors the channel spool.
 func home() (string, error) {
 	if d := os.Getenv("DUCK_HOME"); d != "" {
 		return d, nil

@@ -21,7 +21,6 @@ import (
 
 	"github.com/DigiBugCat/duck/internal/manager"
 	"github.com/DigiBugCat/duck/internal/paths"
-	"github.com/DigiBugCat/duck/internal/workspaces"
 )
 
 // evictedPath is the hub-side breadcrumb file: one tab-separated line per
@@ -294,17 +293,8 @@ func (m *Manager) Revive(e Evicted) error {
 		if dir == "" {
 			dir = "~"
 		}
-		rec, ok, err := workspaces.NewStore(m.run).Load(dir, e.Name)
-		if err != nil {
-			return err
-		}
 		if err := m.New(e.Name, dir); err != nil {
 			return err
-		}
-		if ok && rec.Parent != "" {
-			if err := m.SetOption(e.Name, "@duck_parent", rec.Parent); err != nil {
-				return err
-			}
 		}
 		if e.ClaudeID != "" {
 			// Replay the allowlisted launch flags the hook captured (--model,

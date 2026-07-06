@@ -13,14 +13,13 @@
 // scheme is Claude Code's own (internal/claude) — duck does NOT invent one, so
 // records land alongside the corpus duck already syncs.
 //
-// Records live on the HUB (that is where tmux and the routines tick run), but
-// duck may run on a laptop driving the hub over SSH. So — exactly like
-// internal/names — the store goes through an injected Runner (shell mkdir/cat/
-// mv, streamed over the same SSH seam), never local os file I/O. The one
-// deliberate difference from names.Store is per-record files with a UNIQUE
-// temp name per write ($$-suffixed): a shared temp path lets two concurrent
-// writers rename each other's half-written file (the bug fixed in
-// internal/routines/state.go). Rename-over still means no-corruption, not
+// Records live on the HUB (that is where tmux runs), but duck may run on a
+// laptop driving the hub over SSH. So — exactly like internal/names — the store
+// goes through an injected Runner (shell mkdir/cat/mv, streamed over the same
+// SSH seam), never local os file I/O. The one deliberate difference from
+// names.Store is per-record files with a UNIQUE temp name per write
+// ($$-suffixed): a shared temp path lets two concurrent writers rename each
+// other's half-written file. Rename-over still means no-corruption, not
 // no-lost-updates — the same single-user caveat names.json carries.
 package workspaces
 
@@ -56,7 +55,6 @@ const duckSubdir = "duck"
 type Record struct {
 	Name       string    `json:"name"`                 // tmux session name (unique key within the dir)
 	Dir        string    `json:"dir"`                  // tilde-form project dir (the grouping key)
-	Parent     string    `json:"parent,omitempty"`     // org chart: parent workspace name ("" = motherduck default)
 	Title      string    `json:"title,omitempty"`      // role/title, the workspace's report line
 	Persistent bool      `json:"persistent,omitempty"` // heal me back into existence after reboot
 	Channels   bool      `json:"channels,omitempty"`   // manager pane launched channel-enabled
@@ -66,8 +64,8 @@ type Record struct {
 
 // Runner is the injectable SSH seam (the same subset of *sshx.Client that
 // internal/names uses). Tests swap a fake asserting the mkdir/cat/mv command
-// strings; production passes a real *sshx.Client, and the routines tick passes
-// a LOCAL sh runner (see LocalRunner) since it runs hub-local.
+// strings; production passes a real *sshx.Client, and hub-local callers pass
+// a LOCAL sh runner (see LocalRunner).
 type Runner interface {
 	Run(remoteCmd string) (string, error)
 	RunInput(remoteCmd string, stdin io.Reader) (string, error)

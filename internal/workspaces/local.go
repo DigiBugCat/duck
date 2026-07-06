@@ -6,8 +6,7 @@ import (
 )
 
 // LocalRunner satisfies Runner by executing each command through the LOCAL
-// `/bin/sh`, for callers that already run ON the hub (the routines tick, which
-// drives the local tmux server via panel.ExecRunner). panel.ExecRunner itself
+// `/bin/sh`, for callers that already run ON the hub. panel.ExecRunner itself
 // is a tmux-prefixed local runner and so cannot double as the store's shell
 // seam — this is the plain-shell equivalent. The base path passed to Store is
 // tilde-form (`~/.claude/projects`); `/bin/sh -c` expands the leading ~, so the

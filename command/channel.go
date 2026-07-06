@@ -251,7 +251,7 @@ var channelServeCmd = &cobra.Command{
 Claude Code session, with a reply tool routing answers back into the agent's
 TUI. Scoped to the enclosing workspace's agents by default (a manager hears
 its own lot, not the whole machine); --session picks another workspace, --all
-sweeps every workspace (motherduck). Register in .mcp.json:
+sweeps every workspace on the machine. Register in .mcp.json:
 
   {"mcpServers": {"duck-agents": {"command": "duck", "args": ["channel", "serve"]}}}
 
@@ -274,7 +274,7 @@ and launch: claude --channels server:duck-agents --dangerously-load-development-
 
 func init() {
 	channelCmd.PersistentFlags().StringVar(&channelSession, "session", "", "duck session owning the agent (default: current tmux session)")
-	channelServeCmd.Flags().BoolVar(&channelServeAll, "all", false, "sweep every workspace on the machine (motherduck), not just the enclosing one")
+	channelServeCmd.Flags().BoolVar(&channelServeAll, "all", false, "sweep every workspace on the machine, not just the enclosing one")
 	channelTailCmd.Flags().BoolVarP(&channelTailFollow, "follow", "f", false, "keep streaming as new events arrive")
 	channelTailCmd.Flags().BoolVar(&channelTailRaw, "raw", false, "raw rollout lines (unfiltered)")
 	channelCmd.AddCommand(channelLsCmd, channelTailCmd, channelSendCmd, channelServeCmd, channelPublishCmd, channelNotifyCmd, channelHookCmd)

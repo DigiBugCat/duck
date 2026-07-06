@@ -1,6 +1,6 @@
 // spool.go is the PUBLISH lane onto the Claude Code channel sidecar: a
 // per-workspace, hub-local file that anything duck-side can append events to
-// (the routines tick, `duck channel publish`, …) so the manager Claude hears
+// (a workflow run, `duck channel publish`, …) so the manager Claude hears
 // them WITHOUT tmux send-keys. The sidecar (serve.go) drains each workspace's
 // spool every sweep and emits the events as notifications/claude/channel.
 //
@@ -20,8 +20,7 @@ import (
 	"time"
 )
 
-// spoolHome overrides the duck home dir for tests. Empty => $DUCK_HOME (test
-// seam, matching internal/routines) else ~/.duck.
+// spoolHome overrides the duck home dir for tests. Empty => ~/.duck.
 var spoolHome string
 
 func duckHome() (string, error) {

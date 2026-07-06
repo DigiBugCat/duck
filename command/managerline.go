@@ -1,7 +1,7 @@
 // managerline.go: command-layer thin wrappers over internal/manager, which owns
-// the ONE implementation of the workspace-manager launch line (shared with the
-// hub-side routines tick — see internal/manager for the full rationale, incl.
-// why the line invokes the bare word `claude`).
+// the ONE implementation of the workspace-manager launch line (shared with
+// session heal/revive — see internal/manager for the full rationale, incl. why
+// the line invokes the bare word `claude`).
 package command
 
 import "github.com/DigiBugCat/duck/internal/manager"

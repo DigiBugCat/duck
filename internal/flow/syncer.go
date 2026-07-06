@@ -205,7 +205,7 @@ func pathCoveredBy(dir, ancestor string) bool {
 // CoveringSyncRoot returns the LONGEST active mutagen sync root (alpha path,
 // tilde-form) that covers dir — i.e. the outermost sync boundary dir actually
 // belongs to. Empty when no session covers dir (a local-only workspace). This is
-// where project content (pads, routine defs) belongs: keying on the raw
+// where project content (pads) belongs: keying on the raw
 // workspace dir would fragment content when a workspace sits INSIDE an ancestor
 // sync root (the common aviary case — one synced umbrella, many bird workspaces).
 //

@@ -12,9 +12,9 @@
 // claude`; inside a tmux/duck pane it never loops back to `duck claude`. Profile
 // args the human passes to duck are forwarded VERBATIM onto the line.
 //
-// It lives in its own internal package (not command/) so BOTH the command layer
-// (bare `duck` / `duck claude`) and the hub-side routines tick (heal) share ONE
-// implementation without an import cycle (command imports routines).
+// It lives in its own internal package (not command/) so both the command layer
+// (bare `duck` / `duck claude`) and session heal/revive share ONE implementation
+// without an import cycle.
 package manager
 
 import (
