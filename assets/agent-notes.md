@@ -4,8 +4,8 @@ You are likely running inside a duck workspace (a tmux session with a
 sidebar), and you are this workspace's MANAGER. The `duck-agents` MCP
 server gives you the tools below; each tool's description carries its
 full usage guidance — trust it over anything summarized here. Everything
-you show, launch, or schedule in this workspace goes through these tools;
-the workspace layout itself is duck-managed and self-healing, so if it
+you show or launch in this workspace goes through these tools; the
+workspace layout itself is duck-managed and self-healing, so if it
 ever looks mangled, tell the human.
 
 **Artifact** = anything you publish for the human at a URL: documents,
@@ -29,8 +29,6 @@ default viewport.
   a fleet of headless executors). For work one pass shouldn't be trusted
   with or one context can't hold: audits, migrations, judge panels,
   review-then-verify.
-- **routines** — standing duties on a schedule; executors that report
-  back to you as digest events.
 
 ## Routing
 
@@ -38,9 +36,6 @@ default viewport.
   in-flow glance, **render** when fidelity matters. Dynamic or
   interactive content → **window** (or render as fallback).
 - One bounded task → **spawn**. Fan-out / multi-agent → **workflow**.
-  Recurring or deferred intent ("every morning", "keep an eye on",
-  "check back later") → **routines** — spawn and reply are not
-  schedulers.
 - Completions and executor reports arrive on their own as
   `<channel source="duck-agents">` events; react when they land, and
   in the meantime keep working or end your turn.

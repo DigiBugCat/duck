@@ -34,12 +34,10 @@ Deltas from the original design, discovered while building:
     per-key queues — not call order — so nondeterministic scheduling
     degrades to cache misses, never wrong results. Date.now()/Math.random()
     are therefore NOT banned in scripts; nondeterminism just costs cache.
-Companion to ROUTINES.md (standing duties) and
-the spawn tool (one durable executor). This is the third routing bucket:
+Companion to the spawn tool (one durable executor). The two routing buckets:
 
 | verb      | shape                                   | driven by |
 |-----------|-----------------------------------------|-----------|
-| routine   | recurring/deferred duty                 | schedule  |
 | spawn     | one durable, human-watchable executor   | events    |
 | workflow  | deterministic fan-out, disposable fleet | a script  |
 
@@ -55,7 +53,7 @@ discovery.
 One new MCP tool on the duck-agents sidecar: `workflow`. Like spawn it is
 **synchronous to start, async to completion** — it validates + launches the
 run, returns a handle (`wf_...`) in a couple seconds, and the RESULT arrives
-later as a `<channel source="duck-agents" type="digest">` event. The manager
+later as a `<channel source="duck-agents" type="workflow_complete">` event. The manager
 never polls.
 
 Input: `{script, args?, resume_from?}`. The script is persisted under
@@ -63,8 +61,8 @@ Input: `{script, args?, resume_from?}`. The script is persisted under
 
 Opt-in mirrors ultracode: the manager only reaches for `workflow` when the
 human asked for that scale in their own words ("run a workflow", "audit this
-thoroughly", "fan out"), or a routine/skill says to. This guidance rides the
-tool description, per the guidance-rides-tools principle — not AGENT.md.
+thoroughly", "fan out"), or a skill says to. This guidance rides the tool
+description, per the guidance-rides-tools principle — not AGENT.md.
 
 ## Script surface (goja-embedded JS)
 
@@ -135,7 +133,7 @@ workflows section inside the agents tab** — a divider under the real
 
 1. **Section rows** are synthetic (no pane behind them), driven by the
    runner's status file (`<run-dir>/status.json`, rewritten every few
-   seconds) — same index-driven pattern as the ⏰ routines tab. Selecting
+   seconds). Selecting
    a row swaps the run's progress pane (below) into the viewport; `x` on
    it stops the run.
 2. **Progress pane**: the runner maintains `<run-dir>/progress.html` and
@@ -162,11 +160,10 @@ journal let a human post-mortem any worker via the normal rollout files
 
 1. `internal/workflow`: runner + goja bindings + journal + status.json.
    Worker = codex exec wrapper reusing model-alias resolution.
-2. Sidecar `workflow` tool (serve.go tool table) + completion digest via the
-   existing courier path.
+2. Sidecar `workflow` tool (serve.go tool table) + completion event on the
+   channel spool.
 3. Progress artifact + roster row + `duck workflows` CLI.
-4. Later: worktree-isolated write stages; `workflow()`-from-routines
-   (a routine whose duty is "run this saved workflow nightly").
+4. Later: worktree-isolated write stages.
 
 ## Open questions
 
