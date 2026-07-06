@@ -1,7 +1,7 @@
 // serve.go is the Claude Code channel sidecar (`duck channel serve`): a
 // minimal MCP stdio server that multiplexes a workspace's sidebar agents
-// into ONE Claude channel (unscoped = every workspace on the machine, for
-// motherduck). Claude launches it via .mcp.json +
+// into ONE Claude channel (unscoped = every workspace on the machine).
+// Claude launches it via .mcp.json +
 // `claude --channels server:duck-agents --dangerously-load-development-channels`
 // (the feature is a research preview, hence the flag).
 //
@@ -38,17 +38,16 @@ var sweepEvery = 2 * time.Second
 const maxPush = 2000
 
 // Host backs the sidecar's action tools (spawn/resume/fork agents, preview/
-// render artifacts, routine control). It is an interface (not direct calls) so
-// internal/channel needn't import the packages those actions live in — several
-// of which import channel back (a cycle). command wires the concrete host in via
-// Serve. A nil host just omits the action tools (the reply-only server works).
+// render artifacts). It is an interface (not direct calls) so internal/channel
+// needn't import the packages those actions live in — several of which import
+// channel back (a cycle). command wires the concrete host in via Serve. A nil
+// host just omits the action tools (the reply-only server works).
 //
 // Agents: Launch spawns a NEW codex agent (argv), Resume continues a session by
 // id, Fork branches one — each returns the pane id (instant handle) and session
 // id (bound at first turn, "" if not yet taken). Artifacts: Preview shows a
 // file/url in the sidebar (returns the pane id), Render opens it in the human's
-// laptop browser. Routines: list/fire the workspace's scheduled executors.
-// workspace is the outer duck session the action targets.
+// laptop browser. workspace is the outer duck session the action targets.
 type Host interface {
 	Launch(workspace string, argv []string, name, tab, prompt, model, effort string) (paneID, sessionID string, err error)
 	Resume(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
@@ -57,9 +56,6 @@ type Host interface {
 	Preview(workspace, target, name string) (paneID string, err error)
 	Render(workspace, target string) error
 	Window(workspace, target, name string) (string, error)
-
-	Routines(workspace string) (string, error)          // human-readable listing
-	FireRoutine(workspace, name string) (string, error) // run one now
 
 	// Workflow starts a detached workflow run (docs/WORKFLOWS.md) and returns
 	// its run id; completion arrives later as a workflow_complete event.
@@ -73,7 +69,7 @@ type Host interface {
 //
 // workspace scopes the sweep to ONE duck session's agents — the down edge of
 // the org chart: a manager hears its own lot, not every workspace on the
-// machine. Empty means machine-wide (motherduck / explicit --all).
+// machine. Empty means machine-wide (explicit --all).
 func Serve(run panel.Runner, workspace string, host Host, in io.Reader, out io.Writer) error {
 	s := &server{run: run, workspace: workspace, host: host, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{}), started: time.Now().Truncate(time.Second)}
 	watchDone := make(chan struct{})
@@ -180,7 +176,7 @@ func (s *server) tools() []tool {
 	}
 	ts := []tool{{
 		name:        "reply",
-		description: "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport). The agent's response arrives later as a <channel source=\"duck-agents\"> event — do not poll; react when it lands. ROUTING: reply = continue an EXISTING agent's thread NOW. To continue a thread LATER or on a schedule, that is a heartbeat routine (`duck routines add <name> --every …`), not a reply you sit on.",
+		description: "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport). The agent's response arrives later as a <channel source=\"duck-agents\"> event — do not poll; react when it lands. reply continues an EXISTING agent's thread.",
 		schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -222,7 +218,7 @@ func (s *server) tools() []tool {
 	ts = append(ts,
 		tool{
 			name:        "spawn",
-			description: "Launch a codex agent into this workspace's sidebar (a durable, human-watchable TUI pane) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (a gpt alias; gpt-5.4-mini for cheap mechanical work) and reasoning effort. Prefer this over shelling out to `duck spawn`. ROUTING: spawn = do this ONCE, NOW. It is not a scheduler — for anything recurring or deferred (\"every morning\", \"keep an eye on\", \"check back later\") use a routine (`duck routines add`) instead. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
+			description: "Launch a codex agent into this workspace's sidebar (a durable, human-watchable TUI pane) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (a gpt alias; gpt-5.4-mini for cheap mechanical work) and reasoning effort. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
 			schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -373,29 +369,9 @@ func (s *server) tools() []tool {
 			},
 		},
 		tool{
-			name:        "routines",
-			description: "List this workspace's scheduled routines (your standing executor duties), or fire one NOW by name (fresh executor, off-schedule). ROUTING: reach for routines whenever the human asks for a scheduled task, recurring run, monitor, reminder, follow-up, or says to watch something, keep an eye on it, check back later, or keep working later — that is a routine, NOT a spawn. Pick the trigger by shape: --cron for standalone jobs where each run stands alone; --every (heartbeat: ONE persistent thread re-prompted per interval, keeps memory between beats) when continuity matters or the interval is under an hour; --manual for on-demand runbooks; --manager to schedule a turn in YOUR own context (reviews/consolidation). This tool only lists+fires; create with `duck routines add <name> [--cron|--every|--manual] [--manager] [--model gpt-…] [--effort …] <prompt>` via shell. To MODIFY a routine, edit its files in place (<sync-root>/.duck/routines/<ws>/<name>.toml + .md — the next fire reads them fresh); NEVER rm+re-add, which loses last-fire state and can double-fire. Prefer updating an existing routine over creating a near-duplicate: list first, match by name/prompt. Write prompts future-safe: the executor wakes with no conversation context, so the .md must say what to do, what NOT to do, and what to report. Intervals: match cadence to how fast the watched state actually changes — every beat costs an executor turn, so a too-tight heartbeat burns money to learn nothing changed; under ~15m needs a reason; err longer (the human can always fire for an immediate check). Tiering: checklists/sweeps → --model gpt-5.4-mini --effort low; judgment-heavy duties → default model. Completions arrive as digest events — never poll, and never build a routine whose only job is checking on another routine.",
-			schema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"fire": map[string]any{"type": "string", "description": "optional: name of a routine to run NOW (omit to just list)"},
-				},
-			},
-			handler: func(raw json.RawMessage) (string, error) {
-				var a struct{ Fire string }
-				if err := json.Unmarshal(raw, &a); err != nil {
-					return "", err
-				}
-				if a.Fire != "" {
-					return s.host.FireRoutine(ws, a.Fire)
-				}
-				return s.host.Routines(ws)
-			},
-		},
-		tool{
 			name: "workflow",
 			description: "Run a deterministic multi-agent workflow: a JS script you write whose control flow (loops, fan-out, barriers) is plain code, where each agent() call runs ONE disposable headless codex executor (the codex gpt default; pass model/effort per call — gpt-5.4-mini with low effort suits cheap mechanical stages). Workers are processes, not sidebar panes: the RUN is the one visible thing (roster workflows section + `duck workflows`). Returns a wf_ run id in a couple seconds; the RESULT is not in the reply — the run reports through the channel (workflow_started, workflow_phase per phase() transition, and workflow_complete carrying the result summary), so do NOT poll or tail; react when events land. " +
-				"ROUTING: use a workflow for fan-out work one pass shouldn't be trusted with or one context can't hold — audits, migrations, review-then-adversarially-verify, judge panels, loop-until-dry discovery — and only at the human's scale of ask; a single bounded task is a spawn, anything recurring is a routine. " +
+				"ROUTING: use a workflow for fan-out work one pass shouldn't be trusted with or one context can't hold — audits, migrations, review-then-adversarially-verify, judge panels, loop-until-dry discovery — and only at the human's scale of ask; a single bounded task is a spawn. " +
 				"SCRIPT SURFACE (plain JS, no TS): must begin `export const meta = {name, description}` as a PURE literal. Globals: agent(prompt, opts?) -> Promise (opts: {label, model, effort, cwd, write, schema} — schema forces a validated JSON object return, retried via session-resume on mismatch; workers are sandboxed read-only unless write:true; a failed worker resolves to null, so .filter(Boolean)); pipeline(items, ...stages) (per-item chains, NO barrier between stages — the default for multi-stage work; stages get (prev, item, i)); parallel(thunks) (a BARRIER — only when a stage needs ALL prior results, e.g. dedup); phase(title) + log(msg) (progress narration); args (the args input, verbatim); budget {total, spent(), remaining()} in tokens — agent() throws once total is exhausted. " +
 				"The script's return value becomes the run's result (persisted to result.json, summarized in the completion event). Every completed agent() call is journaled; pass resume_from with a prior run id to replay unchanged calls from its journal and only run what changed. Default worker concurrency 64; runaway backstop 1000 agents. To inspect or kill a run: duck workflows tail|stop <run-id>.",
 			schema: map[string]any{
@@ -559,12 +535,6 @@ func (s *server) watch() {
 			}
 			for _, a := range agents {
 				keep[a.PaneID] = true
-				// Routine executors (kind=runs) report through the courier's
-				// batched digest — pushing their rollout events here too would
-				// double-deliver every completion to the manager.
-				if a.Kind == panel.KindRun {
-					continue
-				}
 				rollout := s.resolver.Rollout(a.PaneID)
 				if rollout == "" {
 					continue

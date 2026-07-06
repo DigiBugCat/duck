@@ -7,7 +7,7 @@
 //
 // ls/tail/send default to the current tmux session's agents (--session to
 // target another). serve multiplexes the enclosing workspace's agents into
-// one Claude channel (--all for machine-wide, e.g. motherduck); register it
+// one Claude channel (--all for machine-wide); register it
 // in .mcp.json and launch Claude with `--channels server:duck-agents
 // --dangerously-load-development-channels` (research preview). Without tmux
 // or without any agents, everything here degrades to a quiet no-op.
@@ -24,7 +24,6 @@ import (
 	agentpkg "github.com/DigiBugCat/duck/internal/agent"
 	"github.com/DigiBugCat/duck/internal/channel"
 	"github.com/DigiBugCat/duck/internal/panel"
-	"github.com/DigiBugCat/duck/internal/routines"
 	"github.com/spf13/cobra"
 )
 
@@ -153,10 +152,10 @@ var channelNotifyCmd = &cobra.Command{
 }
 
 // mcpHost backs the serve MCP server's action tools (spawn/resume/fork agents,
-// preview/render artifacts, routine control) with duck's real internal packages
-// — so a tool call does EXACTLY what the equivalent CLI verb does. Lives here
-// (not in internal/channel) to break the channel↔{agent,routines,command} import
-// cycles: command already imports all of them.
+// preview/render/window artifacts, workflows) with duck's real internal
+// packages — so a tool call does EXACTLY what the equivalent CLI verb does.
+// Lives here (not in internal/channel) to break the channel↔{agent,command}
+// import cycles: command already imports all of them.
 type mcpHost struct{}
 
 func (mcpHost) launch(workspace string, spec agentpkg.Spec) (string, string, error) {
@@ -217,50 +216,6 @@ func (mcpHost) Window(workspace, target, name string) (string, error) {
 
 func isHTTPURL(target string) bool {
 	return strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
-}
-
-// Routines / FireRoutine drive the workspace's scheduled executors (list, or run
-// one now) via internal/routines — the same paths `duck routines`/`fire` use.
-func (mcpHost) Routines(workspace string) (string, error) {
-	root, err := routines.SyncRoot(panel.ExecRunner, workspace)
-	if err != nil {
-		return "", err
-	}
-	defs, err := routines.LoadWorkspace(root, workspace)
-	if err != nil {
-		return "", err
-	}
-	if len(defs) == 0 {
-		return "no routines in this workspace", nil
-	}
-	var b strings.Builder
-	for _, d := range defs {
-		when := d.Schedule
-		if d.Trigger == routines.TriggerHeartbeat {
-			when = d.Interval.String()
-		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\n", d.Name, d.Trigger, when)
-	}
-	return strings.TrimRight(b.String(), "\n"), nil
-}
-func (mcpHost) FireRoutine(workspace, name string) (string, error) {
-	root, err := routines.SyncRoot(panel.ExecRunner, workspace)
-	if err != nil {
-		return "", err
-	}
-	defs, err := routines.LoadWorkspace(root, workspace)
-	if err != nil {
-		return "", err
-	}
-	for _, d := range defs {
-		if d.Name == name {
-			if !routines.Fire(panel.ExecRunner, d, time.Now(), io.Discard) {
-				return "", fmt.Errorf("routine %q did not fire (already running?)", name)
-			}
-			return "fired routine " + name, nil
-		}
-	}
-	return "", fmt.Errorf("no routine %q in this workspace", name)
 }
 
 // Workflow starts a detached workflow run for the manager's workspace. The

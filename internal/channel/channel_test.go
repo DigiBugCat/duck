@@ -371,44 +371,6 @@ func TestHandleNotifyPinsRolloutByThreadID(t *testing.T) {
 	}
 }
 
-// TestHandleNotifyLeavesRunBreadcrumb: a completing routine executor
-// (kind=runs) leaves a courier breadcrumb for its OWNER workspace, carrying
-// the routine name and last message — even though its pane dies immediately.
-func TestHandleNotifyLeavesRunBreadcrumb(t *testing.T) {
-	old := spoolHome
-	spoolHome = t.TempDir()
-	defer func() { spoolHome = old }()
-	t.Setenv("DUCK_CODEX_SESSIONS", t.TempDir()) // no rollout on disk — pin skipped
-
-	f := &fakeRunner{out: map[string]string{
-		"display-message -p -t %9 #{@duck_kind}\t#{@duck_name}\t#{session_name}": "runs\tnightly\twork-agents\n",
-		"show-options -t work-agents -v @duck_panel_of":                          "work\n",
-	}}
-	payload := `{"type":"agent-turn-complete","thread-id":"019f2f69-33a2-7d02-909d-b8f0d1328621","last-assistant-message":"all green\ndetails below"}`
-	if err := HandleNotify(f.run, "%9", payload); err != nil {
-		t.Fatal(err)
-	}
-	got, err := DrainReports("work")
-	if err != nil || len(got) != 1 {
-		t.Fatalf("want 1 breadcrumb for owner workspace, got %v err=%v", got, err)
-	}
-	if got[0].Routine != "nightly" || !strings.HasPrefix(got[0].Message, "all green") {
-		t.Fatalf("breadcrumb wrong: %+v", got[0])
-	}
-	// Drained means gone.
-	if again, _ := DrainReports("work"); len(again) != 0 {
-		t.Fatalf("drain must consume: %v", again)
-	}
-	// Non-run panes leave nothing.
-	f.out["display-message -p -t %9 #{@duck_kind}\t#{@duck_name}\t#{session_name}"] = "agents\tchat\twork-agents\n"
-	if err := HandleNotify(f.run, "%9", payload); err != nil {
-		t.Fatal(err)
-	}
-	if crumbs, _ := DrainReports("work"); len(crumbs) != 0 {
-		t.Fatalf("non-run pane must not leave breadcrumbs: %v", crumbs)
-	}
-}
-
 func TestCmdRunsCodex(t *testing.T) {
 	yes := []string{"codex", "codex --model x", "/usr/local/bin/codex resume", "env FOO=1 codex",
 		// duck spawn stamps the paths.Quote'd line — tokens arrive quoted.
@@ -583,7 +545,7 @@ func TestServeDrainsPublishSpool(t *testing.T) {
 	sweepEvery = 5 * time.Millisecond
 	defer func() { sweepEvery = oldSweep }()
 
-	if err := Publish("work", "routine fired: standup", map[string]string{"source": "routines", "type": "digest"}); err != nil {
+	if err := Publish("work", "workflow complete: audit", map[string]string{"source": "workflow", "type": "workflow_complete"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -619,11 +581,11 @@ func TestServeDrainsPublishSpool(t *testing.T) {
 		t.Fatalf("no channel notification emitted; output was:\n%s", out.String())
 	}
 	params := got["params"].(map[string]any)
-	if params["content"] != "routine fired: standup" {
+	if params["content"] != "workflow complete: audit" {
 		t.Fatalf("wrong content: %v", params["content"])
 	}
 	meta := params["meta"].(map[string]any)
-	if meta["session"] != "work" || meta["type"] != "digest" || meta["source"] != "routines" {
+	if meta["session"] != "work" || meta["type"] != "workflow_complete" || meta["source"] != "workflow" {
 		t.Fatalf("meta wrong: %v", meta)
 	}
 	// The sidecar marked the workspace alive.
@@ -976,14 +938,6 @@ func (f *fakeHost) Window(ws, target, name string) (string, error) {
 	f.last = "window:" + target + ":" + name
 	return "http://artifact", nil
 }
-func (f *fakeHost) Routines(ws string) (string, error) {
-	f.last = "routines"
-	return "beat\theartbeat\t15m", nil
-}
-func (f *fakeHost) FireRoutine(ws, name string) (string, error) {
-	f.last = "fire:" + name
-	return "fired " + name, nil
-}
 func (f *fakeHost) Workflow(ws, script, argsJSON, resumeFrom string, budget int64) (string, error) {
 	f.last = "workflow"
 	return "wf_20260101-000000-abcdef", nil
@@ -998,7 +952,7 @@ func TestServeToolsGatedOnLauncher(t *testing.T) {
 	// With a launcher → reply + spawn/resume/fork.
 	s1 := &server{workspace: "work", host: &fakeHost{}}
 	got := toolNames(s1.tools())
-	for _, want := range []string{"reply", "spawn", "resume", "fork", "preview", "render", "window", "routines"} {
+	for _, want := range []string{"reply", "spawn", "resume", "fork", "preview", "render", "window"} {
 		found := false
 		for _, n := range got {
 			if n == want {

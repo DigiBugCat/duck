@@ -13,7 +13,6 @@ import (
 
 	"github.com/DigiBugCat/duck/internal/flow"
 	"github.com/DigiBugCat/duck/internal/panel"
-	"github.com/DigiBugCat/duck/internal/routines"
 	"github.com/spf13/cobra"
 )
 
@@ -79,10 +78,8 @@ var editCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(editCmd)
-	// Inject the sync-root resolver so panel + routines (low-level, no
-	// flow/mutagen dep) can place pads and routine defs under the covering
-	// project sync root. This init() runs for EVERY subcommand, so the binding
-	// is live in the `routines tick` path too.
+	// Inject the sync-root resolver so panel (low-level, no flow/mutagen dep)
+	// can place pads under the covering project sync root. This init() runs for
+	// EVERY subcommand, so the binding is live wherever pads are opened.
 	panel.SyncRootFn = flow.CoveringSyncRoot
-	routines.SyncRootFn = flow.CoveringSyncRoot
 }

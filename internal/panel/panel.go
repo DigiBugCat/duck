@@ -98,7 +98,6 @@ const (
 	KindShell    = "shells"     // plain interactive shells
 	KindArtifact = "artifacts"  // things you look at (previews)
 	KindBuffer   = "scratchpad" // editor panes: the scratch note + duck edit files
-	KindRun      = "runs"       // routine executor panes (see internal/routines) — dynamic tab
 )
 
 // BaseKinds is the always-visible tab order; dynamic kinds append after.
@@ -866,22 +865,6 @@ func ShowWorkspacePreview(run Runner, outer, wsName, mainPane string) error {
 	cap := "tmux capture-pane -ep -t " + paths.Quote(mainPane)
 	body := `draw() { clear; printf '\033[7m ⌂ %s \033[0m\n\n' ` + paths.Quote(wsName) +
 		`; ` + cap + ` 2>/dev/null; }; trap draw WINCH; draw; while :; do sleep 3600; done`
-	return showFiller(run, outer, "sh -c "+paths.Quote(body))
-}
-
-// ShowRoutineDetail renders a routine's CARD in the placeholder viewport —
-// the Codex-automation-style detail view: a header naming the routine, a meta
-// line (schedule · model · last/next fire · status), then the job description
-// itself (the def's .md) glow-rendered. Live: WINCH redraws, and an mtime
-// poll repaints when the .md is edited underneath.
-func ShowRoutineDetail(run Runner, outer, name, meta, mdPath string) error {
-	q := paths.Quote(mdPath)
-	render := `(glow -w "$(tput cols 2>/dev/null || echo 100)" ` + q + ` 2>/dev/null || cat ` + q + ` 2>/dev/null || printf 'no prompt file: %s\n' ` + q + `)`
-	body := `draw() { clear; printf '\033[7m ⏰ %s \033[0m\n\033[2m%s\033[0m\n\n' ` +
-		paths.Quote(name) + ` ` + paths.Quote(meta) + `; ` + render + `; }; ` +
-		`trap draw WINCH; draw; m=$(stat -c %Y ` + q + ` 2>/dev/null); ` +
-		`while :; do sleep 1; n=$(stat -c %Y ` + q + ` 2>/dev/null); ` +
-		`if [ "$n" != "$m" ]; then m=$n; draw; fi; done`
 	return showFiller(run, outer, "sh -c "+paths.Quote(body))
 }
 

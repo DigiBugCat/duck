@@ -6,7 +6,6 @@
 //     selected item, x (twice) kills it. Some tabs add their own letter
 //     shortcuts — the hint line always shows the active tab's keys:
 //     · item tabs (agents/shells/artifacts/scratchpad): ↵ view · x kill
-//     · ⏰ routines: ↵ card · v run · e edit · f fire
 //     · ⌂ workspaces: ↵ preview · g go · b back · x kill · s scope
 //   - COMMAND: entered by typing `:` or clicking the box. The always-visible
 //     box at the bottom takes over: typing live-filters the list and jumps
@@ -40,18 +39,6 @@ const pollEvery = 2 * time.Second
 // wsTab is the pinned pseudo-tab showing hub workspaces.
 const wsTab = "workspaces"
 
-// schedTab is the pinned pseudo-tab showing this workspace's routines (its
-// standing schedules). Rows come from `duck routines --tsv` — the roster
-// can't import internal/routines (it imports panel), so it shells out to its
-// own binary like the other command-layer verbs.
-const schedTab = "routines"
-
-// routineRow is one schedule as shown on the ⏰ routines tab.
-type routineRow struct {
-	Name, Trigger, Sched, Model, Last, Next, Status string
-	Path                                            string // the prompt .md (trailing TSV field; may be empty)
-}
-
 // workflowRow is one workflow run as shown in the agents tab's dedicated
 // "── workflows ──" section (docs/WORKFLOWS.md): the run — not its headless
 // workers — is the visible thing.
@@ -79,7 +66,6 @@ type agentsMsg struct {
 	agents     []Agent
 	statuses   map[string]string
 	workspaces []Workspace
-	routines   []routineRow
 	workflows  []workflowRow
 	err        error
 }
@@ -110,7 +96,6 @@ type watchModel struct {
 	agents         []Agent
 	statuses       map[string]string
 	workspaces     []Workspace
-	routines       []routineRow
 	workflows      []workflowRow
 	tabKind        string         // active tab BY NAME
 	cursor         int            // index into visible() rows
@@ -169,12 +154,12 @@ func (m watchModel) load() tea.Msg {
 		}
 	}
 	ws, _ := Workspaces(m.run, m.outer)
-	return agentsMsg{agents: agents, statuses: statuses, workspaces: ws, routines: loadRoutines(), workflows: loadWorkflowRows(), err: err}
+	return agentsMsg{agents: agents, statuses: statuses, workspaces: ws, workflows: loadWorkflowRows(), err: err}
 }
 
 // loadWorkflowRows fetches this workspace's workflow runs for the agents
-// tab's workflows section via `duck workflows --tsv` (same shell-out rule as
-// loadRoutines — the roster can't import command). Live runs always show;
+// tab's workflows section via `duck workflows --tsv` (the roster can't import
+// command, so it shells out to its own binary). Live runs always show;
 // terminal ones age out after ten minutes so the section reads as "what's
 // happening", not history (that's `duck workflows`). Best-effort: failures
 // render as no section.
@@ -211,34 +196,6 @@ func loadWorkflowRows() []workflowRow {
 	return rows
 }
 
-// loadRoutines fetches this workspace's schedules for the ⏰ routines tab by
-// shelling out to `duck routines --tsv` (the roster can't import
-// internal/routines — import cycle). Best-effort: any failure renders as an
-// empty tab, never an error.
-func loadRoutines() []routineRow {
-	self, err := os.Executable()
-	if err != nil {
-		return nil
-	}
-	out, err := exec.Command(self, "routines", "--tsv").Output()
-	if err != nil {
-		return nil
-	}
-	var rows []routineRow
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		f := strings.SplitN(line, "\t", 9)
-		if len(f) < 8 {
-			continue
-		}
-		r := routineRow{Name: f[1], Trigger: f[2], Sched: f[3], Model: f[4], Last: f[5], Next: f[6], Status: f[7]}
-		if len(f) > 8 { // trailing free-text field: tolerate its absence
-			r.Path = f[8]
-		}
-		rows = append(rows, r)
-	}
-	return rows
-}
-
 // headerLines: tab bar + rule, above the first row (mouse-mapping contract).
 const headerLines = 2
 
@@ -246,11 +203,7 @@ const headerLines = 2
 // the pinned ⌂ ws tab last.
 func (m watchModel) tabs() []string {
 	count := map[string]int{}
-	owned := m.routineNames()
 	for _, a := range m.agents {
-		if a.Kind == KindRun && owned[a.Name] {
-			continue // folded under the ⏰ tab (see routineNames)
-		}
 		count[a.Kind]++
 	}
 	out := append([]string{}, BaseKinds...)
@@ -266,7 +219,7 @@ func (m watchModel) tabs() []string {
 	}
 	sort.Strings(extra)
 	out = append(out, extra...)
-	return append(out, schedTab, wsTab)
+	return append(out, wsTab)
 }
 
 func (m watchModel) activeKind() string { return m.tabKind }
@@ -289,24 +242,15 @@ func (m *watchModel) cycleTab(delta int) {
 // switchTab makes `kind` the active tab, restoring the cursor to the item that
 // was selected there last (0 if never visited), and swaps the viewport to it —
 // no ↵ needed. The old tab's cursor is saved first so returning restores it.
-// Item tabs (agents/shells/artifacts/scratchpad) auto-view; the routines tab
-// has no viewport action and the workspaces tab would teleport the terminal to
-// another workspace, so a mere tab-switch must never trigger either.
+// Item tabs (agents/shells/artifacts/scratchpad) auto-view; the workspaces tab
+// would teleport the terminal to another workspace, so a mere tab-switch must
+// never trigger that — it previews instead.
 func (m *watchModel) switchTab(kind string) {
 	m.tabCursor[m.tabKind] = m.cursor
 	m.tabKind, m.armedKill = kind, ""
 	m.cursor = m.tabCursor[kind]
 	if n := len(m.visible()); m.cursor >= n { // list shrank while we were away
 		m.cursor = 0
-	}
-	if m.tabKind == schedTab {
-		// Arriving on ⏰ shows the selected routine's card.
-		if idx := m.visible(); m.cursor < len(idx) {
-			m.showRoutineCard(m.routines[idx[m.cursor]])
-			return
-		}
-		_ = ShowEmpty(m.run, m.outer, m.tabKind)
-		return
 	}
 	if m.tabKind == wsTab {
 		m.previewWorkspace()
@@ -417,15 +361,6 @@ func (m watchModel) rowWindow() (int, []int) {
 func (m watchModel) visible() []int {
 	q := m.filterText()
 	var idx []int
-	if m.tabKind == schedTab {
-		for i, r := range m.routines {
-			if q != "" && !isSubseq(strings.ToLower(r.Name), q) {
-				continue
-			}
-			idx = append(idx, i)
-		}
-		return idx
-	}
 	if m.tabKind == wsTab {
 		for i, w := range m.workspaces {
 			if m.wsScopeProject && !w.InProject {
@@ -438,13 +373,9 @@ func (m watchModel) visible() []int {
 		}
 		return idx
 	}
-	owned := m.routineNames()
 	for i, a := range m.agents {
 		if a.Kind != m.tabKind {
 			continue
-		}
-		if a.Kind == KindRun && owned[a.Name] {
-			continue // routine-backed run: lives under the ⏰ tab, not here
 		}
 		if q != "" && !isSubseq(strings.ToLower(a.Name), q) {
 			continue
@@ -498,16 +429,12 @@ func (m *watchModel) skipDivider(delta int) {
 }
 
 // syncToOccupant makes the tab bar follow the viewport: when the OCCUPANT
-// CHANGES (a preview lands, a spawn appears, a routine run is swapped in),
-// the active tab and cursor jump to that item. It fires only when the
-// occupant's pane differs from the last observed one, so it never fights the
-// user's own navigation between polls. The placeholder filler pane (empty
-// kind — empty tabs, ws previews, routine cards) advances the marker but
-// leaves tabs alone, so browsing routine cards is never yanked off the ⏰ tab.
-// Routine-backed run panes (kind=runs named after a routine) fold under the
-// ⏰ tab, so the cursor lands on the routine row instead. Tab/cursor fields
-// are set directly — the pane is already on display, so switchTab's viewport
-// side effects must not re-fire.
+// CHANGES (a preview lands, a spawn appears), the active tab and cursor jump
+// to that item. It fires only when the occupant's pane differs from the last
+// observed one, so it never fights the user's own navigation between polls. The
+// placeholder filler pane (empty kind — empty tabs, ws previews) advances the
+// marker but leaves tabs alone. Tab/cursor fields are set directly — the pane
+// is already on display, so switchTab's viewport side effects must not re-fire.
 func (m *watchModel) syncToOccupant() {
 	var occ *Agent
 	for i := range m.agents {
@@ -524,9 +451,6 @@ func (m *watchModel) syncToOccupant() {
 		return
 	}
 	target := occ.Kind
-	if occ.Kind == KindRun && m.routineNames()[occ.Name] {
-		target = schedTab
-	}
 	known := false
 	for _, k := range m.tabs() {
 		if k == target {
@@ -546,51 +470,11 @@ func (m *watchModel) syncToOccupant() {
 		if i < 0 {
 			continue // workflows section rows have no pane to match
 		}
-		if target == schedTab {
-			if m.routines[i].Name == occ.Name {
-				m.cursor = pos
-				break
-			}
-		} else if m.agents[i].PaneID == occ.PaneID {
+		if m.agents[i].PaneID == occ.PaneID {
 			m.cursor = pos
 			break
 		}
 	}
-}
-
-// routineNames is the set of this workspace's routine names. Executor panes
-// (kind=runs) named after a routine are that routine's NESTED view: they fold
-// under the ⏰ tab (↵ on the routine shows the run) instead of cluttering a
-// separate runs tab. Ad-hoc runs (no matching routine) still get the runs tab.
-func (m watchModel) routineNames() map[string]bool {
-	names := make(map[string]bool, len(m.routines))
-	for _, r := range m.routines {
-		names[r.Name] = true
-	}
-	return names
-}
-
-// showRoutineCard puts the routine's detail card in the viewport: header +
-// schedule/model/fire-times meta line + the glow-rendered prompt md. Arrow
-// keys, ↵, clicks, and tab-arrival all land here; the raw run pane stays one
-// keypress away (`v`).
-func (m *watchModel) showRoutineCard(r routineRow) {
-	meta := string(r.Trigger) + " " + r.Sched
-	if r.Model != "" && r.Model != "—" {
-		meta += " · " + r.Model
-	}
-	meta += " · last " + r.Last + " · next " + r.Next + " · " + r.Status
-	_ = ShowRoutineDetail(m.run, m.outer, r.Name, meta, r.Path)
-}
-
-// routineRun finds the live executor pane backing a routine, if any.
-func (m watchModel) routineRun(name string) (Agent, bool) {
-	for _, a := range m.agents {
-		if a.Kind == KindRun && a.Name == name {
-			return a, true
-		}
-	}
-	return Agent{}, false
 }
 
 func (m watchModel) isVerb() bool {
@@ -620,8 +504,6 @@ func (m watchModel) newUsage() string {
 		return "new <file|url>  — preview something"
 	case KindAgent:
 		return "new <cmd…>  — launch an agent"
-	case schedTab:
-		return "new  — schedule with: duck routines add <name> --cron/--every … <prompt>"
 	case wsTab:
 		return "new  — (workspaces are made by `duck` in a directory)"
 	default:
@@ -697,7 +579,7 @@ func (m watchModel) fuzzyAgent(q string) *Agent {
 }
 
 func (m watchModel) selectedAgent() (Agent, bool) {
-	if m.tabKind == schedTab || m.tabKind == wsTab {
+	if m.tabKind == wsTab {
 		return Agent{}, false
 	}
 	idx := m.visible()
@@ -722,12 +604,6 @@ func isSubseq(hay, needle string) bool {
 func (m *watchModel) viewSelected() string {
 	idx := m.visible()
 	if m.cursor >= len(idx) {
-		return ""
-	}
-	if m.tabKind == schedTab {
-		// ↵/click = the routine's CARD (prompt md + schedule meta), like the
-		// Codex automation detail view. The live run is `v`; firing is `f`.
-		m.showRoutineCard(m.routines[idx[m.cursor]])
 		return ""
 	}
 	if m.tabKind == wsTab {
@@ -826,8 +702,6 @@ func (m *watchModel) runInput() string {
 				return "new <file|url>"
 			}
 			return m.duckExec("preview", f[1])
-		case schedTab:
-			return "schedule with: duck routines add <name> --cron/--every … <prompt>"
 		case wsTab:
 			return "workspaces are made by running `duck` in a directory"
 		default:
@@ -972,7 +846,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statuses = msg.statuses
 		m.workspaces = msg.workspaces
-		m.routines = msg.routines
 		m.workflows = msg.workflows
 		m.syncToOccupant()
 		if n := len(m.visible()); m.cursor >= n {
@@ -1089,10 +962,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.skipDivider(-1)
 				if m.tabKind == wsTab {
 					m.previewWorkspace()
-				} else if m.tabKind == schedTab {
-					if idx := m.visible(); m.cursor < len(idx) {
-						m.showRoutineCard(m.routines[idx[m.cursor]])
-					}
 				}
 			}
 		case "down", "j":
@@ -1102,10 +971,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.skipDivider(1)
 				if m.tabKind == wsTab {
 					m.previewWorkspace()
-				} else if m.tabKind == schedTab {
-					if idx := m.visible(); m.cursor < len(idx) {
-						m.showRoutineCard(m.routines[idx[m.cursor]])
-					}
 				}
 			}
 		case "left", "shift+tab", "h":
@@ -1115,44 +980,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.lastMsg = m.focusWindowSelected()
 			return m, m.load
-		case "v": // view the highlighted routine's live run pane (⏰ tab only)
-			if m.tabKind == schedTab {
-				if idx := m.visible(); m.cursor < len(idx) {
-					r := m.routines[idx[m.cursor]]
-					if a, ok := m.routineRun(r.Name); ok {
-						_ = Select(m.run, m.outer, a.PaneID)
-					} else {
-						m.lastMsg = "no run yet for " + r.Name + " — press f to fire it"
-					}
-					return m, nil
-				}
-			}
-		case "e": // edit the highlighted routine's prompt md (⏰ tab only)
-			if m.tabKind == schedTab {
-				if idx := m.visible(); m.cursor < len(idx) {
-					r := m.routines[idx[m.cursor]]
-					if r.Path == "" {
-						m.lastMsg = "no prompt file known for " + r.Name
-						return m, nil
-					}
-					if out := m.duckExec("edit", r.Path); out != "" {
-						m.lastMsg = out
-					}
-					return m, m.load
-				}
-			}
-		case "f": // fire the highlighted routine now (⏰ tab only)
-			if m.tabKind == schedTab {
-				if idx := m.visible(); m.cursor < len(idx) {
-					r := m.routines[idx[m.cursor]]
-					if out := m.duckExec("routines", "fire", r.Name); out != "" {
-						m.lastMsg = out
-					} else {
-						m.lastMsg = "fired " + r.Name
-					}
-					return m, m.load
-				}
-			}
 		case "g": // go: commit switch to the highlighted workspace (ws tab only)
 			if m.tabKind == wsTab {
 				m.lastMsg = m.goWorkspace()
@@ -1196,10 +1023,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "x":
-			if m.tabKind == schedTab {
-				m.lastMsg = "retire schedules with: duck routines rm <name>"
-				return m, nil
-			}
 			if m.tabKind == wsTab {
 				// Kill a whole workspace (session + companion), same x-twice arm as
 				// agents. Routes through `duck kill <tmux>` so it gets the full
@@ -1289,8 +1112,6 @@ func (m watchModel) renderTabs() (string, []tabSpan) {
 		n := 0
 		if kind == wsTab {
 			n = len(m.workspaces)
-		} else if kind == schedTab {
-			n = len(m.routines)
 		} else {
 			for _, a := range m.agents {
 				if a.Kind == kind {
@@ -1378,7 +1199,6 @@ func helpLines(m watchModel) []string {
 		" ↑↓ pick · ←→/⇥ tabs · x x kill · q close",
 		dimStyle.Render(" ↵ acts on the row — and each tab adds its own keys:"),
 		dimStyle.Render("   agents/shells/… : ↵ view"),
-		dimStyle.Render("   ⏰ routines      : ↵ card · v run · e edit · f fire"),
 		dimStyle.Render("   ⌂ workspaces    : ↵ preview · g go · b back · s scope"),
 		"",
 		activeStyle.Render(" commands — press : (or click the box), then type:"),
@@ -1442,24 +1262,6 @@ func (m watchModel) View() string {
 	for w, i := range win {
 		row := start + w
 		var line string
-		if m.tabKind == schedTab {
-			r := m.routines[i]
-			meta := r.Trigger + " " + r.Sched
-			if r.Model != "" && r.Model != "—" {
-				meta += " · " + r.Model
-			}
-			label := r.Name + dimStyle.Render(" · "+meta+" · next "+r.Next+" · "+r.Status)
-			line = "  " + label
-			if row == m.cursor {
-				hint := " ↵ card · e edit · f fire"
-				if _, ok := m.routineRun(r.Name); ok {
-					hint = " ↵ card · v run · e edit · f fire"
-				}
-				line = "  " + selectedStyle.Render(" "+r.Name+" ") + dimStyle.Render(hint)
-			}
-			b.WriteString(truncate(line, m.width) + "\n")
-			continue
-		}
 		if m.tabKind == wsTab {
 			ws := m.workspaces[i]
 			disp := ws.Display
@@ -1560,11 +1362,6 @@ func (m watchModel) View() string {
 			scope = "all"
 		}
 		hintLine = dimStyle.Render(" ↵ preview · g go · b back · x kill · s scope:" + scope + " · ←→ tabs")
-	case m.tabKind == schedTab:
-		// The routines tab has the app's richest shortcut set (card/run/edit/fire);
-		// advertise them here — the generic default hint would hide v/e/f and
-		// mislead on ↵ (a card, not a "view") and x (rm, not kill).
-		hintLine = dimStyle.Render(" ↵ card · v run · e edit · f fire · ←→ tabs")
 	case m.tabKind == KindShell:
 		hintLine = dimStyle.Render(" ↵ view · n new · x kill · ←→ tabs · q close")
 	case m.tabKind == KindBuffer:

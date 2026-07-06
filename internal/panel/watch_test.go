@@ -7,12 +7,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func syncModel(agents []Agent, routines []routineRow) watchModel {
+func syncModel(agents []Agent) watchModel {
 	return watchModel{
 		tabKind:   KindAgent,
 		tabCursor: map[string]int{},
 		agents:    agents,
-		routines:  routines,
 	}
 }
 
@@ -21,7 +20,7 @@ func TestSyncToOccupantFollowsNewOccupant(t *testing.T) {
 		{PaneID: "%1", Name: "a", Kind: KindAgent},
 		{PaneID: "%2", Name: "chart", Kind: KindArtifact, Active: true},
 		{PaneID: "%3", Name: "table", Kind: KindArtifact},
-	}, nil)
+	})
 	m.syncToOccupant()
 	if m.tabKind != KindArtifact {
 		t.Errorf("tab should follow occupant kind, got %q", m.tabKind)
@@ -42,26 +41,13 @@ func TestSyncToOccupantFollowsNewOccupant(t *testing.T) {
 	}
 }
 
-func TestSyncToOccupantRoutineRunFoldsUnderSchedTab(t *testing.T) {
-	m := syncModel([]Agent{
-		{PaneID: "%4", Name: "daily", Kind: KindRun, Active: true},
-	}, []routineRow{{Name: "hourly"}, {Name: "daily"}})
-	m.syncToOccupant()
-	if m.tabKind != schedTab {
-		t.Errorf("routine-backed run should land on the ⏰ tab, got %q", m.tabKind)
-	}
-	if m.cursor != 1 {
-		t.Errorf("cursor should be on the matching routine row, got %d", m.cursor)
-	}
-}
-
 func TestSyncToOccupantIgnoresPlaceholder(t *testing.T) {
 	m := syncModel([]Agent{
 		{PaneID: "%5", Kind: "", Active: true}, // filler pane (empty kind)
-	}, nil)
-	m.tabKind, m.cursor = schedTab, 2
+	})
+	m.tabKind, m.cursor = KindArtifact, 2
 	m.syncToOccupant()
-	if m.tabKind != schedTab || m.cursor != 2 {
+	if m.tabKind != KindArtifact || m.cursor != 2 {
 		t.Errorf("placeholder occupant must leave tab/cursor alone, got %q/%d", m.tabKind, m.cursor)
 	}
 	if m.lastActive != "%5" {
