@@ -59,9 +59,49 @@ back to you as batched digest events. When recurring work comes up
 - `duck routines` lists this workspace's routines; `fire <name>` runs
   one now; `rm <name>` retires it.
 
-Completions arrive to you automatically as `<channel source="duck-agents"
-type="digest">` events — never poll your executors. Detail on demand:
-`duck channel tail <name>`.
+**Routing — pick the right verb for the request's shape:**
+
+| The human says…                          | Reach for                     |
+|------------------------------------------|-------------------------------|
+| "do X" (once, now)                        | `spawn`                       |
+| "every morning / weekly / on a schedule"  | routine `--cron`              |
+| "keep an eye on / monitor / watch X"      | routine `--every` (heartbeat) |
+| "check back in 20m / continue later"      | routine `--every` (heartbeat) |
+| "remind me / nudge me to review"          | routine `--manager`           |
+| "here's the procedure for when Y happens" | routine `--manual` (runbook)  |
+| answer/redirect a live agent NOW          | `reply`                       |
+
+spawn and reply are NOT schedulers; a fork/new agent is NOT a way to
+"continue later" — deferred or recurring intent always means a routine.
+
+**Update discipline:** prefer updating an existing routine over creating a
+near-duplicate — list first, match by name/prompt. To change one, edit its
+files in place (`<sync-root>/.duck/routines/<ws>/<name>.toml` + `.md`; the
+next fire reads them fresh, no re-registration). NEVER rm+re-add to tweak:
+that loses last-fire state and can double-fire. Write routine prompts
+future-safe: the executor wakes with zero conversation context, so the .md
+must carry what to do, what NOT to do, and what to report. Never show the
+human raw cron syntax when plain words ("weekdays 9am PST") will do.
+
+**Picking an interval:** think about what you're waiting for, not a round
+number. Match the cadence to how fast the watched state actually changes —
+a CI pipeline that takes ~8 minutes deserves a beat every few minutes
+while it matters, not 30s; positions that move hourly deserve 30m–1h, not
+5m. Every beat costs a real executor turn, so a too-tight heartbeat burns
+money to learn "nothing changed". Under ~15m needs a reason. Err longer:
+the human can always `fire` for an immediate check.
+
+**Delegation tiers:** you are the manager, not the typist. Checklists,
+sweeps, and mechanical duties → `--model gpt-5.4-mini --effort low`;
+judgment-heavy standing work → default model. Scale rigor to the ask:
+"keep an eye on it" wants a one-line quiet/changed beat, "audit this
+daily" wants a thorough executor and a real report.
+
+**Never poll, ever:** completions re-invoke you as digest events; a
+routine's report arrives on its own. Watching an executor's pane, tailing
+its channel in a loop, or scheduling a routine whose only job is "check
+whether the other routine finished" are all bugs — react when the digest
+lands. Detail on demand: `duck channel tail <name>`.
 
 ## Workspace hygiene
 

@@ -17,7 +17,6 @@ package tui
 
 import (
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -566,52 +565,8 @@ var (
 	filterTextStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#111827", Dark: "#FAFAFA"})
 	filterCaretStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"})
 
-	displayStyle    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#1F2937", Dark: "#E5E7EB"})
-	displaySelStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#F9FAFB", Dark: "#1F2937"}).
-			Background(lipgloss.AdaptiveColor{Light: "#374151", Dark: "#E5E7EB"})
-	dirStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#0369A1", Dark: "#7DD3FC"})
-	ageStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-
-	attachedGlyph = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#059669", Dark: "#34D399"}).Bold(true).Render("●")
-	liveGlyph     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#D97706", Dark: "#FBBF24"}).Render("◐")
-	idleGlyph     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Render("○")
-	// loopGlyph marks a session running a /loop (pinned to the top). The recycle
-	// arrow reads as "running on a loop"; the purple ties it to duck's accent.
-	loopGlyph = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#A78BFA"}).Bold(true).Render("↻")
-	// evictedGlyph marks a session whose tmux process was evicted to save RAM;
-	// enter revives it (recreate + claude --resume) before attaching.
-	evictedGlyph = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Render("⊘")
-)
-
-// idleThreshold splits "live-detached" (◐) from "idle/old" (○) by recency.
-// DESIGN §6's example bounds it to (1h, 3h] (1h detached → ◐, 3h detached → ○);
-// 2h is a guess in that window. FLAG for the integrator: confirm/centralize this
-// constant if liveness should key on something stronger than session_activity.
-const idleThreshold = 2 * time.Hour
-
-// glyphFor maps state to the picker's status glyph: ↻ looped (running a /loop —
-// pinned at the top, outranks everything), ● attached, ◐ live-detached (active
-// within idleThreshold), ○ idle/old. It is a pure function of the looped/attached
-// flags and the last-active age so it is unit-testable without a wall clock
-// (renderRow passes time.Since(r.LastSeen)). Looped is checked first so a running
-// loop is always recognisable even when also attached.
-func glyphFor(evicted, looped, attached bool, age time.Duration) string {
-	switch {
-	case evicted:
-		return evictedGlyph
-	case looped:
-		return loopGlyph
-	case attached:
-		return attachedGlyph
-	case age < idleThreshold:
-		return liveGlyph
-	default:
-		return idleGlyph
-	}
-}
-
-var (
+	// Row body styles + glyphs now live in internal/model (shared with the ⌂ ws
+	// roster tab); the picker's per-row rendering delegates to model.RenderRow.
 	mutedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Italic(true)
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#DC2626", Dark: "#F87171"}).Bold(true)
 	successStyle = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#059669", Dark: "#34D399"}).Bold(true)
@@ -783,81 +738,11 @@ func (m model) bodyView() string {
 	return sb.String()
 }
 
-// renderRow renders a single session row spanning the FULL terminal width: a
-// selection caret, the liveness glyph (attached ● / live ◐ / idle ○), the raw
-// display name and dir filling the left, and the age + window count right-
-// aligned to the terminal edge. Columns scale to the width so the row uses the
-// whole screen (Claude-Code-resume feel) instead of a narrow left blob; each
-// text column is truncated with lipgloss.Width so nothing wraps into a ghost row.
+// renderRow delegates to the shared model.RenderRow so a session row looks
+// identical in the picker and the ⌂ ws roster tab. The picker is always
+// full-width, so it gets the full name/dir/age/windows layout.
 func (m model) renderRow(r rowmodel.Row, selected bool) string {
-	w := m.width
-	if w <= 0 {
-		w = 80
-	}
-	caret := "  "
-	if selected {
-		caret = caretStyle.Render("› ")
-	}
-	glyph := glyphFor(r.Evicted, r.Looped, r.Attached, time.Since(r.LastSeen))
-
-	ageStr := r.Age
-	winStr := itoa(r.Windows) + "w"
-	rightW := lipgloss.Width(ageStr) + 2 + lipgloss.Width(winStr)
-
-	// Left area = full width minus the caret+glyph prefix (4), the "  " between
-	// name and dir (2), the right metadata block, and a 2-col gap before it. Split
-	// it name/dir so both grow with the terminal. Subtracting all of it here makes
-	// the assembled row exactly w wide (pad below lands at the 2-col gap).
-	avail := w - 8 - rightW
-	if avail < 20 {
-		avail = 20
-	}
-	nameW := avail * 9 / 20 // ~45% to the name, the rest to the dir
-	if nameW < 10 {
-		nameW = 10
-	}
-	dirW := avail - nameW
-	if dirW < 6 {
-		dirW = 6
-	}
-
-	name := padTrunc(r.Display, nameW)
-	if selected {
-		name = displaySelStyle.Render(name)
-	} else {
-		name = displayStyle.Render(name)
-	}
-	dir := dirStyle.Render(padTrunc(r.Dir, dirW))
-
-	left := caret + glyph + " " + name + "  " + dir
-	leftW := 4 + nameW + 2 + dirW // caret(2)+glyph(1)+space(1) + name + "  " + dir
-	pad := w - leftW - rightW
-	if pad < 1 {
-		pad = 1
-	}
-	return left + strings.Repeat(" ", pad) + ageStyle.Render(ageStr) + "  " + ageStyle.Render(winStr)
-}
-
-// padTrunc fits s into exactly w display columns: truncating with an ellipsis
-// when it overflows, padding with spaces when it underflows. Uses lipgloss.Width
-// so multi-byte/wide runes are measured correctly.
-func padTrunc(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	if lipgloss.Width(s) <= w {
-		return s + strings.Repeat(" ", w-lipgloss.Width(s))
-	}
-	// Truncate rune-by-rune leaving room for a one-column ellipsis.
-	runes := []rune(s)
-	for len(runes) > 0 && lipgloss.Width(string(runes))+1 > w {
-		runes = runes[:len(runes)-1]
-	}
-	out := string(runes) + "…"
-	if pad := w - lipgloss.Width(out); pad > 0 {
-		out += strings.Repeat(" ", pad)
-	}
-	return out
+	return rowmodel.RenderRow(r, selected, m.width)
 }
 
 func (m model) inputCardView() string {

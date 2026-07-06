@@ -1000,7 +1000,24 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.tabKind == wsTab {
-				m.lastMsg = "workspaces aren't killed from here"
+				// Kill a whole workspace (session + companion), same x-twice arm as
+				// agents. Routes through `duck kill <tmux>` so it gets the full
+				// cleanup the picker's kill does — the roster can't import app.
+				if idx := m.visible(); m.cursor < len(idx) {
+					ws := m.workspaces[idx[m.cursor]]
+					if ws.Current {
+						m.lastMsg = "can't kill the workspace you're in — use exit"
+						return m, nil
+					}
+					if m.armedKill == ws.Name {
+						m.armedKill = ""
+						if out := m.duckExec("kill", ws.Name); out != "" {
+							m.lastMsg = out
+						}
+						return m, m.load
+					}
+					m.armedKill = ws.Name
+				}
 				return m, nil
 			}
 			if idx := m.visible(); m.cursor < len(idx) {
@@ -1265,10 +1282,15 @@ func (m watchModel) View() string {
 	var hintLine string
 	switch {
 	case m.armedKill != "":
-		name := ""
+		name := m.armedKill // ws tab arms on session name; agents arm on pane id
 		for _, a := range m.agents {
 			if a.PaneID == m.armedKill {
 				name = a.Name
+			}
+		}
+		for _, w := range m.workspaces {
+			if w.Name == m.armedKill {
+				name = w.Display
 			}
 		}
 		hintLine = workingStyle.Render(" x again to kill " + name)

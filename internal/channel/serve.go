@@ -175,7 +175,7 @@ func (s *server) tools() []tool {
 	}
 	ts := []tool{{
 		name:        "reply",
-		description: "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport). The agent's response arrives later as a <channel source=\"duck-agents\"> event — do not poll; react when it lands.",
+		description: "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport). The agent's response arrives later as a <channel source=\"duck-agents\"> event — do not poll; react when it lands. ROUTING: reply = continue an EXISTING agent's thread NOW. To continue a thread LATER or on a schedule, that is a heartbeat routine (`duck routines add <name> --every …`), not a reply you sit on.",
 		schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -217,7 +217,7 @@ func (s *server) tools() []tool {
 	ts = append(ts,
 		tool{
 			name:        "spawn",
-			description: "Launch a codex agent into this workspace's sidebar (a durable, human-watchable TUI pane) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (e.g. deepseek for DeepSeek V4, a cheaper executor) and reasoning effort. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
+			description: "Launch a codex agent into this workspace's sidebar (a durable, human-watchable TUI pane) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (e.g. deepseek for DeepSeek V4, a cheaper executor) and reasoning effort. Prefer this over shelling out to `duck spawn`. ROUTING: spawn = do this ONCE, NOW. It is not a scheduler — for anything recurring or deferred (\"every morning\", \"keep an eye on\", \"check back later\") use a routine (`duck routines add`) instead. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
 			schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -346,7 +346,7 @@ func (s *server) tools() []tool {
 		},
 		tool{
 			name:        "routines",
-			description: "List this workspace's scheduled routines (your standing executor duties). Optionally fire one now by name (runs a fresh executor immediately, off-schedule). Routines run codex executors on a cron/heartbeat and report back to you as digest events on the channel.",
+			description: "List this workspace's scheduled routines (your standing executor duties), or fire one NOW by name (fresh executor, off-schedule). ROUTING: reach for routines whenever the human asks for a scheduled task, recurring run, monitor, reminder, follow-up, or says to watch something, keep an eye on it, check back later, or keep working later — that is a routine, NOT a spawn. Pick the trigger by shape: --cron for standalone jobs where each run stands alone; --every (heartbeat: ONE persistent thread re-prompted per interval, keeps memory between beats) when continuity matters or the interval is under an hour; --manual for on-demand runbooks; --manager to schedule a turn in YOUR own context (reviews/consolidation). This tool only lists+fires; create with `duck routines add <name> [--cron|--every|--manual] [--manager] [--model gpt-…] [--effort …] <prompt>` via shell. To MODIFY a routine, edit its files in place (<sync-root>/.duck/routines/<ws>/<name>.toml + .md — the next fire reads them fresh); NEVER rm+re-add, which loses last-fire state and can double-fire. Prefer updating an existing routine over creating a near-duplicate: list first, match by name/prompt. Write prompts future-safe: the executor wakes with no conversation context, so the .md must say what to do, what NOT to do, and what to report. Completions arrive as digest events — never poll.",
 			schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

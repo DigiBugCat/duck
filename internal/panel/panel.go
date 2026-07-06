@@ -1048,7 +1048,7 @@ func Workspaces(run Runner, outer string) ([]Workspace, error) {
 			Name:       f[0],
 			Display:    names.Resolve(doc, f[0], dir, managerTitles[f[0]]),
 			MainPane:   mains[f[0]],
-			Dir:        paths.Contract(dir),
+			Dir:        contractDir(dir), // @duck_dir is already ~-form; only contract genuine absolute paths
 			Project:    proj,
 			InProject:  f[0] == outer || (proj != "" && proj == myProj),
 			Age:        humanizeAge(now.Sub(last)),
@@ -1060,6 +1060,18 @@ func Workspaces(run Runner, outer string) ([]Workspace, error) {
 		})
 	}
 	return ws, nil
+}
+
+// contractDir tilde-forms a dir for display WITHOUT the filepath.Abs step that
+// paths.Contract does — @duck_dir is already stored tilde-form ("~/x"), and
+// Abs on a "~/…" string resolves it against cwd, producing the doubled
+// "<cwd>/~/x" garbage. So: leave "~"-prefixed paths untouched, contract only
+// genuine absolute ones.
+func contractDir(dir string) string {
+	if dir == "" || strings.HasPrefix(dir, "~") {
+		return dir
+	}
+	return paths.Contract(dir)
 }
 
 // parseInt is a tolerant atoi for tmux numeric fields (0 on any garbage).
