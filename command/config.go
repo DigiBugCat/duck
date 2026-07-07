@@ -5,7 +5,6 @@ package command
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,11 +59,6 @@ var configCmd = &cobra.Command{
 			machineAddr += "  (hub-owned sync)"
 		}
 		fmt.Fprintf(tw, "machine addr\t%s  (duck config machine-addr <user@host>|off)\n", machineAddr)
-		windowHost := cfg.WindowHost
-		if windowHost == "" {
-			windowHost = "(default 127.0.0.1:7334)"
-		}
-		fmt.Fprintf(tw, "window host\t%s  (duck config window-host <host:port>|off)\n", windowHost)
 		autoUpdate := "on"
 		if !cfg.AutoUpdateEnabled() {
 			autoUpdate = "off"
@@ -129,39 +123,6 @@ var configEditCmd = &cobra.Command{
 		ed := exec.Command(editor, p)
 		ed.Stdin, ed.Stdout, ed.Stderr = os.Stdin, os.Stdout, os.Stderr
 		return ed.Run()
-	},
-}
-
-// configWindowHostCmd sets (or clears, with "off") the address the hub uses to
-// reach this client's window host. It is host:port rather than user@host because
-// the hub talks to the host's HTTP control API directly.
-var configWindowHostCmd = &cobra.Command{
-	Use:   "window-host <host:port|off>",
-	Short: "Set how the hub reaches this machine's duck window host",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(c *cobra.Command, args []string) error {
-		cfg, err := config.Load()
-		if err != nil {
-			return err
-		}
-		if args[0] == "off" {
-			cfg.WindowHost = ""
-			if err := config.Save(cfg); err != nil {
-				return err
-			}
-			fmt.Fprintln(c.OutOrStdout(), "window host cleared: using 127.0.0.1:7334.")
-			return nil
-		}
-		addr := args[0]
-		if _, _, err := net.SplitHostPort(addr); err != nil {
-			return fmt.Errorf("window host must be host:port, got %q", addr)
-		}
-		cfg.WindowHost = addr
-		if err := config.Save(cfg); err != nil {
-			return err
-		}
-		fmt.Fprintf(c.OutOrStdout(), "window host set: %s\n", addr)
-		return nil
 	},
 }
 
@@ -354,7 +315,7 @@ var configAttachTransportCmd = &cobra.Command{
 }
 
 func init() {
-	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd, configAttachTransportCmd, configAutoUpdateCmd, configMachineAddrCmd, configWindowHostCmd)
+	configCmd.AddCommand(configPathCmd, configEditCmd, configClaudeSyncCmd, configAttachTransportCmd, configAutoUpdateCmd, configMachineAddrCmd)
 }
 
 func sortedKeys(m map[string]string) []string {

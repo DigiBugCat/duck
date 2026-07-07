@@ -6,16 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/DigiBugCat/duck/internal/window"
 )
 
 // fakeRunner mirrors panel's test fake: scripted argv → output.
@@ -594,145 +590,6 @@ func TestServeDrainsPublishSpool(t *testing.T) {
 	}
 }
 
-func TestServeSweepsWindowMarksOnceWithWorkspaceAttribution(t *testing.T) {
-	oldHome := spoolHome
-	spoolHome = t.TempDir()
-	defer func() { spoolHome = oldHome }()
-	oldSweep := sweepEvery
-	sweepEvery = 5 * time.Millisecond
-	defer func() { sweepEvery = oldSweep }()
-	oldHost := windowMarksHost
-	oldClient := windowMarksHTTPClient
-	defer func() {
-		windowMarksHost = oldHost
-		windowMarksHTTPClient = oldClient
-	}()
-
-	var queried []string
-	marks := []map[string]any{{
-		"type":      "highlight",
-		"workspace": "work",
-		"url":       "http://artifact.test/report",
-		"text":      "Q3 revenue",
-		"comment":   "off by 10x",
-		"stamp":     "2026-07-05T12:00:00Z",
-	}}
-	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/marks" {
-			http.NotFound(w, r)
-			return
-		}
-		queried = append(queried, r.URL.Query().Get("workspace"))
-		_ = json.NewEncoder(w).Encode(marks)
-	}))
-	defer host.Close()
-	windowMarksHost = func() string { return strings.TrimPrefix(host.URL, "http://") }
-	windowMarksHTTPClient = host.Client()
-
-	f := &fakeRunner{out: map[string]string{}}
-	pr, pw := io.Pipe()
-	var out lockedBuffer
-	done := make(chan error, 1)
-	go func() { done <- Serve(f.run, "work", nil, pr, &out) }()
-	io.WriteString(pw, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
-	io.WriteString(pw, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
-
-	deadline := time.Now().Add(3 * time.Second)
-	var got []map[string]any
-	for time.Now().Before(deadline) {
-		got = got[:0]
-		for _, m := range parseLines(out.String()) {
-			if m["method"] == "notifications/claude/channel" {
-				got = append(got, m)
-			}
-		}
-		if len(got) == 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	time.Sleep(40 * time.Millisecond) // allow extra sweeps that would double-deliver
-	pw.Close()
-	<-done
-
-	if len(queried) == 0 || queried[0] != "work" {
-		t.Fatalf("host queried with workspace %v, want work", queried)
-	}
-	if len(got) != 1 {
-		t.Fatalf("want exactly one mark notification, got %d; output:\n%s", len(got), out.String())
-	}
-	params := got[0]["params"].(map[string]any)
-	if params["source"] != "duck-window" {
-		t.Fatalf("source = %v, want duck-window", params["source"])
-	}
-	if content := params["content"].(string); !strings.Contains(content, "mark highlight") || !strings.Contains(content, "off by 10x") || !strings.Contains(content, "Q3 revenue") {
-		t.Fatalf("content did not summarize mark: %q", content)
-	}
-	meta := params["meta"].(map[string]any)
-	if meta["session"] != "work" || meta["source"] != "duck-window" || meta["type"] != "mark" {
-		t.Fatalf("meta wrong: %v", meta)
-	}
-	attachments := params["attachments"].([]any)
-	attached := attachments[0].(map[string]any)
-	if attached["type"] != "json" || attached["name"] != "mark" {
-		t.Fatalf("attachment header wrong: %v", attached)
-	}
-	full := attached["content"].(map[string]any)
-	if full["workspace"] != "work" || full["text"] != "Q3 revenue" {
-		t.Fatalf("full mark JSON not attached: %v", full)
-	}
-	if cursor := readWindowMarkCursor("work"); cursor != 1 {
-		t.Fatalf("cursor = %d, want 1", cursor)
-	}
-
-	var out2 lockedBuffer
-	pr2, pw2 := io.Pipe()
-	done2 := make(chan error, 1)
-	go func() { done2 <- Serve(f.run, "work", nil, pr2, &out2) }()
-	io.WriteString(pw2, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n")
-	io.WriteString(pw2, `{"jsonrpc":"2.0","method":"notifications/initialized"}`+"\n")
-	time.Sleep(40 * time.Millisecond)
-	pw2.Close()
-	<-done2
-	for _, m := range parseLines(out2.String()) {
-		if m["method"] == "notifications/claude/channel" {
-			t.Fatalf("persisted cursor must suppress replay after restart: %v", m)
-		}
-	}
-}
-
-func TestWindowMarkMessageIncludesRectShotAndFullJSON(t *testing.T) {
-	raw := json.RawMessage(`{"type":"drawing","workspace":"work","url":"http://artifact.test/chart","comment":"look here","rect":{"x":10,"y":20,"w":30,"h":40},"shot":"/tmp/shot.png","stamp":"2026-07-05T12:00:00Z"}`)
-	var m struct {
-		Params struct {
-			Source      string `json:"source"`
-			Content     string `json:"content"`
-			Attachments []struct {
-				Content map[string]any `json:"content"`
-			} `json:"attachments"`
-		} `json:"params"`
-	}
-	var out bytes.Buffer
-	s := &server{out: &out}
-	var mark window.Mark
-	if err := json.Unmarshal(raw, &mark); err != nil {
-		t.Fatal(err)
-	}
-	s.emitWindowMark("work", mark, raw)
-	line := strings.TrimSpace(out.String())
-	if err := json.Unmarshal([]byte(line), &m); err != nil {
-		t.Fatalf("event is not JSON: %v\n%s", err, line)
-	}
-	if m.Params.Source != "duck-window" {
-		t.Fatalf("source = %q", m.Params.Source)
-	}
-	if !strings.Contains(m.Params.Content, "rect: 10,20 30x40") || !strings.Contains(m.Params.Content, "shot: /tmp/shot.png") {
-		t.Fatalf("drawing summary missing rect/shot: %q", m.Params.Content)
-	}
-	if m.Params.Attachments[0].Content["type"] != "drawing" || m.Params.Attachments[0].Content["shot"] != "/tmp/shot.png" {
-		t.Fatalf("full mark JSON missing: %+v", m.Params.Attachments[0].Content)
-	}
-}
 
 // TestServeDrainsFirstTurnOfFreshAgent replays the live first-turn swallow:
 // an agent spawned AFTER the sidecar starts pairs its rollout only after its
@@ -929,15 +786,6 @@ func (f *fakeHost) Fork(ws, id, prompt string) (string, string, error) {
 	f.last = "fork:" + id
 	return "%10", "sid-fork", nil
 }
-func (f *fakeHost) Preview(ws, target, name string) (string, error) {
-	f.last = "preview:" + name
-	return "%11", nil
-}
-func (f *fakeHost) Render(ws, target string) error { f.last = "render:" + target; return nil }
-func (f *fakeHost) Window(ws, target, name string) (string, error) {
-	f.last = "window:" + target + ":" + name
-	return "http://artifact", nil
-}
 func (f *fakeHost) Workflow(ws, script, argsJSON, resumeFrom string, budget int64) (string, error) {
 	f.last = "workflow"
 	return "wf_20260101-000000-abcdef", nil
@@ -952,7 +800,7 @@ func TestServeToolsGatedOnLauncher(t *testing.T) {
 	// With a launcher → reply + spawn/resume/fork.
 	s1 := &server{workspace: "work", host: &fakeHost{}}
 	got := toolNames(s1.tools())
-	for _, want := range []string{"reply", "spawn", "resume", "fork", "preview", "render", "window"} {
+	for _, want := range []string{"reply", "spawn", "resume", "fork", "workflow"} {
 		found := false
 		for _, n := range got {
 			if n == want {
@@ -965,30 +813,6 @@ func TestServeToolsGatedOnLauncher(t *testing.T) {
 	}
 }
 
-func TestWindowToolDispatchesToHost(t *testing.T) {
-	fh := &fakeHost{}
-	s := &server{workspace: "work", host: fh}
-	var win tool
-	for _, t := range s.tools() {
-		if t.name == "window" {
-			win = t
-			break
-		}
-	}
-	if win.name == "" {
-		t.Fatal("window tool missing")
-	}
-	got, err := win.handler(json.RawMessage(`{"target":"dash.html","name":"dash"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fh.last != "window:dash.html:dash" {
-		t.Fatalf("host call = %q, want window:dash.html:dash", fh.last)
-	}
-	if !strings.Contains(got, "http://artifact") {
-		t.Fatalf("receipt should include published URL, got %q", got)
-	}
-}
 func toolNames(ts []tool) []string {
 	var n []string
 	for _, t := range ts {

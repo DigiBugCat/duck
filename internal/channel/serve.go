@@ -37,25 +37,20 @@ var sweepEvery = 2 * time.Second
 // up the supervisor's context.
 const maxPush = 2000
 
-// Host backs the sidecar's action tools (spawn/resume/fork agents, preview/
-// render artifacts). It is an interface (not direct calls) so internal/channel
-// needn't import the packages those actions live in — several of which import
-// channel back (a cycle). command wires the concrete host in via Serve. A nil
-// host just omits the action tools (the reply-only server works).
+// Host backs the sidecar's action tools (spawn/resume/fork agents, workflows).
+// It is an interface (not direct calls) so internal/channel needn't import the
+// packages those actions live in — several of which import channel back (a
+// cycle). command wires the concrete host in via Serve. A nil host just omits
+// the action tools (the reply-only server works).
 //
 // Agents: Launch spawns a NEW codex agent (argv), Resume continues a session by
 // id, Fork branches one — each returns the pane id (instant handle) and session
-// id (bound at first turn, "" if not yet taken). Artifacts: Preview shows a
-// file/url in the sidebar (returns the pane id), Render opens it in the human's
-// laptop browser. workspace is the outer duck session the action targets.
+// id (bound at first turn, "" if not yet taken). workspace is the outer duck
+// session the action targets.
 type Host interface {
 	Launch(workspace string, argv []string, name, tab, prompt, model, effort string) (paneID, sessionID string, err error)
 	Resume(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
 	Fork(workspace, sessionID, prompt string) (paneID, newSessionID string, err error)
-
-	Preview(workspace, target, name string) (paneID string, err error)
-	Render(workspace, target string) error
-	Window(workspace, target, name string) (string, error)
 
 	// Workflow starts a detached workflow run (docs/WORKFLOWS.md) and returns
 	// its run id; completion arrives later as a workflow_complete event.
@@ -127,8 +122,7 @@ func (s *server) instructions() string {
 		scope = "YOUR sidebar agents (workspace " + s.workspace + " — you are its manager)"
 	}
 	return "Events from " + scope + " arrive as <channel source=\"duck-agents\"> " +
-		"with meta {session, agent, type}. Window annotations arrive as <channel source=\"duck-window\"> " +
-		"with meta {session, source, type=mark}; they mean the human pointed at or commented on the current artifact. " +
+		"with meta {session, agent, type}. " +
 		"task_complete means the agent finished a turn. " +
 		"To answer or give the agent its next instruction, call the reply tool with that session+agent."
 }
@@ -302,73 +296,6 @@ func (s *server) tools() []tool {
 			},
 		},
 		tool{
-			name:        "preview",
-			description: "Show an artifact (a file or URL — a document, report, table, chart, image, or a rendered .md/.html) to the human IN THIS WORKSPACE's sidebar. Prefer this over shelling out to `duck preview`. Use whenever showing something visually beats describing it in text. Local html/markdown live-update: rewrite the file and the pane repaints itself.",
-			schema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"target": map[string]any{"type": "string", "description": "path to a local file or an http(s) URL"},
-					"name":   map[string]any{"type": "string", "description": "a short descriptive label for the artifact (its roster tab entry)"},
-				},
-				"required": []string{"target", "name"},
-			},
-			handler: func(raw json.RawMessage) (string, error) {
-				var a struct{ Target, Name string }
-				if err := json.Unmarshal(raw, &a); err != nil {
-					return "", err
-				}
-				pane, err := s.host.Preview(ws, a.Target, a.Name)
-				if err != nil {
-					return "", err
-				}
-				return fmt.Sprintf("previewing %q in the sidebar (pane %s)", a.Name, pane), nil
-			},
-		},
-		tool{
-			name:        "render",
-			description: "Open an artifact (file or URL) at FULL FIDELITY in the human's laptop browser — for anything dynamic, interactive, or where fidelity matters (the sidebar preview is terminal cells). Prefer this over shelling out to `duck render`.",
-			schema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"target": map[string]any{"type": "string", "description": "path to a local file or an http(s) URL"},
-				},
-				"required": []string{"target"},
-			},
-			handler: func(raw json.RawMessage) (string, error) {
-				var a struct{ Target string }
-				if err := json.Unmarshal(raw, &a); err != nil {
-					return "", err
-				}
-				if err := s.host.Render(ws, a.Target); err != nil {
-					return "", err
-				}
-				return "opened in the human's laptop browser", nil
-			},
-		},
-		tool{
-			name:        "window",
-			description: "Open a DYNAMIC artifact (animation, interactive page, realtime dashboard, anything the human should mark up) in the duck-owned window on the human's current client machine. duck keeps custody: the human can highlight/comment, and those marks arrive back to you as <channel source=\"duck-window\" type=\"mark\"> events — do not poll. ROUTING: static content → preview/render; dynamic or annotatable → window.",
-			schema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"target": map[string]any{"type": "string", "description": "file path or URL"},
-					"name":   map[string]any{"type": "string", "description": "optional roster label (default: basename or host)"},
-				},
-				"required": []string{"target"},
-			},
-			handler: func(raw json.RawMessage) (string, error) {
-				var a struct{ Target, Name string }
-				if err := json.Unmarshal(raw, &a); err != nil {
-					return "", err
-				}
-				shown, err := s.host.Window(ws, a.Target, a.Name)
-				if err != nil {
-					return "", err
-				}
-				return "opened in the duck window: " + shown, nil
-			},
-		},
-		tool{
 			name: "workflow",
 			description: "Run a deterministic multi-agent workflow: a JS script you write whose control flow (loops, fan-out, barriers) is plain code, where each agent() call runs ONE disposable headless codex executor (the codex gpt default; pass model/effort per call — gpt-5.4-mini with low effort suits cheap mechanical stages). Workers are processes, not sidebar panes: the RUN is the one visible thing (roster workflows section + `duck workflows`). Returns a wf_ run id in a couple seconds; the RESULT is not in the reply — the run reports through the channel (workflow_started, workflow_phase per phase() transition, and workflow_complete carrying the result summary), so do NOT poll or tail; react when events land. " +
 				"ROUTING: use a workflow for fan-out work one pass shouldn't be trusted with or one context can't hold — audits, migrations, review-then-adversarially-verify, judge panels, loop-until-dry discovery — and only at the human's scale of ask; a single bounded task is a spawn. " +
@@ -509,7 +436,6 @@ func (s *server) watch() {
 		// event is delivered even when the lot is empty or a list errors —
 		// publishes are independent of whether any agent exists.
 		if s.workspace != "" {
-			s.drainWindowMarks(s.workspace)
 			s.drainPublish(s.workspace)
 		}
 		owners, err := Companions(s.run)
@@ -520,7 +446,6 @@ func (s *server) watch() {
 		// workspace, so touch+drain every workspace that exists.
 		if s.workspace == "" {
 			for _, outer := range owners {
-				s.drainWindowMarks(outer)
 				s.drainPublish(outer)
 			}
 		}

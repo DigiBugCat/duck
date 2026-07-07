@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -152,8 +151,8 @@ var channelNotifyCmd = &cobra.Command{
 }
 
 // mcpHost backs the serve MCP server's action tools (spawn/resume/fork agents,
-// preview/render/window artifacts, workflows) with duck's real internal
-// packages — so a tool call does EXACTLY what the equivalent CLI verb does.
+// workflows) with duck's real internal packages — so a tool call does EXACTLY
+// what the equivalent CLI verb does.
 // Lives here (not in internal/channel) to break the channel↔{agent,command}
 // import cycles: command already imports all of them.
 type mcpHost struct{}
@@ -183,39 +182,6 @@ func (h mcpHost) Resume(workspace, sessionID, prompt string) (string, string, er
 }
 func (h mcpHost) Fork(workspace, sessionID, prompt string) (string, string, error) {
 	return h.launch(workspace, agentpkg.Spec{Args: agentpkg.ForkArgs(sessionID), Prompt: prompt})
-}
-
-// Preview / Render route through the same functions the CLI preview/render verbs
-// use, so a tool-driven artifact behaves identically (live-watch, click-refresh).
-func (mcpHost) Preview(workspace, target, name string) (string, error) {
-	run := panel.ExecRunner
-	dir, err := panel.SessionPath(run, workspace)
-	if err != nil {
-		return "", err
-	}
-	return runPreview(run, workspace, dir, target, name, false)
-}
-func (mcpHost) Render(workspace, target string) error {
-	return openOnClient(target)
-}
-func (mcpHost) Window(workspace, target, name string) (string, error) {
-	if strings.TrimSpace(name) == "" {
-		name = defaultWindowArtifactName(target, "")
-	}
-	if !isHTTPURL(target) && !filepath.IsAbs(target) && workspace != "" {
-		if dir, err := panel.SessionPath(panel.ExecRunner, workspace); err == nil && dir != "" {
-			target = filepath.Join(dir, target)
-		}
-	}
-	u, _, _, err := showWindow(target, name, workspace)
-	if err != nil {
-		return "", err
-	}
-	return u, nil
-}
-
-func isHTTPURL(target string) bool {
-	return strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
 }
 
 // Workflow starts a detached workflow run for the manager's workspace. The
