@@ -1,7 +1,7 @@
 // Agent-notes installation: every duck start ensures the agent-facing cheat
 // sheet (assets/agent-notes.md) is present at ~/.duck/AGENT.md and imported
 // from ~/.claude/CLAUDE.md, so any Claude launched inside a duck workspace
-// carries duck's artifact/viewport instructions in its system prompt. Same
+// carries duck's workspace-tool instructions in its system prompt. Same
 // spirit as the auto-updater hook: cheap, idempotent, never delays or fails
 // the user's command.
 package command

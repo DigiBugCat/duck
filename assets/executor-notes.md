@@ -13,14 +13,6 @@ watches through a viewport.
 - Escalate by SAYING SO in your report ("NEEDS HUMAN: …" / "BLOCKED: …");
   the manager reads every report and will pick it up.
 
-## Showing things
-
-Everything visual routes through duck:
-
-- `duck preview <file|url> <name>` — static content into the sidebar
-  (name is REQUIRED; local html live-updates on rewrite).
-- `duck render <file|url>` — full fidelity, opens in the human's browser.
-
 ## Workspace
 
 - The pane layout is duck-managed and self-healing; if it looks mangled,

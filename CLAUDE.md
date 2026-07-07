@@ -10,7 +10,7 @@ to touch a LIVE workspace without wrecking it.
 duck is a Go CLI; a duck "workspace" is a tmux session on the hub plus a
 sidebar ("panel"): a viewport pane (the selected item ITSELF, swapped in via
 swap-pane — never a nested client) and a roster pane (a Bubble Tea TUI,
-`duck panel watch <session>`). Agents/shells/pads/previews are PANES parked
+`duck panel watch <session>`). Agents and shells are PANES parked
 in a hidden companion session `<session>-agents` ("the lot"); all identity
 lives in pane user options (`@duck_name`, `@duck_kind`, …) — tmux is the
 database, there is no daemon and no state file beyond `~/.duck/names.json`.
@@ -19,8 +19,8 @@ database, there is no daemon and no state file beyond `~/.duck/names.json`.
 
 1. **No ad-hoc pane surgery on live workspaces.** Raw `kill-pane`/
    `move-pane`/`respawn-pane` against someone's session WILL mangle layouts
-   or kill work. Use duck's verbs (`duck panel`, `duck spawn`, `duck edit`,
-   roster `x`), which route through EnsureSlot/Heal.
+   or kill work. Use duck's verbs (`duck panel`, `duck spawn`, roster `x`),
+   which route through EnsureSlot/Heal.
 2. **Geometry is asserted, not assumed.** `panel.Heal` runs inside
    `panel.Open`, so ANY `duck panel --session <s>` converges a mangled
    layout (join-pane repositions without touching processes). A broken
@@ -68,11 +68,10 @@ tmux -L ducktest capture-pane -p -t <listpane>
 tmux -L ducktest kill-server   # always clean up
 ```
 
-Gotchas: capture-pane shows TEXT only (kitty-graphics images are invisible —
-verify pixel paths by escape-sequence correctness + a human look). Keys sent
-in the first ~2s after respawn can be eaten by TUI startup. To run duck
-against the test server from outside a pane: `SOCK=$(tmux -L ducktest
-display -p '#{socket_path}'); TMUX="$SOCK,0,0" duck <cmd>`.
+Gotchas: capture-pane shows TEXT only. Keys sent in the first ~2s after
+respawn can be eaten by TUI startup. To run duck against the test server
+from outside a pane: `SOCK=$(tmux -L ducktest display -p '#{socket_path}');
+TMUX="$SOCK,0,0" duck <cmd>`.
 
 ## Release pipeline (fleet ships in ~2 minutes)
 
@@ -86,21 +85,6 @@ ssh andrew.sulistio@loki '~/.local/bin/duck update'   # laptops (or wait for hou
 
 Prefer shipping releases over hot-patching live sessions (golden rule 1);
 the pipeline is fast enough that there is no excuse.
-
-## Rendering stack facts (validated the hard way)
-
-- The viewport is ONE tmux layer from the terminal (swap design), so kitty
-  graphics work there; sessions get `allow-passthrough on` from panel.Open.
-- Renderer ladder for html: gosling (../gosling; budgeted CDP→kitty pixels)
-  > casty (LOCALLY PATCHED under ~/.local/lib/node_modules/@sanohiro/casty —
-  re-apply ~/.duck/patches/patch_casty.py after any npm upgrade) > carbonyl
-  (cells; also the `-w` watch renderer).
-- Continuous full-frame animation in-terminal is bandwidth-capped (~2-3MB/s
-  escape-stream); it degrades gracefully but belongs in `duck render`
-  (laptop browser via :7327 + the open-interceptor).
-- Pads (`~/.duck/scratchpad`, symlink into the Obsidian vault) open in micro
-  with autosave+auto-reload: writing to a pad file shows up live in an open
-  editor — pads are a live human⇄agent surface. `duck edit <name|file>`.
 
 ## Driving agents programmatically
 

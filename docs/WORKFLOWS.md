@@ -136,10 +136,9 @@ workflows section inside the agents tab** — a divider under the real
    seconds). Selecting
    a row swaps the run's progress pane (below) into the viewport; `x` on
    it stops the run.
-2. **Progress pane**: the runner maintains `<run-dir>/progress.html` and
-   registers it as a `duck preview` artifact at launch — phases, per-agent
-   spinners/results, log() lines, the elapsed/agents/tokens header. Preview
-   live-repaints on rewrite, so this is free realtime UI. Dark-first.
+2. **Progress pane**: selecting a run swaps a live `duck workflows tail
+   <run-id>` view into the viewport — the status header (phases, elapsed/
+   agents/tokens) plus the journal of per-agent results and log() lines.
 3. **`duck workflows` CLI**: `list` (running + recent, with the three
    numbers), `tail <run>` (journal), `stop <run>`, `resume <run>`.
 
