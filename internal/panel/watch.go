@@ -79,8 +79,6 @@ var verbs = []struct{ name, usage string }{
 	{"spawn", "spawn <cmd…>  — launch an agent"},
 	{"edit", "edit [pad]  — open/create a pad (no name: workspace pad)"},
 	{"rename", "rename <pad> <new>  — rename a scratchpad's .md file"},
-	{"preview", "preview <file|url>  — render in the viewport"},
-	{"render", "render <file|url>  — open in your laptop browser"},
 	{"kill", "kill <name>  — kill an agent/buffer"},
 	{"workspaces", "workspaces  — jump to the ⌂ ws tab"},
 	{"close", "close  — close this panel (everything keeps running)"},
@@ -500,8 +498,6 @@ func (m watchModel) newUsage() string {
 		return "new  — open a fresh shell here"
 	case KindBuffer:
 		return "new <name>  — create a pad"
-	case KindArtifact:
-		return "new <file|url>  — preview something"
 	case KindAgent:
 		return "new <cmd…>  — launch an agent"
 	case wsTab:
@@ -625,25 +621,8 @@ func (m *watchModel) viewSelected() string {
 		return ""
 	}
 	a := m.agents[idx[m.cursor]]
-	wid := a.PaneID
-	_ = Select(m.run, m.outer, wid) // swap first: previews respawn at slot geometry
-	if !IsWindowArtifact(a) {
-		RefreshIfStale(m.run, wid, FileMtime)
-	}
-	return ""
-}
-
-func (m *watchModel) focusWindowSelected() string {
-	a, ok := m.selectedAgent()
-	if !ok || !IsWindowArtifact(a) {
-		return m.viewSelected()
-	}
 	_ = Select(m.run, m.outer, a.PaneID)
-	u := WindowArtifactURL(m.run, a.PaneID)
-	if u == "" {
-		return "window artifact has no URL"
-	}
-	return m.duckExec("window", u, a.Name)
+	return ""
 }
 
 // renamePad renames a scratchpad's backing .md and relabels its pane.
@@ -697,11 +676,6 @@ func (m *watchModel) runInput() string {
 			}
 			m.input.SetValue("edit " + f[1])
 			return m.runInput()
-		case KindArtifact:
-			if len(f) < 2 {
-				return "new <file|url>"
-			}
-			return m.duckExec("preview", f[1])
 		case wsTab:
 			return "workspaces are made by running `duck` in a directory"
 		default:
@@ -762,11 +736,6 @@ func (m *watchModel) runInput() string {
 			return "rename <pad> <new>"
 		}
 		return m.renamePad(f[1], f[2])
-	case "preview", "render":
-		if len(f) < 2 {
-			return verb + " what?"
-		}
-		return m.duckExec(verb, f[1])
 	case "kill":
 		if len(f) < 2 {
 			return "kill what?"
@@ -978,7 +947,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "tab", "l":
 			m.cycleTab(1)
 		case "enter":
-			m.lastMsg = m.focusWindowSelected()
+			m.lastMsg = m.viewSelected()
 			return m, m.load
 		case "g": // go: commit switch to the highlighted workspace (ws tab only)
 			if m.tabKind == wsTab {
@@ -1064,15 +1033,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if idx := m.visible(); m.cursor < len(idx) && idx[m.cursor] >= 0 {
 				a := m.agents[idx[m.cursor]]
 				wid := a.PaneID
-				if IsWindowArtifact(a) {
-					wasActive := a.Active
-					_ = Kill(m.run, wid)
-					if wasActive {
-						EnsureSlot(m.run, m.outer)
-					}
-					m.lastMsg = "removed " + a.Name
-					return m, m.load
-				}
 				if m.armedKill == wid {
 					m.armedKill = ""
 					wasActive := a.Active
@@ -1311,9 +1271,7 @@ func (m watchModel) View() string {
 				marker = activeStyle.Render("▶ ")
 			}
 			label := a.Name
-			if IsWindowArtifact(a) {
-				label += dimStyle.Render(" · window")
-			} else if a.Command != "" && !strings.EqualFold(a.Command, a.Name) {
+			if a.Command != "" && !strings.EqualFold(a.Command, a.Name) {
 				label += dimStyle.Render(" · " + a.Command)
 			}
 			line = marker + statusGlyph(m.statuses[a.PaneID]) + " " + label
@@ -1366,12 +1324,6 @@ func (m watchModel) View() string {
 		hintLine = dimStyle.Render(" ↵ view · n new · x kill · ←→ tabs · q close")
 	case m.tabKind == KindBuffer:
 		hintLine = dimStyle.Render(" ↵ view · n new · r rename · x kill · ←→ tabs")
-	case m.tabKind == KindArtifact:
-		if a, ok := m.selectedAgent(); ok && IsWindowArtifact(a) {
-			hintLine = dimStyle.Render(" ↵ focus · x remove · ←→ tabs · : commands · q close")
-		} else {
-			hintLine = dimStyle.Render(" ↵ view · x kill · ←→ tabs · : commands · q close")
-		}
 	default:
 		if _, ok := m.selectedWorkflow(); ok {
 			hintLine = dimStyle.Render(" ↵ progress · x stop · ←→ tabs · q close")

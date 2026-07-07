@@ -87,31 +87,6 @@ func TestAgentsMergesSlotOccupantAndParkedPanes(t *testing.T) {
 	}
 }
 
-func TestAgentsFoldWindowKindIntoArtifactsTab(t *testing.T) {
-	f := &fakeRunner{out: map[string]string{
-		rolesKey:                 "%5\tviewport\n",
-		agentsKey("work"):        "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
-		agentsKey("work-agents"): "%8\tdashboard\twindow\t\t\tsh\t\n",
-	}}
-	agents, err := Agents(f.run, "work")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var win Agent
-	for _, a := range agents {
-		if a.Name == "dashboard" {
-			win = a
-			break
-		}
-	}
-	if win.PaneID != "%8" {
-		t.Fatalf("window artifact row missing: %+v", agents)
-	}
-	if win.Kind != KindArtifact || !IsWindowArtifact(win) {
-		t.Fatalf("window row kind = %q raw=%q, want artifacts/window", win.Kind, win.RawKind)
-	}
-}
-
 func TestWorkspacesUsesManagerClaudeTitle(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	outer := "duck-workspace-title"
@@ -156,61 +131,6 @@ func TestSpawnParksStampsAndSelects(t *testing.T) {
 	}
 }
 
-func TestEnsureWindowArtifactCreatesParkedPlaceholder(t *testing.T) {
-	cmd := WindowArtifactCmd("dashboard", "http://hub:7327/dash")
-	f := &fakeRunner{out: map[string]string{
-		"list-windows -t work-agents -F #{window_name}": "lot\n",
-		rolesKey:                 "%5\tviewport\n",
-		agentsKey("work"):        "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
-		agentsKey("work-agents"): "%1\t\t\t1\t\tsh\t\n",
-		"split-window -d -t work-agents:lot -P -F #{pane_id} " + cmd: "%8\n",
-	}}
-	id, err := EnsureWindowArtifact(f.run, "work", "/d", "dashboard", "http://hub:7327/dash")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id != "%8" {
-		t.Fatalf("id = %q, want %%8", id)
-	}
-	for _, want := range []string{
-		"set-option -p -t %8 @duck_name dashboard",
-		"set-option -p -t %8 @duck_kind window",
-		"set-option -p -t %8 @duck_url http://hub:7327/dash",
-	} {
-		if !f.called(want) {
-			t.Errorf("missing %q in %v", want, f.calls)
-		}
-	}
-	if f.called("swap-pane") {
-		t.Errorf("registration should park the row, not select it: %v", f.calls)
-	}
-}
-
-func TestEnsureWindowArtifactReusesName(t *testing.T) {
-	f := &fakeRunner{out: map[string]string{
-		"list-windows -t work-agents -F #{window_name}": "lot\n",
-		rolesKey:                 "%5\tviewport\n",
-		agentsKey("work"):        "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
-		agentsKey("work-agents"): "%8\tdashboard\twindow\t\t\tsh\t\n",
-	}}
-	id, err := EnsureWindowArtifact(f.run, "work", "/d", "dashboard", "http://hub:7327/new")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id != "%8" {
-		t.Fatalf("id = %q, want existing %%8", id)
-	}
-	if f.called("split-window") {
-		t.Errorf("same name should update, not create: %v", f.calls)
-	}
-	if !f.called("respawn-pane -k -t %8") {
-		t.Errorf("existing placeholder should be respawned with new text: %v", f.calls)
-	}
-	if !f.called("set-option -p -t %8 @duck_url http://hub:7327/new") {
-		t.Errorf("existing row URL should update: %v", f.calls)
-	}
-}
-
 func TestSelectSwapsAndRestampsRole(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{rolesKey: "%5\tviewport\n"}}
 	if err := Select(f.run, "work", "%7"); err != nil {
@@ -243,7 +163,6 @@ func TestOpenCreatesTerminalSlotAndRoster(t *testing.T) {
 	}
 	for _, want := range []string{
 		"set-option -t work mouse on",
-		"set-option -t work allow-passthrough on",
 		"set-option -p -t %5 @duck_panel_role viewport",
 		"set-option -p -t %5 @duck_name terminal",
 		"set-option -p -t %6 @duck_panel_role list",

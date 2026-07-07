@@ -79,7 +79,6 @@ const roleOption = "@duck_panel_role"
 const (
 	NameOption      = "@duck_name"        // roster label
 	kindOption      = "@duck_kind"        // roster tab (see Kinds)
-	URLOption       = "@duck_url"         // artifact URL (window artifacts)
 	SpawnedAtOption = "@duck_spawned_at"  // unix epoch of spawn (channel pairing)
 	RolloutOption   = "@duck_rollout"     // cached codex rollout path
 	SessionOption   = "@duck_session"     // codex session id (durable resume/fork handle)
@@ -94,14 +93,13 @@ const (
 // as long as a pane carries it (`duck spawn --tab <name>`), so duck — or an
 // agent driving duck — can grow the tab set at runtime with zero declaration.
 const (
-	KindAgent    = "agents"     // runners you supervise (default)
-	KindShell    = "shells"     // plain interactive shells
-	KindArtifact = "artifacts"  // things you look at (previews)
-	KindBuffer   = "scratchpad" // editor panes: the scratch note + duck edit files
+	KindAgent  = "agents"     // runners you supervise (default)
+	KindShell  = "shells"     // plain interactive shells
+	KindBuffer = "scratchpad" // editor panes: the scratch note + duck edit files
 )
 
 // BaseKinds is the always-visible tab order; dynamic kinds append after.
-var BaseKinds = []string{KindAgent, KindShell, KindArtifact, KindBuffer}
+var BaseKinds = []string{KindAgent, KindShell, KindBuffer}
 
 // normalizeKind maps stamps to tab names: empty → agents, singular legacy
 // stamps → their tabs.
@@ -109,10 +107,6 @@ func normalizeKind(k string) string {
 	switch k {
 	case "", "agent":
 		return KindAgent
-	case "artifact":
-		return KindArtifact
-	case "window":
-		return KindArtifact
 	case "shell":
 		return KindShell
 	}
@@ -510,9 +504,6 @@ func Open(run Runner, outer, comp, duckBin string) error {
 		{"mouse", "on"},
 		// Focus reporting lets the roster tell "click to focus" from "click a row".
 		{"focus-events", "on"},
-		// The one pixel path to the terminal (kitty graphics wrapped once) —
-		// and with the swap design the viewport IS one layer from the client.
-		{"allow-passthrough", "on"},
 	} {
 		if _, err := run("set-option", "-t", outer, opt[0], opt[1]); err != nil {
 			return err
@@ -584,7 +575,7 @@ type Agent struct {
 	Active  bool   // currently in the viewport slot
 	Command string // pane_current_command, e.g. "codex", "node", "zsh"
 	Kind    string // roster tab (@duck_kind)
-	RawKind string // literal @duck_kind; "window" folds into artifacts
+	RawKind string // literal @duck_kind (normalizeKind folds legacy stamps into tabs)
 	Title   string // pane_title — agents like Claude Code write status here
 }
 
@@ -701,76 +692,6 @@ func Spawn(run Runner, outer, name, dir, cmdline, kind string) (paneID string, e
 	// Show the newcomer.
 	_ = Select(run, outer, paneID)
 	return paneID, nil
-}
-
-// Window artifacts are dynamic artifact rows: they live in the artifacts tab
-// but carry @duck_kind=window and @duck_url so Enter can refocus the client
-// window instead of trying to render dynamic content in terminal cells.
-const KindWindow = "window"
-
-// IsWindowArtifact reports whether a roster row is the dynamic window flavor.
-func IsWindowArtifact(a Agent) bool { return a.RawKind == KindWindow }
-
-// WindowArtifactURL reads the published URL stamped on a window artifact row.
-func WindowArtifactURL(run Runner, paneID string) string {
-	out, err := run("show-options", "-p", "-t", paneID, "-v", URLOption)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(out)
-}
-
-// WindowArtifactCmd builds the cheap placeholder shown in the viewport for a
-// dynamic artifact row. The real surface lives in the client window.
-func WindowArtifactCmd(name, url string) string {
-	body := `draw() { clear; ` +
-		`printf '\033[7m window artifact \033[0m\n\n'; ` +
-		`printf '%s\n\n%s\n\n\033[2mopen on client -- Enter to focus\033[0m\n' ` +
-		paths.Quote(name) + ` ` + paths.Quote(url) + `; }; ` +
-		`trap draw WINCH; draw; while :; do sleep 3600; done`
-	return "sh -c " + paths.Quote(body)
-}
-
-// EnsureWindowArtifact creates or updates the parked placeholder pane backing a
-// dynamic artifact row. Reusing by name mirrors preview ergonomics and prevents
-// repeated `duck window same-name` calls from stacking duplicates.
-func EnsureWindowArtifact(run Runner, outer, dir, name, artifactURL string) (string, error) {
-	name = strings.TrimSpace(name)
-	artifactURL = strings.TrimSpace(artifactURL)
-	if name == "" {
-		return "", fmt.Errorf("artifact name must be non-empty")
-	}
-	if artifactURL == "" {
-		return "", fmt.Errorf("artifact URL must be non-empty")
-	}
-	comp, err := EnsureCompanion(run, outer, dir)
-	if err != nil {
-		return "", err
-	}
-	cmd := WindowArtifactCmd(name, artifactURL)
-	for _, a := range func() []Agent { as, _ := Agents(run, outer); return as }() {
-		if IsWindowArtifact(a) && a.Name == name {
-			_, _ = run("respawn-pane", "-k", "-t", a.PaneID, cmd)
-			_, _ = run("set-option", "-p", "-t", a.PaneID, URLOption, artifactURL)
-			return a.PaneID, nil
-		}
-	}
-	id, err := run("split-window", "-d", "-t", comp+":lot", "-P", "-F", "#{pane_id}", cmd)
-	if err != nil {
-		return "", err
-	}
-	pid := strings.TrimSpace(id)
-	for _, opt := range [][2]string{
-		{NameOption, name},
-		{kindOption, KindWindow},
-		{URLOption, artifactURL},
-		{SpawnedAtOption, strconv.FormatInt(time.Now().Unix(), 10)},
-		{CmdOption, cmd},
-	} {
-		_, _ = run("set-option", "-p", "-t", pid, opt[0], opt[1])
-	}
-	_, _ = run("select-layout", "-t", comp+":lot", "tiled")
-	return pid, nil
 }
 
 // Select puts the given pane on display: an atomic swap-pane between it and
@@ -934,58 +855,6 @@ func showFiller(run Runner, outer, cmd string) error {
 func Kill(run Runner, paneID string) error {
 	_, err := run("kill-pane", "-t", paneID)
 	return err
-}
-
-// Preview panes carry their render recipe in pane options so the roster can
-// re-render ON DEMAND: selecting an artifact whose source file changed
-// respawns the pane with the same command. Unchanged file → plain select.
-const (
-	PreviewCmdOption   = "@duck_preview_cmd"
-	PreviewPathOption  = "@duck_preview_path"
-	PreviewMtimeOption = "@duck_preview_mtime"
-)
-
-// StampPreview records the recipe on a freshly spawned preview pane.
-func StampPreview(run Runner, paneID, cmd, path string, mtime int64) {
-	_, _ = run("set-option", "-p", "-t", paneID, PreviewCmdOption, cmd)
-	_, _ = run("set-option", "-p", "-t", paneID, PreviewPathOption, path)
-	_, _ = run("set-option", "-p", "-t", paneID, PreviewMtimeOption, strconv.FormatInt(mtime, 10))
-}
-
-// RefreshIfStale re-renders a preview pane whose source file changed since
-// the last render (respawn-pane with the stamped command), restamping the
-// new mtime. Panes without a preview stamp are a no-op, so callers invoke it
-// on every selection unconditionally.
-func RefreshIfStale(run Runner, paneID string, stat func(string) (int64, bool)) {
-	read := func(name string) string {
-		out, err := run("show-options", "-p", "-t", paneID, "-v", name)
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(out)
-	}
-	path := read(PreviewPathOption)
-	cmd := read(PreviewCmdOption)
-	if path == "" || cmd == "" {
-		return
-	}
-	mtime, ok := stat(path)
-	if !ok || strconv.FormatInt(mtime, 10) == read(PreviewMtimeOption) {
-		return
-	}
-	if _, err := run("respawn-pane", "-k", "-t", paneID, cmd); err != nil {
-		return
-	}
-	_, _ = run("set-option", "-p", "-t", paneID, PreviewMtimeOption, strconv.FormatInt(mtime, 10))
-}
-
-// FileMtime is the production stat for RefreshIfStale.
-func FileMtime(path string) (int64, bool) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0, false
-	}
-	return info.ModTime().Unix(), true
 }
 
 // EnsureSlot heals a missing viewport (its occupant was killed on display):
