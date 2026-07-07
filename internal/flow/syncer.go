@@ -202,39 +202,6 @@ func pathCoveredBy(dir, ancestor string) bool {
 	return strings.HasPrefix(dir, ancestor+"/")
 }
 
-// CoveringSyncRoot returns the LONGEST active mutagen sync root (alpha path,
-// tilde-form) that covers dir — i.e. the outermost sync boundary dir actually
-// belongs to. Empty when no session covers dir (a local-only workspace). This is
-// where project content (pads) belongs: keying on the raw
-// workspace dir would fragment content when a workspace sits INSIDE an ancestor
-// sync root (the common aviary case — one synced umbrella, many bird workspaces).
-//
-// dir is tilde-form; the comparison is done on the expanded absolute path (that's
-// what mutagen session alpha paths are), then the winner is contracted back to
-// tilde-form for a home-agnostic key. Best-effort: any mutagen error yields "" so
-// the caller falls back to the workspace dir.
-func CoveringSyncRoot(dir string) string {
-	local, err := paths.Expand(dir)
-	if err != nil {
-		return ""
-	}
-	sessions, err := mutagen.List()
-	if err != nil {
-		return ""
-	}
-	best := ""
-	for _, ms := range sessions {
-		p := ms.Alpha.Path
-		if pathCoveredBy(local, p) && len(p) > len(best) {
-			best = p
-		}
-	}
-	if best == "" {
-		return ""
-	}
-	return paths.Contract(best)
-}
-
 // CheckContainment lists the active duck Mutagen sessions and classifies
 // localAbs against their local (Alpha) paths via folder.CheckContainment. In
 // hub-owned mode the ledger already presents sessions in laptop perspective

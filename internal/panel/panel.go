@@ -7,9 +7,8 @@
 // session, and selecting an agent atomically `swap-pane`s it into that slot
 // (the previous occupant parks back in the lot). Nothing is ever *viewed
 // through* a nested client — the pane on screen IS the agent, one tmux layer
-// from the terminal, so kitty-graphics pixels (casty, future renderers)
-// survive. The lot never changes pane count (swap exchanges), and an
-// immortal anchor pane keeps the companion session alive regardless.
+// from the terminal. The lot never changes pane count (swap exchanges), and
+// an immortal anchor pane keeps the companion session alive regardless.
 //
 // All identity lives in PANE user options (@duck_name/@duck_kind/…): pane
 // options travel with the pane through swaps, so an agent keeps its name,
@@ -93,13 +92,12 @@ const (
 // as long as a pane carries it (`duck spawn --tab <name>`), so duck — or an
 // agent driving duck — can grow the tab set at runtime with zero declaration.
 const (
-	KindAgent  = "agents"     // runners you supervise (default)
-	KindShell  = "shells"     // plain interactive shells
-	KindBuffer = "scratchpad" // editor panes: the scratch note + duck edit files
+	KindAgent = "agents" // runners you supervise (default)
+	KindShell = "shells" // plain interactive shells
 )
 
 // BaseKinds is the always-visible tab order; dynamic kinds append after.
-var BaseKinds = []string{KindAgent, KindShell, KindBuffer}
+var BaseKinds = []string{KindAgent, KindShell}
 
 // normalizeKind maps stamps to tab names: empty → agents, singular legacy
 // stamps → their tabs.
@@ -123,8 +121,8 @@ const anchorCmd = `sh -c 'while :; do sleep 3600; done'`
 
 // ProjectName identifies the PROJECT a workspace belongs to: the basename of
 // its main pane's working directory. Every workspace rooted in the same
-// folder resolves to the same project, so they share one pad set. Falls back
-// to the session name when the cwd can't be read.
+// folder resolves to the same project. Falls back to the session name when
+// the cwd can't be read.
 func ProjectName(run Runner, outer string) string {
 	// Prefer the main (non-panel) pane's cwd — the viewport occupant could be
 	// an agent that wandered elsewhere.
@@ -140,234 +138,6 @@ func ProjectName(run Runner, outer string) string {
 		return filepath.Base(p)
 	}
 	return outer
-}
-
-// SyncRootFn resolves the longest mutagen sync root covering a workspace's dir
-// (tilde-form) — where its project content (pads) belongs. Injected by command
-// (flow.CoveringSyncRoot) so low-level panel needn't import flow/mutagen. The
-// default returns "" (no sync info) → PadRoot falls back to the workspace dir.
-var SyncRootFn = func(dir string) string { return "" }
-
-// PadRoot is the project root a workspace's pads live under: the covering sync
-// root when the workspace is synced, else the workspace's own dir (@duck_dir).
-// "" only if neither resolves (→ global/flat pad).
-func PadRoot(run Runner, outer string) string {
-	dir, err := SessionPath(run, outer)
-	if err != nil || dir == "" {
-		return ""
-	}
-	tilde := paths.Contract(dir)
-	if root := SyncRootFn(tilde); root != "" {
-		return root
-	}
-	return tilde
-}
-
-// PadPath RESOLVES a pad's path — pure, no I/O, no side effects (use EnsurePad
-// to create it). syncRoot is the project's sync boundary (flow.CoveringSyncRoot,
-// or the workspace dir as fallback); pads live at
-// `<syncRoot>/.duck/scratchpad/<name>.md` so they ride the project sync and are
-// shared by every workspace within the project — keyed by PATH, not a basename
-// (basename keying silently collided unrelated same-named projects).
-//
-// A global pad (no project home — e.g. shared.md) is signalled by an empty
-// syncRoot; it resolves to the flat legacy path `~/.duck/scratchpad/<name>.md`.
-// An existing flat pad ALSO wins (legacy pads written before the project scheme),
-// so nothing already on disk goes dark.
-func PadPath(syncRoot, name string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	flat := filepath.Join(home, ".duck", "scratchpad", name+".md")
-	if syncRoot == "" || fileExists(flat) {
-		return flat, nil
-	}
-	root, err := paths.Expand(syncRoot)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(root, ".duck", "scratchpad", name+".md"), nil
-}
-
-// EnsurePad resolves a pad path and CREATES it (mkdir + header) if absent,
-// migrating a legacy pad's content in on first touch. Returns the path. This is
-// the side-effecting counterpart to PadPath — callers that open/edit a pad call
-// this; callers that merely need the path call PadPath.
-func EnsurePad(syncRoot, name string) (string, error) {
-	path, err := PadPath(syncRoot, name)
-	if err != nil {
-		return "", err
-	}
-	if fileExists(path) {
-		return path, nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
-	// Migrate a legacy pad in (copy, never move — a global doc may still be read
-	// from the old location): the flat pad, then the old per-basename pad.
-	if home, herr := os.UserHomeDir(); herr == nil && syncRoot != "" {
-		legacy := []string{
-			filepath.Join(home, ".duck", "scratchpad", name+".md"),
-			filepath.Join(home, ".duck", "scratchpad", filepath.Base(syncRoot), name+".md"),
-		}
-		for _, old := range legacy {
-			if old == path {
-				continue
-			}
-			if b, rerr := os.ReadFile(old); rerr == nil {
-				if werr := os.WriteFile(path, b, 0o644); werr == nil {
-					return path, nil
-				}
-			}
-		}
-	}
-	header := "# " + name + "\n\n"
-	if werr := os.WriteFile(path, []byte(header), 0o644); werr != nil {
-		return "", werr
-	}
-	return path, nil
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-// RenamePad moves a pad's backing .md from oldName to newName under the same
-// syncRoot, then respawns its roster pane (if live) with the viewer pointed at
-// the new file and re-stamps @duck_name so the roster label follows. Returns
-// the new path. Fails if newName already exists (never clobbers a pad) or the
-// old file is missing.
-func RenamePad(run Runner, outer, oldName, newName string) (string, error) {
-	if newName == "" || strings.ContainsAny(newName, "/\\") {
-		return "", fmt.Errorf("bad pad name %q", newName)
-	}
-	root := PadRoot(run, outer)
-	oldPath, err := PadPath(root, oldName)
-	if err != nil {
-		return "", err
-	}
-	newPath, err := PadPath(root, newName)
-	if err != nil {
-		return "", err
-	}
-	if !fileExists(oldPath) {
-		return "", fmt.Errorf("no pad %q", oldName)
-	}
-	if fileExists(newPath) {
-		return "", fmt.Errorf("pad %q already exists", newName)
-	}
-	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.Rename(oldPath, newPath); err != nil {
-		return "", err
-	}
-	// Repoint the live pane, if any: respawn its viewer on the new path and
-	// re-stamp the name so the roster row relabels.
-	for _, a := range func() []Agent { as, _ := Agents(run, outer); return as }() {
-		if a.Kind == KindBuffer && a.Name == oldName {
-			_, _ = run("respawn-pane", "-k", "-t", a.PaneID, PadCmd(newPath))
-			_, _ = run("set-option", "-p", "-t", a.PaneID, NameOption, newName)
-			break
-		}
-	}
-	return newPath, nil
-}
-
-// PadCmd builds the in-pane command for a pad: a VIEWER by default (glow-
-// rendered, styled, live) with an explicit EDIT affordance. A pad is a live
-// human⇄agent surface — an agent rewrites the file, and the viewer repaints on
-// its own (disk-as-truth: the render owns no buffer, so a write clobbers cleanly
-// with nothing to reconcile). Press `e` to drop into the editor (micro etc. —
-// see editorScript); on quit the rendered view returns. Press `q` to close the
-// pad. The outer respawn loop means the pad reopens if the view loop ever exits
-// unexpectedly; the roster's `x` truly closes it.
-//
-// The view loop polls one keypress per second (read -t 1 -n 1): a keystroke
-// drives edit/close, and between keystrokes it re-renders whenever the file's
-// mtime changes — so an idle pad the human is only watching still repaints when
-// an agent writes underneath it. Falls back to `cat` when glow is absent.
-func PadCmd(path string) string {
-	q := paths.Quote(path)
-	// The view loop polls one key per second AND the file mtime — that needs
-	// `read -t/-s/-n`, which are bash builtins (dash, Debian's /bin/sh, lacks
-	// them). So the viewer runs under bash; without bash, or without glow, we
-	// fall back to the plain editor loop (the pre-viewer behaviour) so a pad is
-	// never broken — it just isn't rendered.
-	_, hasBash := exec.LookPath("bash")
-	_, hasGlow := exec.LookPath("glow")
-	if hasBash != nil || hasGlow != nil {
-		return "sh -c " + paths.Quote(`while :; do `+editorScript(path)+`; sleep 0.3; done`)
-	}
-	render := `glow -w "$(tput cols 2>/dev/null || echo 100)" ` + q
-	// Outer respawn loop → view loop (render + key/mtime poll) → edit on `e`.
-	// `clear` scrubs the pane each frame; the hint line shows the affordances.
-	view := `while :; do ` +
-		`clear; ` + render + `; ` +
-		`printf '\n\033[2m[e edit · q close]\033[0m'; ` +
-		`m=$(stat -c %Y ` + q + ` 2>/dev/null); k=; ` +
-		`while :; do ` +
-		`if IFS= read -t 1 -rsn 1 k; then ` +
-		`[ "$k" = e ] && break; ` +
-		`[ "$k" = q ] && exit 0; ` +
-		`fi; ` +
-		`[ "$(stat -c %Y ` + q + ` 2>/dev/null)" != "$m" ] && break; ` +
-		`done; ` +
-		`if [ "$k" = e ]; then ` + editorScript(path) + `; fi; ` +
-		`done`
-	return "bash -c " + paths.Quote(view)
-}
-
-// EditorCmd is the ONE-SHOT editor invocation for a file: the same editor
-// preferences as pads (micro with autosave + live-reload + softwrap when
-// installed, $DUCK_PAD_EDITOR override, $EDITOR fallback) but the pane
-// closes when the editor exits — right for `duck edit <file>` buffers and
-// markdown previews, where quit means done.
-func EditorCmd(path string) string {
-	return "sh -c " + paths.Quote(editorScript(path))
-}
-
-// editorScript is the shared editor-preference chain both wrappers run.
-func editorScript(path string) string {
-	q := paths.Quote(path)
-	return `if [ -n "$DUCK_PAD_EDITOR" ]; then $DUCK_PAD_EDITOR ` + q +
-		`; elif command -v micro >/dev/null 2>&1; then micro -autosave 1 -reload auto -savecursor true -softwrap true -wordwrap true ` + q +
-		`; else "${EDITOR:-vim}" ` + q + `; fi`
-}
-
-// EnsureScratch guarantees the project's long-lived scratch buffer exists
-// as a PARKED pane (roster tab: buffers) — present from the first glance,
-// shown only when selected. The editor runs in a respawn loop so :q just
-// reopens it; killing it for real is the roster's two-press x.
-func EnsureScratch(run Runner, outer string) {
-	agents, err := Agents(run, outer)
-	if err != nil {
-		return
-	}
-	for _, a := range agents {
-		if a.Kind == KindBuffer && a.Name == "scratch" {
-			return
-		}
-	}
-	path, err := EnsurePad(PadRoot(run, outer), "scratch")
-	if err != nil {
-		return
-	}
-	id, err := run("split-window", "-d", "-t", Companion(outer)+":lot", "-P", "-F", "#{pane_id}", PadCmd(path))
-	if err != nil {
-		return
-	}
-	pid := strings.TrimSpace(id)
-	for _, opt := range [][2]string{
-		{NameOption, "scratch"},
-		{kindOption, KindBuffer},
-	} {
-		_, _ = run("set-option", "-p", "-t", pid, opt[0], opt[1])
-	}
-	_, _ = run("select-layout", "-t", Companion(outer)+":lot", "tiled")
 }
 
 // rosterRows is the roster pane's height (the command box + hint need
@@ -1153,7 +923,6 @@ func (shellRunner) RunInput(cmd string, stdin io.Reader) (string, error) {
 func SwitchTo(run Runner, outer, target, duckBin string) error {
 	if comp, err := EnsureCompanion(run, target, ""); err == nil {
 		_ = Open(run, target, comp, duckBin)
-		EnsureScratch(run, target)
 	}
 	out, err := run("list-clients", "-t", outer, "-F", "#{client_name}")
 	if err != nil {

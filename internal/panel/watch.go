@@ -5,11 +5,11 @@
 //   - BROWSE (default): arrows pick, ←→/⇥ switch tabs, ↵ shows/acts on the
 //     selected item, x (twice) kills it. Some tabs add their own letter
 //     shortcuts — the hint line always shows the active tab's keys:
-//     · item tabs (agents/shells/artifacts/scratchpad): ↵ view · x kill
+//     · item tabs (agents/shells): ↵ view · x kill
 //     · ⌂ workspaces: ↵ preview · g go · b back · x kill · s scope
 //   - COMMAND: entered by typing `:` or clicking the box. The always-visible
 //     box at the bottom takes over: typing live-filters the list and jumps
-//     by name on ↵; verbs (new/spawn/edit/preview/render/kill/workspaces/
+//     by name on ↵; verbs (new/spawn/kill/workspaces/
 //     close/exit/help) ghost-complete with a hint saying what ↵ will do.
 //     esc returns.
 //
@@ -77,8 +77,6 @@ type StatusFn func(paneID string) string
 var verbs = []struct{ name, usage string }{
 	{"new", ""}, // contextual: usage depends on the active tab (see newUsage)
 	{"spawn", "spawn <cmd…>  — launch an agent"},
-	{"edit", "edit [pad]  — open/create a pad (no name: workspace pad)"},
-	{"rename", "rename <pad> <new>  — rename a scratchpad's .md file"},
 	{"kill", "kill <name>  — kill an agent/buffer"},
 	{"workspaces", "workspaces  — jump to the ⌂ ws tab"},
 	{"close", "close  — close this panel (everything keeps running)"},
@@ -240,7 +238,7 @@ func (m *watchModel) cycleTab(delta int) {
 // switchTab makes `kind` the active tab, restoring the cursor to the item that
 // was selected there last (0 if never visited), and swaps the viewport to it —
 // no ↵ needed. The old tab's cursor is saved first so returning restores it.
-// Item tabs (agents/shells/artifacts/scratchpad) auto-view; the workspaces tab
+// Item tabs (agents/shells) auto-view; the workspaces tab
 // would teleport the terminal to another workspace, so a mere tab-switch must
 // never trigger that — it previews instead.
 func (m *watchModel) switchTab(kind string) {
@@ -496,8 +494,6 @@ func (m watchModel) newUsage() string {
 	switch m.activeKind() {
 	case KindShell:
 		return "new  — open a fresh shell here"
-	case KindBuffer:
-		return "new <name>  — create a pad"
 	case KindAgent:
 		return "new <cmd…>  — launch an agent"
 	case wsTab:
@@ -625,14 +621,6 @@ func (m *watchModel) viewSelected() string {
 	return ""
 }
 
-// renamePad renames a scratchpad's backing .md and relabels its pane.
-func (m *watchModel) renamePad(oldName, newName string) string {
-	if _, err := RenamePad(m.run, m.outer, oldName, newName); err != nil {
-		return err.Error()
-	}
-	return "renamed " + oldName + " → " + newName
-}
-
 // runInput executes the command box's content.
 func (m *watchModel) runInput() string {
 	line := strings.TrimSpace(m.input.Value())
@@ -670,12 +658,6 @@ func (m *watchModel) runInput() string {
 				return err.Error()
 			}
 			return "new shell"
-		case KindBuffer:
-			if len(f) < 2 {
-				return "new <name> — pads need names"
-			}
-			m.input.SetValue("edit " + f[1])
-			return m.runInput()
 		case wsTab:
 			return "workspaces are made by running `duck` in a directory"
 		default:
@@ -711,31 +693,6 @@ func (m *watchModel) runInput() string {
 			return err.Error()
 		}
 		return "spawned " + name
-	case "edit":
-		name := "scratch"
-		if len(f) > 1 {
-			name = f[1]
-		}
-		for _, a := range m.agents {
-			if a.Kind == KindBuffer && a.Name == name {
-				_ = Select(m.run, m.outer, a.PaneID)
-				return ""
-			}
-		}
-		path, err := EnsurePad(PadRoot(m.run, m.outer), name)
-		if err != nil {
-			return err.Error()
-		}
-		dir, _ := CurrentPanePath(m.run)
-		if _, err := Spawn(m.run, m.outer, name, dir, PadCmd(path), KindBuffer); err != nil {
-			return err.Error()
-		}
-		return "pad " + name
-	case "rename":
-		if len(f) < 3 {
-			return "rename <pad> <new>"
-		}
-		return m.renamePad(f[1], f[2])
 	case "kill":
 		if len(f) < 2 {
 			return "kill what?"
@@ -966,30 +923,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.previewWorkspace()
 				return m, nil
 			}
-		case "n": // new: a shell (shells tab) or a pad (scratchpad tab)
-			switch m.tabKind {
-			case KindShell:
+		case "n": // new: a shell (shells tab)
+			if m.tabKind == KindShell {
 				m.input.SetValue("new")
 				m.lastMsg = m.runInput()
 				m.input.SetValue("")
 				return m, m.load
-			case KindBuffer:
-				// Pads need a name — prefill the command box with `edit ` so the
-				// next keystrokes name the new pad, then ↵ creates it.
-				m.cmdFocus = true
-				m.input.SetValue("edit ")
-				m.input.CursorEnd()
-				return m, m.input.Focus()
-			}
-		case "r": // rename: a pad's .md file (scratchpad tab only)
-			if m.tabKind == KindBuffer {
-				if idx := m.visible(); m.cursor < len(idx) {
-					old := m.agents[idx[m.cursor]].Name
-					m.cmdFocus = true
-					m.input.SetValue("rename " + old + " ")
-					m.input.CursorEnd()
-					return m, m.input.Focus()
-				}
 			}
 		case "x":
 			if m.tabKind == wsTab {
@@ -1173,7 +1112,7 @@ func helpLines(m watchModel) []string {
 		}
 	}
 	h = append(h, " "+dimStyle.Render("or type any name — fuzzy-jumps to it"))
-	h = append(h, "", dimStyle.Render(" from any shell: duck spawn · duck edit · duck preview · duck render"))
+	h = append(h, "", dimStyle.Render(" from any shell: duck spawn"))
 	return h
 }
 
@@ -1322,8 +1261,6 @@ func (m watchModel) View() string {
 		hintLine = dimStyle.Render(" ↵ preview · g go · b back · x kill · s scope:" + scope + " · ←→ tabs")
 	case m.tabKind == KindShell:
 		hintLine = dimStyle.Render(" ↵ view · n new · x kill · ←→ tabs · q close")
-	case m.tabKind == KindBuffer:
-		hintLine = dimStyle.Render(" ↵ view · n new · r rename · x kill · ←→ tabs")
 	default:
 		if _, ok := m.selectedWorkflow(); ok {
 			hintLine = dimStyle.Render(" ↵ progress · x stop · ←→ tabs · q close")

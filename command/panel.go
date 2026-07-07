@@ -53,9 +53,6 @@ inside a tmux (duck) session.`,
 		if err := panel.Open(run, outer, comp, bin); err != nil {
 			return err
 		}
-		// The workspace's standing furniture: an immortal scratch buffer,
-		// parked until selected.
-		panel.EnsureScratch(run, outer)
 		return nil
 	},
 }
