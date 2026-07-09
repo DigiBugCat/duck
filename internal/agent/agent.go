@@ -1,6 +1,6 @@
 // Package agent is duck's shared codex-agent spawn pipeline: the argv injectors
 // that wire a codex launch (full access, notify + SessionStart hooks, hook
-// trust) and the Spawn/Resume/Fork orchestration over the panel + channel.
+// trust) and the Spawn/Resume/Fork orchestration over tmuxdb + channel.
 //
 // It exists so the CLI (command/spawn.go) and the MCP tool surface
 // (internal/channel serve) share ONE pipeline — a codex agent spawned either way
@@ -16,7 +16,7 @@ import (
 	"strings"
 
 	"github.com/DigiBugCat/duck/internal/channel"
-	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/DigiBugCat/duck/internal/tmuxdb"
 	"github.com/DigiBugCat/duck/internal/paths"
 )
 
@@ -49,7 +49,7 @@ func codexInsertAt(args []string) int {
 
 // WithFullAccess injects --dangerously-bypass-approvals-and-sandbox for codex
 // spawns unless the user stated their own approval/sandbox preference. Sidebar
-// agents run autonomously under supervision (channel + viewport are the
+// agents run autonomously under supervision (channel + a visible pane are the
 // oversight); per-command approval prompts just stall them.
 func WithFullAccess(args []string) []string {
 	if !isCodex(args) {
@@ -146,8 +146,8 @@ func Wire(args []string) []string {
 // UniqueName returns base if no agent in outer already carries it, else the
 // first free base-2, base-3, … so bare `spawn codex` × N don't all become
 // "codex". A listing failure falls back to base (never block a spawn).
-func UniqueName(run panel.Runner, outer, base string) string {
-	agents, err := panel.Agents(run, outer)
+func UniqueName(run tmuxdb.Runner, outer, base string) string {
+	agents, err := tmuxdb.Agents(run, outer)
 	if err != nil {
 		return base
 	}
@@ -166,11 +166,11 @@ func UniqueName(run panel.Runner, outer, base string) string {
 	}
 }
 
-// Spec is a request to launch a sidebar agent.
+// Spec is a request to launch a workspace agent.
 type Spec struct {
 	Args   []string // the command argv (e.g. ["codex"] or a Resume/Fork build)
-	Name   string   // roster label; "" → derived + made unique
-	Tab    string   // roster tab; "" → agents (or shells for a bare arg-less spawn)
+	Name   string   // agent label; "" → derived + made unique
+	Tab    string   // agent group; "" → agents (or shells for a bare arg-less spawn)
 	Prompt string   // optional first turn, delivered after the composer is ready
 	Model  string   // optional model alias (see model.go); "" → codex config default
 	Effort string   // optional reasoning effort (low|medium|high); "" → codex default
@@ -180,24 +180,16 @@ type Spec struct {
 // when known, the codex session id (bound at first turn by the SessionStart
 // hook — nil until then).
 type Result struct {
-	Name      string // the resolved roster label (after unique-name derivation)
+	Name      string // the resolved agent label (after unique-name derivation)
 	PaneID    string
 	SessionID string // "" until the SessionStart hook has fired (first turn)
 }
 
-// Launch runs the full spawn pipeline: ensure the companion + panel, wire the
-// codex argv, spawn the pane, optionally deliver the first turn, and read back
-// the session id the hook stamped (best-effort — may be "" if the agent hasn't
-// taken its first turn yet). Shared by the CLI and the MCP spawn tool.
-func Launch(run panel.Runner, outer, dir, duckBin string, spec Spec) (Result, error) {
-	comp, err := panel.EnsureCompanion(run, outer, dir)
-	if err != nil {
-		return Result{}, err
-	}
-	// Open BEFORE spawn: Spawn selects the newcomer into the viewport slot.
-	if err := panel.Open(run, outer, comp, duckBin); err != nil {
-		return Result{}, err
-	}
+// Launch runs the full spawn pipeline: wire the codex argv, spawn the pane
+// into the workspace session itself, optionally deliver the first turn, and
+// read back the session id the hook stamped (best-effort — may be "" if the
+// agent hasn't taken its first turn yet). Shared by the CLI and the MCP tool.
+func Launch(run tmuxdb.Runner, outer, dir string, spec Spec) (Result, error) {
 	// Model/effort are codex-only concepts (see defaultArgs): setting one with no
 	// command means "a codex agent on this model", not a bare shell. Runs before
 	// the name/kind/injector logic below, all of which key off spec.Args.
@@ -226,12 +218,12 @@ func Launch(run panel.Runner, outer, dir, duckBin string, spec Spec) (Result, er
 	}
 	kind := spec.Tab
 	if kind == "" {
-		kind = panel.KindAgent
+		kind = tmuxdb.KindAgent
 		if len(spec.Args) == 0 {
-			kind = panel.KindShell
+			kind = tmuxdb.KindShell
 		}
 	}
-	paneID, err := panel.Spawn(run, outer, name, dir, line, kind)
+	paneID, err := tmuxdb.Spawn(run, outer, name, dir, line, kind)
 	if err != nil {
 		return Result{}, err
 	}
@@ -243,7 +235,7 @@ func Launch(run panel.Runner, outer, dir, duckBin string, spec Spec) (Result, er
 	}
 	// Read back the session id the SessionStart hook stamped (present once the
 	// first turn fired — e.g. after a delivered Prompt). Best-effort.
-	if out, err := run("show-options", "-p", "-t", paneID, "-v", panel.SessionOption); err == nil {
+	if out, err := run("show-options", "-p", "-t", paneID, "-v", tmuxdb.SessionOption); err == nil {
 		res.SessionID = strings.TrimSpace(out)
 	}
 	return res, nil

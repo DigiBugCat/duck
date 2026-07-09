@@ -1,6 +1,6 @@
 // Package manager builds the in-pane command line that launches a duck
 // workspace's MANAGER — the Claude that runs in the main pane and drives the
-// workspace's sidebar agent flock. A duck workspace is an EMPLOYEE whose manager
+// workspace's agent flock. A duck workspace is an EMPLOYEE whose manager
 // is claude in the main pane, so duck OWNS this launch line (channel flags
 // included) and sends it into the main pane on workspace creation/heal, rather
 // than the human typing `claude` by hand.
@@ -25,7 +25,7 @@ import (
 )
 
 // channelFlags are the Claude Code channel-sidecar flags duck auto-appends so
-// the manager hears its sidebar agents and duck-side publishes. NOTE the dev
+// the manager hears its workspace agents and duck-side publishes. NOTE the dev
 // flag takes the server LIST as its own argument (`claude
 // --dangerously-load-development-channels server:duck-agents`) — it is not a
 // boolean, and combining it with a separate --channels does NOT extend the
@@ -54,11 +54,9 @@ func ChannelsWired(extraArgs []string) bool {
 // Line is the single in-pane launch line for the workspace manager: bare
 // `claude` with each extraArg shell-quoted so the pane's shell re-parses them
 // exactly as given, then the channel flags UNLESS already wired
-// (ChannelsWired). It deliberately does NOT run `duck panel` first: the attach
-// path arms the panel hub-side at the same moment, and two concurrent arms
-// raced into a doubled sidebar (seen live on duck-5); interactive attaches arm
-// the panel anyway, and the user's `claude` shell function also runs `duck
-// panel` in-tmux. MCP registration rides the hub-side PersistentPreRun hook.
+// (ChannelsWired). There is no sidebar to arm — agents are ordinary panes/
+// windows of the session, so the launch line is just claude + channel flags.
+// MCP registration rides the hub-side PersistentPreRun hook.
 func Line(extraArgs []string) string {
 	line := "claude"
 	for _, a := range extraArgs {

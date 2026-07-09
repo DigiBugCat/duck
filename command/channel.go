@@ -22,7 +22,7 @@ import (
 
 	agentpkg "github.com/DigiBugCat/duck/internal/agent"
 	"github.com/DigiBugCat/duck/internal/channel"
-	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/DigiBugCat/duck/internal/tmuxdb"
 	"github.com/spf13/cobra"
 )
 
@@ -35,21 +35,21 @@ var channelCmd = &cobra.Command{
 
 // channelOuter resolves the duck session whose agents we address: --session
 // wins, else the enclosing tmux session.
-func channelOuter(run panel.Runner) (string, error) {
+func channelOuter(run tmuxdb.Runner) (string, error) {
 	if channelSession != "" {
 		return channelSession, nil
 	}
-	if !panel.InsideTmux() {
+	if !tmuxdb.InsideTmux() {
 		return "", fmt.Errorf("not inside tmux — pass --session <name> to pick the duck session")
 	}
-	return panel.CurrentSession(run)
+	return tmuxdb.CurrentSession(run)
 }
 
 var channelLsCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List every sidebar agent on this machine and its event stream",
 	RunE: func(c *cobra.Command, args []string) error {
-		refs, err := channel.AllAgents(panel.ExecRunner)
+		refs, err := channel.AllAgents(tmuxdb.ExecRunner)
 		if err != nil {
 			return err
 		}
@@ -76,7 +76,7 @@ var channelTailCmd = &cobra.Command{
 	Short: "Stream an agent's structured events (JSONL on stdout)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		run := panel.ExecRunner
+		run := tmuxdb.ExecRunner
 		outer, err := channelOuter(run)
 		if err != nil {
 			return err
@@ -101,7 +101,7 @@ var channelSendCmd = &cobra.Command{
 	Short: "Type a message into the agent's TUI (visible in the viewport)",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(c *cobra.Command, args []string) error {
-		run := panel.ExecRunner
+		run := tmuxdb.ExecRunner
 		outer, err := channelOuter(run)
 		if err != nil {
 			return err
@@ -123,7 +123,7 @@ manager's context — no tmux send-keys, no interrupting a running turn. If no
 sidecar is alive the event parks in the spool and is delivered when one starts.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		outer, err := channelOuter(panel.ExecRunner)
+		outer, err := channelOuter(tmuxdb.ExecRunner)
 		if err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ var channelNotifyCmd = &cobra.Command{
 	Short:  "codex notify hook: pin this pane's rollout from the turn payload",
 	Args:   cobra.ExactArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
-		return channel.HandleNotify(panel.ExecRunner, os.Getenv("TMUX_PANE"), args[0])
+		return channel.HandleNotify(tmuxdb.ExecRunner, os.Getenv("TMUX_PANE"), args[0])
 	},
 }
 
@@ -158,16 +158,12 @@ var channelNotifyCmd = &cobra.Command{
 type mcpHost struct{}
 
 func (mcpHost) launch(workspace string, spec agentpkg.Spec) (string, string, error) {
-	run := panel.ExecRunner
-	dir, err := panel.SessionPath(run, workspace)
+	run := tmuxdb.ExecRunner
+	dir, err := tmuxdb.SessionPath(run, workspace)
 	if err != nil {
 		return "", "", err
 	}
-	bin, err := os.Executable()
-	if err != nil {
-		bin = "duck"
-	}
-	res, err := agentpkg.Launch(run, workspace, dir, bin, spec)
+	res, err := agentpkg.Launch(run, workspace, dir, spec)
 	if err != nil {
 		return "", "", err
 	}
@@ -204,7 +200,7 @@ var channelHookCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return channel.HandleHook(panel.ExecRunner, os.Getenv("TMUX_PANE"), string(payload))
+		return channel.HandleHook(tmuxdb.ExecRunner, os.Getenv("TMUX_PANE"), string(payload))
 	},
 }
 
@@ -225,7 +221,7 @@ and launch: claude --channels server:duck-agents --dangerously-load-development-
 	RunE: func(c *cobra.Command, args []string) error {
 		workspace := ""
 		if !channelServeAll {
-			ws, err := channelOuter(panel.ExecRunner)
+			ws, err := channelOuter(tmuxdb.ExecRunner)
 			if err != nil {
 				// Outside tmux with no --session there is nothing to scope to:
 				// sweep machine-wide rather than dying — degrade, don't demand.
@@ -234,7 +230,7 @@ and launch: claude --channels server:duck-agents --dangerously-load-development-
 				workspace = ws
 			}
 		}
-		return channel.Serve(panel.ExecRunner, workspace, mcpHost{}, os.Stdin, os.Stdout)
+		return channel.Serve(tmuxdb.ExecRunner, workspace, mcpHost{}, os.Stdin, os.Stdout)
 	},
 }
 

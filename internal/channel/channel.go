@@ -1,5 +1,5 @@
-// Package channel is the bidirectional integration for sidebar agents
-// (internal/panel): structured events OUT, prompts IN — with the minimum
+// Package channel is the bidirectional integration for workspace agents
+// (internal/tmuxdb): structured events OUT, prompts IN — with the minimum
 // moving parts. There is no daemon and no registry: tmux window options carry
 // all state, and the event stream is the rollout file codex already writes
 // for every session (~/.codex/sessions/…/rollout-<ts>-<uuid>.jsonl).
@@ -7,10 +7,10 @@
 //	out: Tail streams an agent's rollout JSONL (what the human typed, what a
 //	     supervisor injected, everything codex did — one merged transcript).
 //	in:  Send types into the agent's TUI via send-keys, so an injected prompt
-//	     is VISIBLE in the viewport: one conversation, two participants.
+//	     is VISIBLE in the agent's pane: one conversation, two participants.
 //
 // Pairing a window with its rollout is heuristic-once-then-pinned: at spawn
-// panel stamps @duck_spawned_at; Resolve scans recent rollouts for a
+// tmuxdb stamps @duck_spawned_at; Resolve scans recent rollouts for a
 // session_meta whose cwd matches the window's pane path and whose timestamp
 // is at/after the spawn instant, then caches the winner in @duck_rollout.
 package channel
@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/DigiBugCat/duck/internal/tmuxdb"
 	"github.com/DigiBugCat/duck/internal/session"
 )
 
@@ -49,9 +49,9 @@ func SessionsDir() string {
 	return filepath.Join(home, ".codex", "sessions")
 }
 
-// AgentRef identifies one sidebar agent for channel operations.
+// AgentRef identifies one workspace agent for channel operations.
 type AgentRef struct {
-	Session  string // outer duck session (companion owner)
+	Session  string // the workspace session the agent belongs to
 	Name     string // window name (agent label)
 	WindowID string // tmux window id, e.g. "@7"
 	Rollout  string // resolved rollout path; empty if not (yet) paired
@@ -63,14 +63,14 @@ type AgentRef struct {
 	SpawnedAt time.Time
 }
 
-// FindAgent locates an agent window in outer's companion session by REFERENCE,
+// FindAgent locates an agent pane in the outer session by REFERENCE,
 // which may be (in precedence order): a tmux pane id (%NN or @NN — the stable
 // handle `duck spawn` prints, unambiguous even when agents share a name); a
 // codex thread id (the rollout's trailing UUID, from an event's meta.thread);
 // or the agent's display name. Name resolution is last so an explicit id always
 // wins over a colliding label.
-func FindAgent(run panel.Runner, outer, ref string) (AgentRef, error) {
-	agents, err := panel.Agents(run, outer)
+func FindAgent(run tmuxdb.Runner, outer, ref string) (AgentRef, error) {
+	agents, err := tmuxdb.Agents(run, outer)
 	if err != nil {
 		return AgentRef{}, err
 	}
@@ -106,8 +106,8 @@ func FindAgent(run panel.Runner, outer, ref string) (AgentRef, error) {
 // in the window's @duck_rollout option. Windows that never ran codex (plain
 // shells, builds) resolve to empty with no error — they have send-keys but no
 // structured stream.
-func Resolve(run panel.Runner, ref *AgentRef) error {
-	if out, err := run("show-options", "-p", "-t", ref.WindowID, "-v", panel.RolloutOption); err == nil {
+func Resolve(run tmuxdb.Runner, ref *AgentRef) error {
+	if out, err := run("show-options", "-p", "-t", ref.WindowID, "-v", tmuxdb.RolloutOption); err == nil {
 		if v := strings.TrimSpace(out); v != "" {
 			ref.Rollout = v
 			return nil
@@ -118,7 +118,7 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 	// in the same directory adopts a neighboring agent's rollout (the duck-2
 	// misattribution). Panes predating the @duck_cmd stamp read as empty and
 	// simply never pair fresh; anything they pinned earlier is honored above.
-	if cmd, err := run("show-options", "-p", "-t", ref.WindowID, "-v", panel.CmdOption); err != nil || !cmdRunsCodex(cmd) {
+	if cmd, err := run("show-options", "-p", "-t", ref.WindowID, "-v", tmuxdb.CmdOption); err != nil || !cmdRunsCodex(cmd) {
 		return err
 	}
 	spawnedAt, err := windowSpawnedAt(run, ref.WindowID)
@@ -135,7 +135,7 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 		return err
 	}
 	ref.Rollout = path
-	_, _ = run("set-option", "-p", "-t", ref.WindowID, panel.RolloutOption, path)
+	_, _ = run("set-option", "-p", "-t", ref.WindowID, tmuxdb.RolloutOption, path)
 	return nil
 }
 
@@ -148,7 +148,7 @@ func Resolve(run panel.Runner, ref *AgentRef) error {
 //
 // It deliberately pins WITHOUT publishing the event: serve's sweep drains the
 // (now-paired) rollout within 2s, so pushing here too would double-deliver.
-func HandleNotify(run panel.Runner, paneID, payload string) error {
+func HandleNotify(run tmuxdb.Runner, paneID, payload string) error {
 	if paneID == "" {
 		return nil // notify fired outside tmux — nothing to attribute
 	}
@@ -166,7 +166,7 @@ func HandleNotify(run panel.Runner, paneID, payload string) error {
 	if path := rolloutByThreadID(SessionsDir(), p.ThreadID); path != "" {
 		// Unconditional pin: the process itself says so — this also heals a
 		// wrong pairing the correlation fallback might have guessed earlier.
-		_, _ = run("set-option", "-p", "-t", paneID, panel.RolloutOption, path)
+		_, _ = run("set-option", "-p", "-t", paneID, tmuxdb.RolloutOption, path)
 	}
 	return nil
 }
@@ -189,7 +189,7 @@ func HandleNotify(run panel.Runner, paneID, payload string) error {
 // the same session_id; re-stamping the same value is an idempotent no-op, so
 // they are harmless, but gating on startup keeps the intent clear and avoids a
 // compact mid-life re-bind masquerading as a birth.
-func HandleHook(run panel.Runner, paneID, payload string) error {
+func HandleHook(run tmuxdb.Runner, paneID, payload string) error {
 	if paneID == "" {
 		return nil // hook fired outside tmux — nothing to attribute
 	}
@@ -210,9 +210,9 @@ func HandleHook(run panel.Runner, paneID, payload string) error {
 		}
 		// Step 1 of the turn lifecycle: bind pane↔session. Stamp the durable
 		// session id (resume/fork handle) and the exact rollout. Idempotent.
-		_, _ = run("set-option", "-p", "-t", paneID, panel.SessionOption, p.SessionID)
+		_, _ = run("set-option", "-p", "-t", paneID, tmuxdb.SessionOption, p.SessionID)
 		if p.TranscriptPath != "" && p.Source == "startup" {
-			_, _ = run("set-option", "-p", "-t", paneID, panel.RolloutOption, p.TranscriptPath)
+			_, _ = run("set-option", "-p", "-t", paneID, tmuxdb.RolloutOption, p.TranscriptPath)
 		}
 	case "UserPromptSubmit":
 		// Step 2: a prompt was actually SUBMITTED (a turn began). turn_id is unique
@@ -221,7 +221,7 @@ func HandleHook(run panel.Runner, paneID, payload string) error {
 		// ones), unlike SessionStart which only fires once. This is the ground-truth
 		// "the Enter landed" signal, replacing fragile composer inspection.
 		if p.TurnID != "" {
-			_, _ = run("set-option", "-p", "-t", paneID, panel.PromptOption, p.TurnID)
+			_, _ = run("set-option", "-p", "-t", paneID, tmuxdb.PromptOption, p.TurnID)
 		}
 	}
 	return nil
@@ -309,9 +309,9 @@ func cmdRunsCodex(cmdline string) bool {
 // claimedRollouts collects every rollout already pinned in some pane's
 // @duck_rollout, machine-wide. A claimed rollout is off-limits to fresh
 // pairing: two codex agents sharing a cwd must never adopt the same stream.
-func claimedRollouts(run panel.Runner) map[string]bool {
+func claimedRollouts(run tmuxdb.Runner) map[string]bool {
 	claimed := map[string]bool{}
-	out, err := run("list-panes", "-a", "-F", "#{"+panel.RolloutOption+"}")
+	out, err := run("list-panes", "-a", "-F", "#{"+tmuxdb.RolloutOption+"}")
 	if err != nil {
 		return claimed
 	}
@@ -323,8 +323,8 @@ func claimedRollouts(run panel.Runner) map[string]bool {
 	return claimed
 }
 
-func windowSpawnedAt(run panel.Runner, windowID string) (time.Time, error) {
-	out, err := run("show-options", "-p", "-t", windowID, "-v", panel.SpawnedAtOption)
+func windowSpawnedAt(run tmuxdb.Runner, windowID string) (time.Time, error) {
+	out, err := run("show-options", "-p", "-t", windowID, "-v", tmuxdb.SpawnedAtOption)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -521,7 +521,7 @@ func Tail(w io.Writer, path string, from int64, follow, raw bool) (int64, error)
 
 // Send types message into the agent's pane and presses Enter — visible in the
 // viewport, queued by codex's composer if a turn is mid-flight.
-func Send(run panel.Runner, ref AgentRef, message string) error {
+func Send(run tmuxdb.Runner, ref AgentRef, message string) error {
 	// Pair with the rollout up front (best-effort): it is the authoritative
 	// submit-confirmation signal below. Callers mostly pass unresolved refs.
 	if ref.Rollout == "" {
@@ -557,7 +557,7 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 	// spawn, unlike task_started), and no composer heuristic. Fallbacks (for a
 	// pane whose hook isn't wired — e.g. a user's own codex): the rollout's
 	// task_started when paired, else composer inspection.
-	prePrompt := paneOpt(run, ref.WindowID, panel.PromptOption)
+	prePrompt := paneOpt(run, ref.WindowID, tmuxdb.PromptOption)
 	var rolloutFrom int64 = -1
 	if ref.Rollout != "" {
 		if fi, err := os.Stat(ref.Rollout); err == nil {
@@ -570,7 +570,7 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 		}
 		time.Sleep(time.Duration(500+attempt*500) * time.Millisecond)
 		// Primary: a new UserPromptSubmit stamped a different turn_id.
-		if cur := paneOpt(run, ref.WindowID, panel.PromptOption); cur != "" && cur != prePrompt {
+		if cur := paneOpt(run, ref.WindowID, tmuxdb.PromptOption); cur != "" && cur != prePrompt {
 			return nil
 		}
 		// Fallback A: paired rollout gained a task_started past the pre-send offset.
@@ -589,7 +589,7 @@ func Send(run panel.Runner, ref AgentRef, message string) error {
 }
 
 // paneOpt reads a pane user option, "" on any error or unset.
-func paneOpt(run panel.Runner, windowID, opt string) string {
+func paneOpt(run tmuxdb.Runner, windowID, opt string) string {
 	out, err := run("show-options", "-p", "-t", windowID, "-v", opt)
 	if err != nil {
 		return ""
@@ -613,7 +613,7 @@ func SetSleepFn(fn func(time.Duration)) (restore func()) {
 // up to timeout. A freshly spawned TUI eats keystrokes during its first seconds
 // of startup, so a caller sending the first turn must wait for readiness first.
 // Attempt-bounded so a stubbed sleepFn finishes instantly in tests.
-func AwaitComposer(run panel.Runner, paneID string, timeout time.Duration) bool {
+func AwaitComposer(run tmuxdb.Runner, paneID string, timeout time.Duration) bool {
 	const every = 500 * time.Millisecond
 	for i := 0; i < int(timeout/every)+1; i++ {
 		if out, err := run("capture-pane", "-p", "-t", paneID); err == nil && strings.Contains(out, "›") {
@@ -629,7 +629,7 @@ func AwaitComposer(run panel.Runner, paneID string, timeout time.Duration) bool 
 // spawn+send); Send alone assumes a ready composer. If the composer never
 // appears within the window it sends anyway (best-effort — a non-codex or
 // slow-booting pane still gets the text rather than silently dropping it).
-func SendWhenReady(run panel.Runner, ref AgentRef, message string) error {
+func SendWhenReady(run tmuxdb.Runner, ref AgentRef, message string) error {
 	AwaitComposer(run, ref.WindowID, 15*time.Second)
 	return Send(run, ref, message)
 }
@@ -661,7 +661,7 @@ func taskStartedSince(path string, from int64) bool {
 // message tail or a pending-paste marker. The submitted prompt also appears
 // in the transcript above, so only composer lines are inspected. Capture
 // errors count as submitted — never loop on a broken pane.
-func submitted(run panel.Runner, windowID, message string) bool {
+func submitted(run tmuxdb.Runner, windowID, message string) bool {
 	out, err := run("capture-pane", "-p", "-t", windowID)
 	if err != nil {
 		return true
@@ -682,11 +682,14 @@ func submitted(run panel.Runner, windowID, message string) bool {
 	return true
 }
 
-// Companions lists every outer session that currently has a companion, so
-// serve/ls can sweep all agents on this machine. Implemented over the local
-// tmux server: sessions whose @duck_panel_of is set map companion → outer.
-func Companions(run panel.Runner) (map[string]string, error) {
-	out, err := run("list-sessions", "-F", "#{session_name}\t#{@duck_panel_of}")
+// Workspaces lists every candidate workspace session on the local tmux
+// server, so serve/ls can sweep all agents on this machine. Agents are panes
+// of the workspace session itself, so every session qualifies except stale
+// pre-teardown companions (@duck_panel_of set) — their live agents surface
+// via the owning session's legacy sweep in tmuxdb.Agents. Keyed and valued
+// by session name (the shape the sweeps iterate).
+func Workspaces(run tmuxdb.Runner) (map[string]string, error) {
+	out, err := run("list-sessions", "-F", "#{session_name}\t#{"+tmuxdb.PanelOfOption+"}")
 	if err != nil {
 		// Both empty-server signatures (session.IsNoServer): no tmux at all is a
 		// normal state for channel commands — quiet no-op, not an error.
@@ -698,23 +701,23 @@ func Companions(run panel.Runner) (map[string]string, error) {
 	owners := map[string]string{}
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		f := strings.SplitN(line, "\t", 2)
-		if len(f) == 2 && strings.TrimSpace(f[1]) != "" {
-			owners[f[0]] = strings.TrimSpace(f[1])
+		if len(f) >= 1 && strings.TrimSpace(f[0]) != "" && (len(f) < 2 || strings.TrimSpace(f[1]) == "") {
+			owners[f[0]] = f[0]
 		}
 	}
 	return owners, nil
 }
 
-// AllAgents sweeps every companion for its agents, sorted by session then
+// AllAgents sweeps every workspace for its agents, sorted by session then
 // name, resolving rollouts best-effort.
-func AllAgents(run panel.Runner) ([]AgentRef, error) {
-	owners, err := Companions(run)
+func AllAgents(run tmuxdb.Runner) ([]AgentRef, error) {
+	owners, err := Workspaces(run)
 	if err != nil {
 		return nil, err
 	}
 	var refs []AgentRef
 	for _, outer := range owners {
-		agents, err := panel.Agents(run, outer)
+		agents, err := tmuxdb.Agents(run, outer)
 		if err != nil {
 			continue // raced away — skip
 		}
@@ -742,7 +745,7 @@ func AllAgents(run panel.Runner) ([]AgentRef, error) {
 //
 // Reads at most the last statusWindow bytes, so polling stays cheap even on
 // long sessions.
-func StatusByWindow(run panel.Runner, windowID string) string {
+func StatusByWindow(run tmuxdb.Runner, windowID string) string {
 	ref := AgentRef{WindowID: windowID}
 	if err := Resolve(run, &ref); err != nil || ref.Rollout == "" {
 		return "idle"
@@ -799,7 +802,7 @@ func statusFromFile(rollout string) string {
 //
 // One-shot commands (ls, tail, send) keep using the plain functions.
 type Resolver struct {
-	run panel.Runner
+	run tmuxdb.Runner
 	mu  sync.Mutex
 	m   map[string]*rstate
 }
@@ -821,7 +824,7 @@ const retryEvery = 15 * time.Second
 const youngAge = 2 * time.Minute
 
 // NewResolver returns a Resolver over the local tmux runner.
-func NewResolver(run panel.Runner) *Resolver {
+func NewResolver(run tmuxdb.Runner) *Resolver {
 	return &Resolver{run: run, m: map[string]*rstate{}}
 }
 

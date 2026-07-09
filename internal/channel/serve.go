@@ -1,5 +1,5 @@
 // serve.go is the Claude Code channel sidecar (`duck channel serve`): a
-// minimal MCP stdio server that multiplexes a workspace's sidebar agents
+// minimal MCP stdio server that multiplexes a workspace's agents
 // into ONE Claude channel (unscoped = every workspace on the machine).
 // Claude launches it via .mcp.json +
 // `claude --channels server:duck-agents --dangerously-load-development-channels`
@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/DigiBugCat/duck/internal/tmuxdb"
 )
 
 // sweepEvery is the cadence for discovering agents and draining their
@@ -59,13 +59,13 @@ type Host interface {
 
 // Serve runs the channel sidecar until stdin closes (Claude exiting kills
 // us). run drives the local tmux server; in production it is
-// panel.ExecRunner and rw is stdin/stdout. launcher backs the spawn/resume/fork
+// tmuxdb.ExecRunner and rw is stdin/stdout. launcher backs the spawn/resume/fork
 // tools (nil = those tools are omitted).
 //
 // workspace scopes the sweep to ONE duck session's agents — the down edge of
 // the org chart: a manager hears its own lot, not every workspace on the
 // machine. Empty means machine-wide (explicit --all).
-func Serve(run panel.Runner, workspace string, host Host, in io.Reader, out io.Writer) error {
+func Serve(run tmuxdb.Runner, workspace string, host Host, in io.Reader, out io.Writer) error {
 	s := &server{run: run, workspace: workspace, host: host, out: out, offsets: map[string]int64{}, resolver: NewResolver(run), stop: make(chan struct{}), started: time.Now().Truncate(time.Second)}
 	watchDone := make(chan struct{})
 	go func() { defer close(watchDone); s.watch() }()
@@ -89,7 +89,7 @@ func Serve(run panel.Runner, workspace string, host Host, in io.Reader, out io.W
 }
 
 type server struct {
-	run       panel.Runner
+	run       tmuxdb.Runner
 	workspace string // sweep only this duck session's agents ("" = machine-wide)
 	host      Host   // backs spawn/resume/fork tools; nil omits them
 	out       io.Writer
@@ -117,9 +117,9 @@ func (s *server) write(v any) {
 // events mean and how to reply — scoped to the manager's own workspace when
 // the sidecar is.
 func (s *server) instructions() string {
-	scope := "duck sidebar agents (codex etc.)"
+	scope := "duck workspace agents (codex etc.)"
 	if s.workspace != "" {
-		scope = "YOUR sidebar agents (workspace " + s.workspace + " — you are its manager)"
+		scope = "YOUR agents (workspace " + s.workspace + " — you are its manager)"
 	}
 	return "Events from " + scope + " arrive as <channel source=\"duck-agents\"> " +
 		"with meta {session, agent, type}. " +
@@ -170,7 +170,7 @@ func (s *server) tools() []tool {
 	}
 	ts := []tool{{
 		name:        "reply",
-		description: "Send a message to a duck sidebar agent (typed into its TUI, visible in the viewport). The agent's response arrives later as a <channel source=\"duck-agents\"> event — do not poll; react when it lands. reply continues an EXISTING agent's thread.",
+		description: "Send a message to a duck agent (typed into its TUI — a pane/window of the workspace session the human can jump into). The agent's response arrives later as a <channel source=\"duck-agents\"> event — do not poll; react when it lands. reply continues an EXISTING agent's thread.",
 		schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -212,13 +212,13 @@ func (s *server) tools() []tool {
 	ts = append(ts,
 		tool{
 			name:        "spawn",
-			description: "Launch a codex agent into this workspace's sidebar (a durable, human-watchable TUI pane) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (a gpt alias; gpt-5.4-mini for cheap mechanical work) and reasoning effort. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
+			description: "Launch a codex agent into this workspace (a durable, human-watchable TUI pane of this session) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (a gpt alias; gpt-5.4-mini for cheap mechanical work) and reasoning effort. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
 			schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"prompt": map[string]any{"type": "string", "description": "first task to hand the agent (recommended — triggers its first turn so the session id binds)"},
-					"name":   map[string]any{"type": "string", "description": "optional roster label (default: a unique codex-N)"},
-					"tab":    map[string]any{"type": "string", "description": "optional roster tab"},
+					"name":   map[string]any{"type": "string", "description": "optional agent label (default: a unique codex-N)"},
+					"tab":    map[string]any{"type": "string", "description": "optional agent group stamp"},
 					"model": map[string]any{
 						"type":        "string",
 						"description": "optional model for this agent (default: the codex config default, gpt-5.5); gpt-5.4-mini suits cheap mechanical work.",
@@ -297,7 +297,7 @@ func (s *server) tools() []tool {
 		},
 		tool{
 			name: "workflow",
-			description: "Run a deterministic multi-agent workflow: a JS script you write whose control flow (loops, fan-out, barriers) is plain code, where each agent() call runs ONE disposable headless codex executor (the codex gpt default; pass model/effort per call — gpt-5.4-mini with low effort suits cheap mechanical stages). Workers are processes, not sidebar panes: the RUN is the one visible thing (roster workflows section + `duck workflows`). Returns a wf_ run id in a couple seconds; the RESULT is not in the reply — the run reports through the channel (workflow_started, workflow_phase per phase() transition, and workflow_complete carrying the result summary), so do NOT poll or tail; react when events land. " +
+			description: "Run a deterministic multi-agent workflow: a JS script you write whose control flow (loops, fan-out, barriers) is plain code, where each agent() call runs ONE disposable headless codex executor (the codex gpt default; pass model/effort per call — gpt-5.4-mini with low effort suits cheap mechanical stages). Workers are processes, not panes: the RUN is the one visible thing (`duck workflows`). Returns a wf_ run id in a couple seconds; the RESULT is not in the reply — the run reports through the channel (workflow_started, workflow_phase per phase() transition, and workflow_complete carrying the result summary), so do NOT poll or tail; react when events land. " +
 				"ROUTING: use a workflow for fan-out work one pass shouldn't be trusted with or one context can't hold — audits, migrations, review-then-adversarially-verify, judge panels, loop-until-dry discovery — and only at the human's scale of ask; a single bounded task is a spawn. " +
 				"SCRIPT SURFACE (plain JS, no TS): must begin `export const meta = {name, description}` as a PURE literal. Globals: agent(prompt, opts?) -> Promise (opts: {label, model, effort, cwd, write, schema} — schema forces a validated JSON object return, retried via session-resume on mismatch; workers are sandboxed read-only unless write:true; a failed worker resolves to null, so .filter(Boolean)); pipeline(items, ...stages) (per-item chains, NO barrier between stages — the default for multi-stage work; stages get (prev, item, i)); parallel(thunks) (a BARRIER — only when a stage needs ALL prior results, e.g. dedup); phase(title) + log(msg) (progress narration); args (the args input, verbatim); budget {total, spent(), remaining()} in tokens — agent() throws once total is exhausted. " +
 				"The script's return value becomes the run's result (persisted to result.json, summarized in the completion event). Every completed agent() call is journaled; pass resume_from with a prior run id to replay unchanged calls from its journal and only run what changed. Default worker concurrency 64; runaway backstop 1000 agents. To inspect or kill a run: duck workflows tail|stop <run-id>.",
@@ -325,7 +325,7 @@ func (s *server) tools() []tool {
 				if err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("started %s. The result arrives as a workflow_complete event — do NOT poll; react when it lands. Progress meanwhile: the roster's workflows section or `duck workflows tail %s`; stop it with `duck workflows stop %s`.", id, id, id), nil
+				return fmt.Sprintf("started %s. The result arrives as a workflow_complete event — do NOT poll; react when it lands. Progress meanwhile: `duck workflows tail %s`; stop it with `duck workflows stop %s`.", id, id, id), nil
 			},
 		},
 	)
@@ -438,7 +438,7 @@ func (s *server) watch() {
 		if s.workspace != "" {
 			s.drainPublish(s.workspace)
 		}
-		owners, err := Companions(s.run)
+		owners, err := Workspaces(s.run)
 		if err != nil {
 			continue
 		}
@@ -452,9 +452,9 @@ func (s *server) watch() {
 		keep := map[string]bool{}
 		for _, outer := range owners {
 			if s.workspace != "" && outer != s.workspace {
-				continue // another workspace's lot — not this manager's to hear
+				continue // another workspace — not this manager's to hear
 			}
-			agents, err := panel.Agents(s.run, outer)
+			agents, err := tmuxdb.Agents(s.run, outer)
 			if err != nil {
 				continue // raced away — next sweep
 			}

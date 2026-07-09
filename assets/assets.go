@@ -30,7 +30,7 @@ var HammerspoonSnap string
 var DuckOpen string
 
 // AgentNotes is the agent-facing cheat sheet (how to show things to the
-// human: artifact/viewport verbs, routing rules, workspace hygiene). It is
+// human: tool routing rules, workspace hygiene). It is
 // written to ~/.duck/AGENT.md on every duck start and imported into
 // ~/.claude/CLAUDE.md via a managed @-import line, so any Claude launched in
 // a duck workspace carries these instructions in its system prompt.

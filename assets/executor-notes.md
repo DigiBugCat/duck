@@ -1,8 +1,9 @@
 # duck — you are an executor (managed by duck; do not edit this block)
 
-You were launched into a duck workspace's sidebar as a spawned executor. A
-manager agent (claude, in the main pane) supervises this workspace; a human
-watches through a viewport.
+You were launched into a duck workspace as a spawned executor: a tmux
+pane/window of the workspace session. A manager agent (claude, in the main
+pane) supervises this workspace; the human can jump into your window at any
+time.
 
 ## Reporting
 
@@ -15,7 +16,5 @@ watches through a viewport.
 
 ## Workspace
 
-- The pane layout is duck-managed and self-healing; if it looks mangled,
-  say so in your report and the manager will converge it.
 - Stay inside the working directory you were launched in unless the task
   says otherwise; it is the workspace's project root.

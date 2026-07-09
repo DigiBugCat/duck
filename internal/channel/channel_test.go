@@ -106,13 +106,13 @@ func TestLooksLikeThreadID(t *testing.T) {
 }
 
 func TestFindAgentByPaneIDAndName(t *testing.T) {
-	agentsFmt := "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}"
+	agentsFmt := "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{pane_current_command}\t#{pane_title}"
 	// Two agents SHARE the name "worker" — only the pane id disambiguates them.
 	f := &fakeRunner{out: map[string]string{
 		"list-sessions -F #{session_name}\t#{@duck_panel_of}":      "work\t\nwork-agents\twork\n",
 		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}": "%5\tviewport\n",
-		"list-panes -s -t work -F " + agentsFmt:                    "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
-		"list-panes -s -t work-agents -F " + agentsFmt:             "%7\tworker\tagents\t\t\tcodex\t\n%8\tworker\tagents\t\t\tcodex\t\n",
+		"list-panes -s -t work -F " + agentsFmt:                    "%5\tterminal\tshells\t\tzsh\t\n",
+		"list-panes -s -t work-agents -F " + agentsFmt:             "%7\tworker\tagents\t\tcodex\t\n%8\tworker\tagents\t\tcodex\t\n",
 	}}
 	// Pane id resolves the EXACT pane even though the name collides.
 	for _, want := range []string{"%7", "%8"} {
@@ -475,11 +475,11 @@ func TestSendRetriesEnterWhilePasteSitsInComposer(t *testing.T) {
 	}
 }
 
-func TestCompanionsNoServerIsQuietNoop(t *testing.T) {
+func TestWorkspacesNoServerIsQuietNoop(t *testing.T) {
 	f := &fakeRunner{errs: map[string]error{
 		"list-sessions -F #{session_name}\t#{@duck_panel_of}": fmt.Errorf("no server running on /tmp/tmux"),
 	}, out: map[string]string{}}
-	owners, err := Companions(f.run)
+	owners, err := Workspaces(f.run)
 	if err != nil || len(owners) != 0 {
 		t.Fatalf("no tmux must be a quiet no-op, got %v %v", owners, err)
 	}
@@ -490,8 +490,8 @@ func TestCompanionsNoServerIsQuietNoop(t *testing.T) {
 func TestServeHandshakeAndReply(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
 		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}": "%5\tviewport\n",
-		"list-panes -s -t work -F #{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}":        "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
-		"list-panes -s -t work-agents -F #{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}": "%7\tcodex\tagents\t\t\tcodex\t\n",
+		"list-panes -s -t work -F #{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{pane_current_command}\t#{pane_title}":        "%5\tterminal\tshells\t\tzsh\t\n",
+		"list-panes -s -t work-agents -F #{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{pane_current_command}\t#{pane_title}": "%7\tcodex\tagents\t\tcodex\t\n",
 	}}
 	in := strings.NewReader(
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}` + "\n" +
@@ -614,12 +614,12 @@ func TestServeDrainsFirstTurnOfFreshAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agentsFmt := "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}"
+	agentsFmt := "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{pane_current_command}\t#{pane_title}"
 	f := &fakeRunner{out: map[string]string{
 		"list-sessions -F #{session_name}\t#{@duck_panel_of}":      "work\t\nwork-agents\twork\n",
 		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}": "%5\tviewport\n",
-		"list-panes -s -t work -F " + agentsFmt:                    "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
-		"list-panes -s -t work-agents -F " + agentsFmt:             "%7\tchantest\tagents\t\t\tcodex\t\n",
+		"list-panes -s -t work -F " + agentsFmt:                    "%5\tterminal\tshells\t\tzsh\t\n",
+		"list-panes -s -t work-agents -F " + agentsFmt:             "%7\tchantest\tagents\t\tcodex\t\n",
 		"show-options -p -t %7 -v @duck_rollout":                   rollout + "\n",
 		// Spawned "now" — after the sidecar's start stamp.
 		"show-options -p -t %7 -v @duck_spawned_at": fmt.Sprintf("%d\n", time.Now().Unix()),
@@ -674,12 +674,12 @@ func TestServeBaselinesPreexistingAgentAtEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agentsFmt := "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{@duck_panel_role}\t#{pane_current_command}\t#{pane_title}"
+	agentsFmt := "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{pane_current_command}\t#{pane_title}"
 	f := &fakeRunner{out: map[string]string{
 		"list-sessions -F #{session_name}\t#{@duck_panel_of}":      "work\t\nwork-agents\twork\n",
 		"list-panes -s -t work -F #{pane_id}\t#{@duck_panel_role}": "%5\tviewport\n",
-		"list-panes -s -t work -F " + agentsFmt:                    "%5\tterminal\tshells\t\tviewport\tzsh\t\n",
-		"list-panes -s -t work-agents -F " + agentsFmt:             "%7\toldtimer\tagents\t\t\tcodex\t\n",
+		"list-panes -s -t work -F " + agentsFmt:                    "%5\tterminal\tshells\t\tzsh\t\n",
+		"list-panes -s -t work-agents -F " + agentsFmt:             "%7\toldtimer\tagents\t\tcodex\t\n",
 		"show-options -p -t %7 -v @duck_rollout":                   rollout + "\n",
 		"show-options -p -t %7 -v @duck_spawned_at":                fmt.Sprintf("%d\n", time.Now().Add(-time.Hour).Unix()),
 	}}

@@ -10,7 +10,7 @@ import (
 
 var killCmd = &cobra.Command{
 	Use:   "kill <name>",
-	Short: "Kill a remote session, its panel companion, and forget its name",
+	Short: "Kill a remote session and forget its name",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(c *cobra.Command, args []string) error {
 		w, err := build()

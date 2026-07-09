@@ -1,19 +1,30 @@
 // `duck spawn [-n name] [cmd...]` — launch an agent runner (codex, claude, a
-// build, any command; no args = interactive shell) as a window of the current
-// session's hidden companion, and make sure the sidebar (`duck panel`) is up
-// so it appears in the list with the viewport showing it. The runner keeps
-// running when the sidebar is closed and when you detach — it's a tmux window
-// like any other.
+// build, any command; no args = interactive shell) as a pane of the current
+// session: the first agent splits the active window, later ones get their own
+// background windows. The runner keeps running when you detach — it's a tmux
+// pane like any other, and the status bar's window list is the roster.
 package command
 
 import (
 	"fmt"
-	"os"
 
 	agentpkg "github.com/DigiBugCat/duck/internal/agent"
-	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/DigiBugCat/duck/internal/tmuxdb"
 	"github.com/spf13/cobra"
 )
+
+// workspaceContext resolves the enclosing tmux session and pane cwd, erroring
+// with a hint when not inside tmux.
+func workspaceContext(run tmuxdb.Runner) (outer, dir string, err error) {
+	if !tmuxdb.InsideTmux() {
+		return "", "", fmt.Errorf("duck spawn only works inside a tmux session — run `duck` first")
+	}
+	if outer, err = tmuxdb.CurrentSession(run); err != nil {
+		return "", "", err
+	}
+	dir, err = tmuxdb.CurrentPanePath(run)
+	return outer, dir, err
+}
 
 var (
 	spawnName   string
@@ -27,9 +38,10 @@ var (
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn [flags] [--] [cmd args...]",
-	Short: "Launch an agent (codex/claude/anything) into the sidebar",
-	Long: `Run a command as a new agent in the current duck session's sidebar. With no
-command, spawns an interactive shell. Opens the sidebar if it isn't already.
+	Short: "Launch an agent (codex/claude/anything) into this workspace",
+	Long: `Run a command as a new agent pane of the current duck session. With no
+command, spawns an interactive shell. The first agent splits the active
+window; later ones get background windows (see the status bar's window list).
 
 Prints "spawned <name>\t<pane-id>"; the pane id is the stable handle for
 channel send/tail/reply (it never collides, even when agents share a cwd or
@@ -49,14 +61,10 @@ Examples:
   duck spawn -n build -- cargo watch -x test
   duck spawn                                # plain shell agent`,
 	RunE: func(c *cobra.Command, args []string) error {
-		run := panel.ExecRunner
-		outer, dir, err := panelContext(run)
+		run := tmuxdb.ExecRunner
+		outer, dir, err := workspaceContext(run)
 		if err != nil {
 			return err
-		}
-		bin, err := os.Executable()
-		if err != nil {
-			bin = "duck"
 		}
 		// --resume/--fork are shorthands that BUILD the codex argv: resume a codex
 		// session by id (same conversation, same session id — a durable handle) or
@@ -71,7 +79,7 @@ Examples:
 		} else if spawnFork != "" {
 			args = agentpkg.ForkArgs(spawnFork)
 		}
-		res, err := agentpkg.Launch(run, outer, dir, bin, agentpkg.Spec{
+		res, err := agentpkg.Launch(run, outer, dir, agentpkg.Spec{
 			Args: args, Name: spawnName, Tab: spawnTab, Prompt: spawnPrompt,
 			Model: spawnModel, Effort: spawnEffort,
 		})
@@ -91,8 +99,8 @@ Examples:
 }
 
 func init() {
-	spawnCmd.Flags().StringVarP(&spawnName, "name", "n", "", "agent label in the sidebar (default: command name; the printed pane id is the stable handle)")
-	spawnCmd.Flags().StringVar(&spawnTab, "tab", "", "sidebar tab to file this under (default: agents, or shells for a bare spawn; new names create new tabs)")
+	spawnCmd.Flags().StringVarP(&spawnName, "name", "n", "", "agent label (default: command name; the printed pane id is the stable handle)")
+	spawnCmd.Flags().StringVar(&spawnTab, "tab", "", "agent group stamp (default: agents, or shells for a bare spawn)")
 	spawnCmd.Flags().StringVarP(&spawnPrompt, "prompt", "p", "", "first turn to deliver once the agent is ready (one-call spawn+send)")
 	spawnCmd.Flags().StringVar(&spawnResume, "resume", "", "resume a codex session by id — same conversation, same session id (a durable handle)")
 	spawnCmd.Flags().StringVar(&spawnFork, "fork", "", "fork a codex session by id — a new session that inherits the parent's context (cheap fan-out)")

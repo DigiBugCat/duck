@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The atom — parts reference</title>
+<style>
+  :root{
+    --bg:#101418; --panel:#161c22; --line:#2a333d;
+    --ink:#c9d4dc; --dim:#6d7a86;
+    --in:#5cc8d8; --out:#e0a84a; --actor:#9a8cf0; --ghost:#4a5560; --warn:#e06060;
+  }
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Berkeley Mono","JetBrains Mono","SF Mono",Menlo,monospace;font-size:14px;line-height:1.65;}
+  header{display:flex;justify-content:space-between;align-items:baseline;
+    padding:22px 32px 10px;border-bottom:1px solid var(--line);}
+  header h1{font-size:15px;font-weight:500;letter-spacing:.04em;margin:0;}
+  header .v{color:var(--dim);font-size:12px;}
+  .wrap{max-width:860px;margin:0 auto;padding:8px 28px 60px;}
+  nav{font-size:12px;color:var(--dim);padding:14px 0 6px;border-bottom:1px solid var(--line);}
+  nav a{color:var(--dim);text-decoration:none;margin-right:14px;}
+  nav a:hover{color:var(--ink);}
+  section{border-bottom:1px solid var(--line);padding:26px 0 22px;}
+  h2{font-size:14px;font-weight:500;margin:0 0 4px;letter-spacing:.03em;}
+  h2 .tag{font-size:11px;font-weight:400;margin-left:10px;padding:1px 7px;border:1px solid var(--line);border-radius:9px;color:var(--dim);}
+  .def{color:var(--dim);font-size:13px;margin:0 0 12px;}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    padding:12px 16px;font-size:12.5px;line-height:1.7;overflow-x:auto;margin:12px 0;}
+  .k-in{color:var(--in)} .k-out{color:var(--out)} .k-a{color:var(--actor)} .k-w{color:var(--warn)}
+  ul.rules{margin:8px 0 0;padding-left:18px;font-size:13px;color:var(--dim);}
+  ul.rules li{margin:3px 0;}
+  ul.rules b{color:var(--ink);font-weight:500;}
+  .not{font-size:12px;color:var(--ghost);margin-top:10px;}
+  .not b{color:var(--dim);font-weight:500;}
+</style>
+</head>
+<body>
+<header>
+  <h1>the atom &mdash; parts reference</h1>
+  <span class="v">companion to the system diagram &middot; v5 shape &middot; 2026-07-06</span>
+</header>
+<div class="wrap">
+<nav>
+  <a href="#space">space</a><a href="#actor">actor</a><a href="#decider">decider</a>
+  <a href="#subactor">subactor</a><a href="#mailbox">mailbox</a><a href="#outbox">outbox</a>
+  <a href="#msg">msg</a><a href="#effect">effect</a><a href="#subscription">subscription</a>
+  <a href="#journal">journal</a><a href="#pump">pump</a><a href="#dreaming">dreaming</a>
+  <a href="#invariants">invariants</a><a href="#deleted">deleted</a>
+</nav>
+
+<section id="space">
+  <h2>space <span class="tag">scope</span></h2>
+  <p class="def">The universe everything lives in. One sqlite file + a directory of codex session files. Topics are strings scoped to it; addrs are unique within it.</p>
+<pre>space/
+  atom.db          <span class="k-in">actors &middot; subscriptions &middot; mailbox &middot; journal</span>
+  sessions/        <span class="k-a">one rollout per decider and per subactor exec</span></pre>
+  <ul class="rules">
+    <li><b>Everything is a row or a file.</b> No process exists while the space is quiet.</li>
+    <li>duck is not in the space &mdash; attaching = <span class="k-in">Sub(out:&lt;addr&gt;)</span> + render. A window, not a part.</li>
+    <li>Open: cross-space bridging. Candidate answer: a bridge is just an actor subscribed in two spaces.</li>
+  </ul>
+</section>
+
+<section id="actor">
+  <h2>actor <span class="tag">the entity</span></h2>
+  <p class="def">The only entity type. A persistent identity that loops through time. At rest it is rows; a revolution is the loop existing for one step.</p>
+<pre>actors(addr PRIMARY KEY, decider_ref, state_json, session_id)
+
+<span class="k-a">// life = msgs.foldLeft(actor)(deliver)</span>
+<span class="k-a">// the actor is the machine; the loop is its trace</span></pre>
+  <ul class="rules">
+    <li><b>Entity vs execution.</b> Between revolutions the actor is frozen rows &mdash; mail accumulates, subactors run, the self doesn't move.</li>
+    <li><b>Two topics define its surface:</b> <span class="k-in">in:&lt;addr&gt;</span> (mailbox) and <span class="k-out">out:&lt;addr&gt;</span> (outbox). Nothing else is addressable.</li>
+    <li><b>state_json is guard-grade state</b> (thresholds, handles, standing config) &mdash; small and structured. Deliberative memory lives in the session rollout.</li>
+    <li>Immortal by default; ends only by emitting <span class="k-out">Die</span>.</li>
+  </ul>
+  <p class="not"><b>not:</b> a process, a thread, a cron job, a workflow run. All of those are views of this.</p>
+</section>
+
+<section id="decider">
+  <h2>decider <span class="tag">the identity</span></h2>
+  <p class="def">The judge between mailbox and outbox. The only component the addr names; the only place course changes. Everything else is buffer, limb, or plumbing.</p>
+<pre>decider :: (State, Batch) -> (State, List[Effect])
+
+decider_ref resolves to one of:
+  <span class="k-a">llm</span>      claude/codex resume on the actor's session   <span class="k-in">// a manager</span>
+  <span class="k-a">coded</span>    deterministic script                         <span class="k-in">// a workflow</span>
+  <span class="k-a">trivial</span>  on tick -> spawn X                           <span class="k-in">// a routine</span></pre>
+  <ul class="rules">
+    <li><b>One revolution = one application.</b> Batch in, effects out, state persisted, sleep. If the decider is an LLM this is realized as one <b>codex exec resume</b> turn; the definition doesn't require a model.</li>
+    <li><b>Serialization point.</b> All state changes flow through revolutions &mdash; no races between steers and results. Revolution frequency = the actor's reaction time.</li>
+    <li><b>Digests only.</b> The decider ingests batch summaries and subactor results; heavy deliberation burns in subactor contexts. Its memory grows at decision-rate, not thought-rate.</li>
+    <li><b>Replies are decisions.</b> No stack unwinds across actors. Each revolution freshly chooses what to publish and where; Msg.origin is information, not obligation.</li>
+  </ul>
+  <p class="not"><b>not:</b> a router (subs table routes), a scheduler (clock is a topic), an inbox filter (deleted with the guard).</p>
+</section>
+
+<section id="subactor">
+  <h2>subactor <span class="tag">not a second type</span></h2>
+  <p class="def">An actor spawned for a task: decider = one exec, lifespan = the task, subscribers = whoever cared at spawn time. Asking a question is spawning one.</p>
+<pre>ask(question):
+  <span class="k-out">Spawn</span>(addr: fresh, decider_ref: exec(question))
+  <span class="k-out">Subscribe</span>(topic: out:&lt;that addr&gt;)        <span class="k-in">// scope: its lifetime</span>
+<span class="k-in">// its addr IS the correlation id &mdash; one question, one addr, no ambiguity</span></pre>
+  <ul class="rules">
+    <li><b>Steer mid-flight:</b> <span class="k-out">Publish(in:&lt;addr&gt;)</span> &rarr; its next revolution kills + resumes the codex session with the steer. Lossless: sessions survive their process.</li>
+    <li><b>Watchable by anyone.</b> Third parties (duck, logger, sibling) subscribe to the same out-topic without the parent mediating.</li>
+    <li>Terminates by publishing its result, then <span class="k-out">Die</span> (see invariant 1).</li>
+  </ul>
+  <p class="not"><b>not:</b> an address-less "action"/future &mdash; that split existed for thread economics; the pump is a sqlite join and per-task addrs are what make duck-attach work.</p>
+</section>
+
+<section id="mailbox">
+  <h2>mailbox <span class="tag k-in">reality in</span></h2>
+  <p class="def">The topic <span class="k-in">in:&lt;addr&gt;</span>, materialized as retained rows. The only way reality enters an actor.</p>
+<pre>mailbox(addr, seq, origin, body, delivered_at NULL)</pre>
+  <ul class="rules">
+    <li><b>Retain &amp; batch.</b> Nothing is dropped; sleeping through messages converts them into one dense revolution. Seven boring reports arrive as one context.</li>
+    <li><b>Survives sleep, restarts, reboots.</b> Rows, not process memory &mdash; the property Claude Code channels lacks (events drop when the session closes).</li>
+    <li>Ordering within an addr is by seq; cross-actor ordering is not promised.</li>
+  </ul>
+</section>
+
+<section id="outbox">
+  <h2>outbox <span class="tag k-out">reality out</span></h2>
+  <p class="def">The topic <span class="k-out">out:&lt;addr&gt;</span>. The actor never routes &mdash; it speaks here; the subscription table does all delivery.</p>
+  <ul class="rules">
+    <li><b>Utterance, not addressing.</b> Parent, asker, window, logger all hear the same speech by subscribing. The decider carries zero routing logic.</li>
+    <li>A directed message still exists: <span class="k-out">Publish(in:&lt;addr&gt;, body)</span> &mdash; an addr is a topic with one subscriber by convention.</li>
+    <li><b>Keep topics dumb.</b> Strings only. No filtered topics, no transforms, no hierarchies &mdash; that's the guard sneaking back in through the plumbing. All intelligence stays in deciders.</li>
+  </ul>
+</section>
+
+<section id="msg">
+  <h2>msg <span class="tag k-in">envelope</span></h2>
+  <p class="def">The unit of stimulus. Reality enters only as one of these.</p>
+<pre>Msg { origin: addr | clock | world | human,  body: json }</pre>
+  <ul class="rules">
+    <li><b>The envelope is the routing.</b> Reply addresses travel in the message; there is no registry of conversations.</li>
+    <li><b>corr deleted:</b> the asking pattern (spawn a subactor per question) makes the subactor's addr the correlation id.</li>
+    <li>To an LLM decider a batch renders as group chat: <b>[from: mgr-1] "..."</b> &mdash; routing intelligence lives in context, not infrastructure.</li>
+  </ul>
+</section>
+
+<section id="effect">
+  <h2>effect <span class="tag k-out">actions as data</span></h2>
+  <p class="def">The only way reality exits. An ADT, journaled before it is real &mdash; every action is inspectable, replayable data first.</p>
+<pre>Effect = <span class="k-out">Publish</span>(topic, body)          <span class="k-in">// speak &mdash; incl. directed via in:&lt;addr&gt;</span>
+       | <span class="k-out">Spawn</span>(addr, decider_ref, init)
+       | <span class="k-out">Subscribe</span>(topic) | Unsubscribe(topic)
+       | <span class="k-out">Die</span>(reason)                  <span class="k-in">// fans out on death:&lt;addr&gt; topic</span></pre>
+  <ul class="rules">
+    <li><b>Send deleted</b> &mdash; subsumed by Publish. <b>World</b> is arguably Publish to a topic an effector daemon subscribes to; unification deferred.</li>
+    <li>Purity at the boundary: the decider may be nondeterministic inside, but its signature forces every reality-touch through this list.</li>
+  </ul>
+</section>
+
+<section id="subscription">
+  <h2>subscription <span class="tag k-in">who hears whom</span></h2>
+  <p class="def">A row declaring interest. Written only by an actor's own Subscribe effect &mdash; the table is a materialization of the actors' declared interests, never edited from outside.</p>
+<pre>subscriptions(addr, topic)   <span class="k-in">-- no TTL, no guard</span>
+
+standing   parent &rarr; out:&lt;child&gt;          <span class="k-in">// the org tree</span>
+per-ask    asker &rarr; out:&lt;subactor&gt;        <span class="k-in">// scope = its lifetime</span>
+window     duck &rarr; out:&lt;addr&gt;             <span class="k-in">// attach</span>
+death      anyone &rarr; death:&lt;addr&gt;         <span class="k-in">// supervision, links dissolved</span>
+clock      self &rarr; clock:&lt;cron&gt;           <span class="k-in">// a routine is this one row</span></pre>
+  <ul class="rules">
+    <li><b>Lifecycle-scoped:</b> subs pointing at a dying actor's topics are GC'd by its Die. No expires column.</li>
+    <li><b>Guard deleted</b> at this scale: every delivered Msg wakes the decider. Economics moved to pump cadence (global debounce) + publisher-side filtering on the few noisy feeds.</li>
+  </ul>
+</section>
+
+<section id="journal">
+  <h2>journal <span class="tag k-out">the record</span></h2>
+  <p class="def">Append-only log of every Effect a revolution emitted, written before interpretation. The system's black box and its outbox-of-record.</p>
+<pre>journal(seq, addr, effect_json, interpreted_at NULL)</pre>
+  <ul class="rules">
+    <li><b>Data before real.</b> Crash between write and interpret &rarr; replay is safe; nothing happens twice ambiguously (interpret is idempotent per seq).</li>
+    <li>The full audit trail of the org is a table scan. The human can always read what every actor did and why it thought so (session id joins to the rollout).</li>
+  </ul>
+</section>
+
+<section id="pump">
+  <h2>pump <span class="tag">the one non-row</span></h2>
+  <p class="def">A systemd-tick sweep over the tables. The entire runtime; the only thing in the space that is code running rather than data resting.</p>
+<pre>each tick:
+  <span class="k-in">route</span>      publishers' output &times; subscriptions &rarr; mailbox rows
+  <span class="k-in">deliver</span>    for each addr with undelivered rows: run one revolution
+  <span class="k-out">interpret</span>  journal rows &rarr; table mutations (Spawn&rarr;actors, Sub&rarr;subs,
+             Publish&rarr;route, Die&rarr;GC + death:&lt;addr&gt;)</pre>
+  <ul class="rules">
+    <li><b>Cadence is the global debounce.</b> A 60s tick batches everything at minute granularity, uniformly, for free.</li>
+    <li><b>Dumb by construction.</b> Joins and inserts. If the pump needs a policy decision, the design has leaked judgment out of a decider.</li>
+    <li>No daemon: dormant space costs zero. The evict-sweep pattern duck already uses.</li>
+  </ul>
+</section>
+
+<section id="dreaming">
+  <h2>dreaming <span class="tag k-a">the inward revolution</span></h2>
+  <p class="def">A revolution with no external stimulus: a slow clock subscription fires, the batch is empty, the decider turns inward.</p>
+<pre><span class="k-in">Sub</span>(clock:daily-3am)  +  empty batch  &rarr;  consolidate:
+  compact rollout &rarr; fresh session with summary
+  distill lessons &rarr; state_json
+  prune dead handles, revise own subscriptions</pre>
+  <ul class="rules">
+    <li><b>This is the compaction mechanism.</b> Immortal loops accumulate unbounded context; dreaming is the forgetting that makes immortality affordable. Classic actors never needed this &mdash; yours remember everything they can't afford to keep.</li>
+    <li><b>The self modifying the self.</b> The most powerful and most dangerous write in the system: an actor that dreams badly can subscribe itself into a coma or into hypervigilance.</li>
+    <li>Open: what a dream is <i>allowed</i> to rewrite &mdash; the one design question with real teeth left.</li>
+  </ul>
+</section>
+
+<section id="invariants">
+  <h2>invariants <span class="tag k-w">named rules</span></h2>
+  <ul class="rules">
+    <li><b class="k-w">1 &middot; deliver-before-Die.</b> The pump flushes ALL of an actor's pending publishes before interpreting its Die &mdash; else final answers evaporate with the lifecycle-GC of subscriptions.</li>
+    <li><b class="k-w">2 &middot; topics stay dumb.</b> Strings, rows, joins. All judgment lives in deciders; any smartness in routing is the guard reincarnating.</li>
+    <li><b class="k-w">3 &middot; one writer per table role.</b> subs written only by Subscribe effects; mailbox only by route; actors only by interpret. The human edits via duck &rarr; messages, not via UPDATE.</li>
+  </ul>
+</section>
+
+<section id="deleted">
+  <h2>deleted <span class="tag">graveyard, with reasons</span></h2>
+  <ul class="rules">
+    <li><b>guard</b> &mdash; state-dependent wake predicate. Right for 10k actors on firehoses; wrong at dozens-of-actors scale. Economics moved to pump cadence + publisher filtering. Reversible: nullable column on subs.</li>
+    <li><b>Send</b> &mdash; subsumed by Publish; an addr is a topic with one subscriber.</li>
+    <li><b>TTL / expires</b> &mdash; subscription scope became the spawnee's lifetime.</li>
+    <li><b>corr</b> &mdash; the per-question subactor's addr correlates.</li>
+    <li><b>action/future as a second type</b> &mdash; a task is a small actor; watchability wins.</li>
+    <li><b>links</b> &mdash; dissolved into Sub(death:&lt;addr&gt;).</li>
+    <li><b>route / clock-sweep as parts</b> &mdash; they were always just the pump's join and a publisher.</li>
+  </ul>
+  <p class="not">The test that produced this list: if a candidate part can't earn a line without duplicating an existing one, it's an existing part wearing a costume.</p>
+</section>
+</div>
+</body>
+</html>

@@ -3,7 +3,7 @@
 // control flow (loops, pipelines, barriers) is plain code, and each agent()
 // call inside it runs ONE disposable headless executor (`codex exec`,
 // the codex gpt default). Workers are processes, not panes — they never
-// enter the sidebar lot, the ledger, or the org chart. The RUN is the
+// become workspace panes, the ledger, or the org chart. The RUN is the
 // addressable thing: it owns a run dir with the script, a journal (resume),
 // a status file (roster/CLI visibility), and the result.
 //

@@ -22,7 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/DigiBugCat/duck/internal/panel"
+	"github.com/DigiBugCat/duck/internal/tmuxdb"
 	"github.com/DigiBugCat/duck/internal/workflow"
 )
 
@@ -48,11 +48,11 @@ var workflowsCmd = &cobra.Command{
 
 // workflowWorkspace resolves the enclosing workspace, "" when outside tmux —
 // a bare-shell run is legal, it just gets no completion digest.
-func workflowWorkspace(run panel.Runner) string {
-	if !panel.InsideTmux() {
+func workflowWorkspace(run tmuxdb.Runner) string {
+	if !tmuxdb.InsideTmux() {
 		return ""
 	}
-	ws, err := panel.CurrentSession(run)
+	ws, err := tmuxdb.CurrentSession(run)
 	if err != nil {
 		return ""
 	}
@@ -62,7 +62,7 @@ func workflowWorkspace(run panel.Runner) string {
 func listWorkflows(c *cobra.Command) error {
 	ws := ""
 	if !workflowsAll {
-		ws = workflowWorkspace(panel.ExecRunner)
+		ws = workflowWorkspace(tmuxdb.ExecRunner)
 	}
 	runs, err := workflow.List(ws)
 	if err != nil {
@@ -120,7 +120,7 @@ var workflowsRunCmd = &cobra.Command{
 		cwd, _ := os.Getwd()
 		o := workflow.Opts{
 			Name:        wfRunName,
-			Workspace:   workflowWorkspace(panel.ExecRunner),
+			Workspace:   workflowWorkspace(tmuxdb.ExecRunner),
 			Dir:         cwd,
 			Budget:      wfRunBudget,
 			Concurrency: wfRunConcurrency,
