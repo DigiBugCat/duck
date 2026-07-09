@@ -408,6 +408,18 @@ func (c *Client) EnsureTerminfo(term string) error {
 	case "", "xterm", "xterm-256color", "screen", "screen-256color", "tmux-256color", "vt100", "ansi", "dumb":
 		return nil
 	}
+	// Local success stamp: once a hub has learned this TERM, a stamp file marks
+	// it so subsequent runs skip the remote probe entirely — the probe is a full
+	// ssh roundtrip that non-standard TERMs (xterm-ghostty, xterm-kitty) would
+	// otherwise pay on EVERY duck invocation. Keyed per hub+TERM so switching
+	// hubs re-teaches. An unwritable/unknown HOME just disables the stamp and we
+	// probe as before.
+	stamp := terminfoStamp(c.Addr, term)
+	if stamp != "" {
+		if _, err := os.Stat(stamp); err == nil {
+			return nil
+		}
+	}
 	src, err := exec.Command("infocmp", "-x", term).Output()
 	if err != nil {
 		// Local db lacks the entry — nothing to push; the hub fallback covers it.
@@ -417,8 +429,39 @@ func (c *Client) EnsureTerminfo(term string) error {
 	// compile when the entry is genuinely absent. LoginShellWrap puts tic on the
 	// hub's Homebrew PATH (same as tmux).
 	remote := "infocmp " + paths.Quote(term) + " >/dev/null 2>&1 || tic -x -"
-	_, err = c.RunInput(LoginShellWrap(remote), bytes.NewReader(src))
-	return err
+	if _, err = c.RunInput(LoginShellWrap(remote), bytes.NewReader(src)); err != nil {
+		return err
+	}
+	// The hub knows the entry now: drop the stamp (best-effort — a read-only
+	// HOME just means we probe again next run).
+	if stamp != "" {
+		_ = os.MkdirAll(filepath.Dir(stamp), 0o700)
+		_ = os.WriteFile(stamp, nil, 0o644)
+	}
+	return nil
+}
+
+// terminfoStamp returns the local stamp-file path recording that hub addr has
+// already learned TERM term (~/.duck/terminfo-<hub>-<TERM>), or "" when HOME
+// cannot be resolved (the caller then just probes). Both components are
+// filename-sanitized (anything outside [A-Za-z0-9._-] becomes '-') since addr
+// is free-form user@host.
+func terminfoStamp(addr, term string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	clean := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+				return r
+			default:
+				return '-'
+			}
+		}, s)
+	}
+	return filepath.Join(home, ".duck", "terminfo-"+clean(addr)+"-"+clean(term))
 }
 
 // AttachArgv builds the argv for an interactive `tmux attach-session` over the

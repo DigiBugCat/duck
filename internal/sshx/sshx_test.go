@@ -337,3 +337,40 @@ func TestReadFileCats(t *testing.T) {
 		t.Errorf("ReadFile cmd = %q, want %q", last, want)
 	}
 }
+
+// TestEnsureTerminfoSkipsRemoteProbeWhenStamped pins the latency fix: once a
+// stamp file records that this hub already learned this TERM, EnsureTerminfo
+// returns before the local infocmp / remote probe (which is a full ssh
+// roundtrip on EVERY duck invocation for non-standard TERMs).
+func TestEnsureTerminfoSkipsRemoteProbeWhenStamped(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stamp := terminfoStamp("user@hub", "xterm-ghostty")
+	if stamp == "" {
+		t.Fatal("terminfoStamp returned empty with a valid HOME")
+	}
+	if err := os.MkdirAll(filepath.Dir(stamp), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stamp, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A client pointed at a bogus hub: any actual probe would fail loudly, so a
+	// nil return proves the stamp short-circuited before ssh/infocmp ran.
+	c := New("user@hub")
+	if err := c.EnsureTerminfo("xterm-ghostty"); err != nil {
+		t.Fatalf("stamped TERM must skip the probe and return nil, got %v", err)
+	}
+}
+
+// TestTerminfoStampSanitizesComponents: addr is free-form user@host, so both
+// components are filename-sanitized into [A-Za-z0-9._-].
+func TestTerminfoStampSanitizesComponents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got := terminfoStamp("me@my/hub:22", "weird term")
+	want := filepath.Join(home, ".duck", "terminfo-me-my-hub-22-weird-term")
+	if got != want {
+		t.Fatalf("terminfoStamp = %q, want %q", got, want)
+	}
+}

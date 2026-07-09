@@ -92,3 +92,16 @@ func TestEnsureChannelRegistrationIsAddOnlyAndBestEffort(t *testing.T) {
 		t.Error("duck-agents not added alongside existing server")
 	}
 }
+
+// TestManagerLaunchCmdIsOneBatchedRoundtrip pins the latency batching: the
+// manager launch (send-keys) and the @duck_manager pane stamp travel as ONE
+// `&&`-chained remote command, with the pane id resolved remotely via
+// $(tmux display-message …) instead of a separate roundtrip.
+func TestManagerLaunchCmdIsOneBatchedRoundtrip(t *testing.T) {
+	got := managerLaunchCmd("foo", "claude --duck")
+	want := `tmux send-keys -t 'foo' 'claude --duck' Enter` +
+		` && tmux set-option -t 'foo' @duck_manager "$(tmux display-message -p -t 'foo' '#{pane_id}')"`
+	if got != want {
+		t.Fatalf("managerLaunchCmd =\n  %q\nwant\n  %q", got, want)
+	}
+}

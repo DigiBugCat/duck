@@ -163,6 +163,8 @@ func HandleNotify(run tmuxdb.Runner, paneID, payload string) error {
 	if p.Type != "agent-turn-complete" || p.ThreadID == "" {
 		return nil
 	}
+	// Status-bar glyphs: the turn is over, so the agent is idle again.
+	markState(run, paneID, "idle", "●")
 	if path := rolloutByThreadID(SessionsDir(), p.ThreadID); path != "" {
 		// Unconditional pin: the process itself says so — this also heals a
 		// wrong pairing the correlation fallback might have guessed earlier.
@@ -223,8 +225,31 @@ func HandleHook(run tmuxdb.Runner, paneID, payload string) error {
 		if p.TurnID != "" {
 			_, _ = run("set-option", "-p", "-t", paneID, tmuxdb.PromptOption, p.TurnID)
 		}
+		// Status-bar glyphs: a submitted prompt means the agent is now busy.
+		markState(run, paneID, "busy", "◐")
 	}
 	return nil
+}
+
+// markState stamps @duck_state on the pane and, when the agent OWNS its
+// window (the background-window layout — window_panes==1), renames that
+// window to "<glyph> <name>" so the status bar's window list carries the
+// busy/idle state. A split sharing the manager's window keeps the window's
+// own name. Best-effort throughout: it runs inside codex's blocking hooks,
+// so it must be cheap and can never fail them.
+func markState(run tmuxdb.Runner, paneID, state, glyph string) {
+	_, _ = run("set-option", "-p", "-t", paneID, tmuxdb.StateOption, state)
+	if out, err := run("display-message", "-p", "-t", paneID, "#{window_panes}"); err != nil || strings.TrimSpace(out) != "1" {
+		return
+	}
+	name, err := run("show-options", "-p", "-t", paneID, "-v", tmuxdb.NameOption)
+	if err != nil {
+		return
+	}
+	if name = strings.TrimSpace(name); name == "" {
+		return
+	}
+	_, _ = run("rename-window", "-t", paneID, glyph+" "+name)
 }
 
 // looksLikeThreadID reports whether ref has the 8-4-4-4-12 hyphenated UUID shape
@@ -785,6 +810,44 @@ func statusFromFile(rollout string) string {
 		}
 	}
 	return status
+}
+
+// LastMessage returns the text of the newest signal event in ref's rollout —
+// the "last activity" line the fleet popup shows per agent. It resolves the
+// rollout if the caller hasn't, and reads at most the statusFromFile window
+// from the tail, so a fleet open stays cheap on long sessions. "" when the
+// agent has no rollout (shells) or no message-bearing events yet.
+func LastMessage(run tmuxdb.Runner, ref *AgentRef) string {
+	if ref.Rollout == "" {
+		if err := Resolve(run, ref); err != nil || ref.Rollout == "" {
+			return ""
+		}
+	}
+	f, err := os.Open(ref.Rollout)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	const window = 256 << 10
+	start := int64(0)
+	if info, err := f.Stat(); err == nil && info.Size() > window {
+		start = info.Size() - window
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return ""
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 1<<20), 1<<20)
+	if start > 0 {
+		sc.Scan() // drop the partial line the seek landed in
+	}
+	last := ""
+	for sc.Scan() {
+		if ev, ok := ParseEvent(sc.Bytes()); ok && ev.Message != "" {
+			last = ev.Message
+		}
+	}
+	return last
 }
 
 // Resolver memoizes window→rollout pairing and status scans for the two

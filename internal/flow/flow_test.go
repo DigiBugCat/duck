@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/DigiBugCat/duck/internal/claude"
@@ -116,14 +117,19 @@ func (f *fakePrompter) AskConsolidate(string, string) (bool, error) {
 }
 
 // fakeRunner backs the session.Manager + names.Store with canned tmux/cat
-// output and records every command string.
+// output and records every command string. Mutex-guarded because EnsureSession
+// now runs its best-effort bookkeeping (names/ledger writes) on a background
+// goroutine, so the fake can see calls from two goroutines.
 type fakeRunner struct {
+	mu        sync.Mutex
 	cmds      []string
 	out       map[string]string
 	lastInput string // the most recent RunInput body (e.g. the JSON a names Save streamed)
 }
 
 func (f *fakeRunner) Run(cmd string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.cmds = append(f.cmds, cmd)
 	if f.out != nil {
 		if v, ok := f.out[cmd]; ok {
@@ -133,6 +139,8 @@ func (f *fakeRunner) Run(cmd string) (string, error) {
 	return "", nil
 }
 func (f *fakeRunner) RunInput(cmd string, stdin io.Reader) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.cmds = append(f.cmds, cmd)
 	if stdin != nil {
 		if b, err := io.ReadAll(stdin); err == nil {
@@ -335,19 +343,21 @@ func TestEnsureSessionForceNewMintsAndStampsDuckDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureSession: %v", err)
 	}
+	f.WaitBackground() // join the async names/ledger write before reading r.cmds
 	if !created {
 		t.Fatalf("forceNew on an empty hub must report created=true")
 	}
 	if id != "foo" {
 		t.Fatalf("first session id should be the slug 'foo', got %q", id)
 	}
-	// It must have issued a tmux new-session with -c and stamped @duck_dir.
+	// It must have issued a tmux new-session with -c and stamped @duck_dir —
+	// batched into ONE `&&`-chained command (latency: one ssh roundtrip).
 	var sawNew, sawOpt bool
 	for _, c := range r.cmds {
-		if c == `tmux new-session -d -s 'foo' -c "$HOME"/'dev/foo'` {
+		if strings.Contains(c, `tmux new-session -d -s 'foo' -c "$HOME"/'dev/foo'`) {
 			sawNew = true
 		}
-		if c == `tmux set-option -t 'foo' '@duck_dir' '~/dev/foo'` {
+		if strings.Contains(c, `tmux set-option -t 'foo' '@duck_dir' '~/dev/foo'`) {
 			sawOpt = true
 		}
 	}
@@ -369,6 +379,7 @@ func TestEnsureSessionForceNewIsNPerDirWithSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureSession: %v", err)
 	}
+	f.WaitBackground()
 	if !created {
 		t.Fatalf("forceNew minting foo-2 must report created=true")
 	}
@@ -393,8 +404,9 @@ func TestEnsureSessionReuseShortCircuits(t *testing.T) {
 	if id != "foo" {
 		t.Fatalf("reuse should return the existing 'foo', got %q", id)
 	}
+	f.WaitBackground()
 	for _, c := range r.cmds {
-		if c == `tmux new-session -d -s 'foo' -c "$HOME"/'dev/foo'` {
+		if strings.Contains(c, "tmux new-session") {
 			t.Fatalf("reuse must NOT create a new session; cmds=%v", r.cmds)
 		}
 	}

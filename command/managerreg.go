@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/DigiBugCat/duck/internal/claude"
 	"github.com/DigiBugCat/duck/internal/paths"
@@ -67,19 +66,27 @@ func claudeConfigHome() string {
 	return home
 }
 
-// stampManagerLaunched records the freshly launched manager pane in tmux and
-// marks the workspace record channel-aware whenever duck launched a manager WITH
-// channel flags (i.e. not opted out via DUCK_NO_CHANNELS / explicit --channels).
-// Best-effort: neither a tmux option nor ledger write may block the launch. The
-// ledger write uses the same ssh seam as the names store (records live in the
-// hub's Claude projects corpus), loading the existing record first so a
-// re-stamp preserves Parent/Title/Persistent.
+// managerLaunchCmd builds the ONE batched remote command that launches the
+// workspace manager: send-keys types the launch line into session name's
+// active pane and presses Enter, then @duck_manager is stamped with that
+// pane's id — resolved REMOTELY via $(tmux display-message …), so the whole
+// launch is a single ssh roundtrip instead of three (send-keys, display,
+// set-option each being a full roundtrip on the laptop path).
+func managerLaunchCmd(name, line string) string {
+	q := paths.Quote(name)
+	return fmt.Sprintf(
+		"tmux send-keys -t %s %s Enter && tmux set-option -t %s @duck_manager \"$(tmux display-message -p -t %s '#{pane_id}')\"",
+		q, paths.Quote(line), q, q)
+}
+
+// stampManagerLaunched marks the workspace record channel-aware whenever duck
+// launched a manager WITH channel flags (i.e. not opted out via
+// DUCK_NO_CHANNELS / explicit --channels). Best-effort: the ledger write may
+// never block the launch. It uses the same ssh seam as the names store
+// (records live in the hub's Claude projects corpus), loading the existing
+// record first so a re-stamp preserves Parent/Title/Persistent. The tmux-side
+// @duck_manager stamp rides the batched launch command (managerLaunchCmd).
 func stampManagerLaunched(w *wiring, tildeDir, name string, extraArgs []string) {
-	if out, err := w.client.Run(fmt.Sprintf("tmux display-message -p -t %s '#{pane_id}'", paths.Quote(name))); err == nil {
-		if pane := strings.TrimSpace(out); pane != "" {
-			_, _ = w.client.Run(fmt.Sprintf("tmux set-option -t %s @duck_manager %s", paths.Quote(name), paths.Quote(pane)))
-		}
-	}
 	if channelsWired(extraArgs) {
 		return // manager launched without channel flags — nothing to stamp.
 	}

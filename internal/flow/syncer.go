@@ -7,6 +7,7 @@ package flow
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DigiBugCat/duck/internal/actions"
@@ -40,6 +41,32 @@ type realSyncer struct {
 	flush       func(name string) error
 	poll        time.Duration
 	failsafe    time.Duration
+	// ledger memoizes the hub-owned session ledger for this invocation: one
+	// bare `duck` consults it 2–3 times (IsSynced for the target dir, again for
+	// the Claude co-sync, sometimes decideSync) and each fetch is an ssh
+	// roundtrip. A POINTER so the cache is shared across the value-receiver
+	// copies this type passes around; nil (a directly-constructed test syncer)
+	// disables caching. Invalidated after any write that changes the ledger.
+	ledger *ledgerCache
+}
+
+// ledgerCache is the shared memo behind realSyncer.hubLedger.
+type ledgerCache struct {
+	mu       sync.Mutex
+	valid    bool
+	sessions []mutagen.Session
+	err      error
+}
+
+// invalidate drops the memo so the next hubLedger refetches — called after a
+// session add/terminate mutates the hub's ledger mid-invocation.
+func (c *ledgerCache) invalidate() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.valid = false
+	c.mu.Unlock()
 }
 
 // hubOwned reports whether this syncer runs in hub-owned mode.
@@ -61,6 +88,7 @@ func newRealSyncer(addr, machineAddr string, progress Progress) realSyncer {
 		addr:        addr,
 		machineAddr: machineAddr,
 		progress:    progress,
+		ledger:      &ledgerCache{},
 		monitor:     mutagen.Monitor,
 		flush:       mutagen.Flush,
 		poll:        500 * time.Millisecond,
@@ -89,9 +117,21 @@ func newRealSyncer(addr, machineAddr string, progress Progress) realSyncer {
 
 // hubLedger lists the hub-owned sessions that belong to THIS machine in
 // laptop perspective (see actions.HubOwnedSessions, the shared fetcher behind
-// this and the `duck sync` commands).
+// this and the `duck sync` commands), memoized per invocation via s.ledger —
+// the fetch is an ssh roundtrip and one bare `duck` asks 2–3 times. A cached
+// error is returned too: a transport failure aborts the flow anyway, so a
+// retry inside the same invocation buys nothing.
 func (s realSyncer) hubLedger() ([]mutagen.Session, error) {
-	return actions.HubOwnedSessions(s.addr, s.machineAddr)
+	if s.ledger == nil {
+		return actions.HubOwnedSessions(s.addr, s.machineAddr)
+	}
+	s.ledger.mu.Lock()
+	defer s.ledger.mu.Unlock()
+	if !s.ledger.valid {
+		s.ledger.sessions, s.ledger.err = actions.HubOwnedSessions(s.addr, s.machineAddr)
+		s.ledger.valid = true
+	}
+	return s.ledger.sessions, s.ledger.err
 }
 
 // IsSynced reports whether tildeDir is already covered by a running mutagen
@@ -228,6 +268,7 @@ func (s realSyncer) listOwned() ([]mutagen.Session, error) {
 // the terminate runs there.
 func (s realSyncer) Terminate(sessionName string) error {
 	if s.hubOwned() {
+		s.ledger.invalidate() // the ledger is about to change on the hub
 		_, err := hub.New(s.addr).Run("duck hubsync terminate --name " + paths.Quote(sessionName))
 		return err
 	}
@@ -324,6 +365,7 @@ func (s realSyncer) AddAndWait(tildeDir string, force bool) (err error) {
 	}
 	var sessionName string
 	if s.hubOwned() {
+		s.ledger.invalidate() // adding a session mutates the hub's ledger
 		_, sessionName, err = actions.AddPathHubOwned(s.addr, s.machineAddr, defaultBundle, tildeDir, force)
 	} else {
 		_, sessionName, err = actions.AddPath(s.addr, defaultBundle, tildeDir, force)

@@ -184,18 +184,21 @@ func parseList(out string) []Sess {
 }
 
 // New creates a detached tmux session named id whose working directory is the
-// hub path of dir (`tmux new-session -d -s <id> -c <hub-path>`), then stamps
-// @duck_dir with the RAW tilde-form dir so the session maps back to it. dir is
-// tilde-form; the -c target is the hub-real path ($HOME/...) since tmux's -c
-// does not expand a leading ~.
+// hub path of dir (`tmux new-session -d -s <id> -c <hub-path>`), stamps
+// @duck_dir with the RAW tilde-form dir so the session maps back to it, and
+// turns on title passthrough — all as ONE `&&`-chained remote command, because
+// on a laptop each Run is an ssh roundtrip and session creation sits on the
+// bare-`duck` critical path (4 roundtrips → 1). dir is tilde-form; the -c
+// target is the hub-real path ($HOME/...) since tmux's -c does not expand a
+// leading ~.
 func (m *Manager) New(id, dir string) error {
-	if _, err := m.run.Run(fmt.Sprintf("tmux new-session -d -s %s -c %s", paths.Quote(id), hubPath(dir))); err != nil {
-		return err
-	}
-	if err := m.SetOption(id, dirOption, dir); err != nil {
-		return err
-	}
-	return m.enableTitlePassthrough(id)
+	cmd := strings.Join([]string{
+		fmt.Sprintf("tmux new-session -d -s %s -c %s", paths.Quote(id), hubPath(dir)),
+		fmt.Sprintf("tmux set-option -t %s %s %s", paths.Quote(id), paths.Quote(dirOption), paths.Quote(dir)),
+		titlePassthroughCmd(id),
+	}, " && ")
+	_, err := m.run.Run(cmd)
+	return err
 }
 
 // titlesString is the outer-terminal tab title tmux renders while a duck
@@ -205,15 +208,21 @@ func (m *Manager) New(id, dir string) error {
 // hostname — see names.CleanTitle, which makes the same distinction).
 const titlesString = "#{?#{==:#{pane_title},#{host}},#{session_name},#{pane_title}}"
 
-// enableTitlePassthrough turns on tmux's title forwarding for session id so
-// escape-coded titles written INSIDE the session (Claude Code's live task
-// summary) reach the outer terminal's tab. Without set-titles, tmux captures
-// them into #{pane_title} and the tab keeps whatever was last written locally.
+// titlePassthroughCmd builds the tmux command pair (as one `&&`-chained
+// string) that turns on title forwarding for session id so escape-coded
+// titles written INSIDE the session (Claude Code's live task summary) reach
+// the outer terminal's tab. Without set-titles, tmux captures them into
+// #{pane_title} and the tab keeps whatever was last written locally. A single
+// string so both New and the attach-time heal spend one Run (= one ssh
+// roundtrip) on it.
+func titlePassthroughCmd(id string) string {
+	return fmt.Sprintf("tmux set-option -t %s set-titles on && tmux set-option -t %s set-titles-string %s",
+		paths.Quote(id), paths.Quote(id), paths.Quote(titlesString))
+}
+
+// enableTitlePassthrough runs titlePassthroughCmd for id (one Run).
 func (m *Manager) enableTitlePassthrough(id string) error {
-	if _, err := m.run.Run(fmt.Sprintf("tmux set-option -t %s set-titles on", paths.Quote(id))); err != nil {
-		return err
-	}
-	_, err := m.run.Run(fmt.Sprintf("tmux set-option -t %s set-titles-string %s", paths.Quote(id), paths.Quote(titlesString)))
+	_, err := m.run.Run(titlePassthroughCmd(id))
 	return err
 }
 

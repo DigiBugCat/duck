@@ -2,38 +2,49 @@
 
 Agent-facing notes for working on duck. `README.md` is the human overview;
 `../CLAUDE.md` (aviary root) has umbrella conventions. This file is the
-hard-won operational knowledge: how to build, deploy, and — critically — how
-to touch a LIVE workspace without wrecking it.
+hard-won operational knowledge: how to build, deploy, and how to touch a
+LIVE workspace safely.
 
 ## What you're touching
 
-duck is a Go CLI; a duck "workspace" is a tmux session on the hub plus a
-sidebar ("panel"): a viewport pane (the selected item ITSELF, swapped in via
-swap-pane — never a nested client) and a roster pane (a Bubble Tea TUI,
-`duck panel watch <session>`). Agents and shells are PANES parked
-in a hidden companion session `<session>-agents` ("the lot"); all identity
-lives in pane user options (`@duck_name`, `@duck_kind`, …) — tmux is the
-database, there is no daemon and no state file beyond `~/.duck/names.json`.
+duck is a Go CLI; a duck "workspace" is a plain tmux session on the hub.
+Agents and shells are ordinary panes/windows of that same session:
+`internal/tmuxdb.Spawn` splits the current window for the first agent
+(below the manager, 40%) and gives later agents their own background
+windows named after them. Switching is native tmux (`select-window`,
+`last-window`, the status bar's window list). All identity lives in pane
+user options (`@duck_name`, `@duck_kind`, `@duck_prompt`, …) — tmux is the
+database (`internal/tmuxdb`), there is no daemon and no state file beyond
+`~/.duck/names.json`. Killing an agent is `kill-pane`: a background window
+dies with its pane, a split returns its rows to the manager — the layout
+takes care of itself.
 
-## The golden rules (violations caused every incident so far)
+Landing in this same release (built in parallel; treat as in-flight until
+tagged): `duck palette` and `duck fleet` — one-shot pickers in tmux
+`display-popup -E` (palette = session-manager verbs: jump/kill/detach;
+fleet = live read-mostly roster of all agents) — and a dynamic multi-line
+status bar (`duck statusline` rendered via `status-format[i]`) with
+busy/idle glyphs driven by the existing notify/UserPromptSubmit hooks
+setting `@duck_state`.
 
-1. **No ad-hoc pane surgery on live workspaces.** Raw `kill-pane`/
-   `move-pane`/`respawn-pane` against someone's session WILL mangle layouts
-   or kill work. Use duck's verbs (`duck panel`, `duck spawn`, roster `x`),
-   which route through EnsureSlot/Heal.
-2. **Geometry is asserted, not assumed.** `panel.Heal` runs inside
-   `panel.Open`, so ANY `duck panel --session <s>` converges a mangled
-   layout (join-pane repositions without touching processes). A broken
-   workspace is fixed by `duck panel --session <s>` — never by hand.
-3. **Anchor tmux context to the pane, not the client.** `display-message`
+Legacy note: pre-teardown workspaces parked agents in a hidden
+`<session>-agents` companion session. `tmuxdb.Agents` still reads those so
+old live agents stay addressable; `duck clean` reaps stale ones.
+
+## The golden rules
+
+1. **Anchor tmux context to the pane, not the client.** `display-message`
    without `-t` answers for the most recently active CLIENT — whatever
    terminal the human last touched, not where your process runs. Always
-   target `$TMUX_PANE` (see `displayArgs` in internal/panel). This bug
+   target `$TMUX_PANE` (see `displayArgs` in internal/tmuxdb). This bug
    cost us a whole evening across duck-8/duck-10.
-4. **tmux output parsing:** free-text fields (pane_title) go LAST with a
+2. **tmux output parsing:** free-text fields (pane_title) go LAST with a
    bounded SplitN; `TrimSpace` on whole output EATS the last line's trailing
    tab (empty trailing field) — TrimRight("\n") only, and tolerate a missing
    trailing field. Both were live bugs.
+3. **Ship releases, not hot patches.** Changes reach live workspaces
+   through the release pipeline below (~2 minutes); agents spawned after
+   `duck update` pick up new behavior, and existing panes keep their work.
 
 ## Build & deploy loop
 
@@ -42,36 +53,22 @@ go build ./... && go test ./...           # suite is fast; keep it green
 go build -o /tmp/duck-scratch ./cmd/duck  # scratch binary for live testing
 ```
 
-**Refreshing the roster pane (bottom-right) with a new build** — the ONE
-sanctioned respawn, since the roster is stateless UI (everything it shows
-lives in tmux):
-
-```sh
-LIST=$(tmux list-panes -s -t <session> -F '#{pane_id} #{@duck_panel_role}' | awk '$2=="list"{print $1}')
-tmux respawn-pane -k -t "$LIST" "<binary> panel watch <session>"
-```
-
-The viewport/agents are NOT respawned this way — they hold real work.
-To apply panel-structure changes to a live workspace: `duck panel
---session <session>` (idempotent open + heal + scratch).
-
 ## Headless testing (no human client needed)
 
 Use a throwaway tmux server so nothing touches real workspaces:
 
 ```sh
 tmux -L ducktest new-session -d -s work -c /tmp -x 200 -y 50
-tmux -L ducktest send-keys -t work "PATH=<scratchdir>:$PATH duck panel" Enter
-# drive the roster with send-keys, read it with capture-pane:
-tmux -L ducktest send-keys -t <listpane> -l "spawn htop" && tmux -L ducktest send-keys -t <listpane> Enter
-tmux -L ducktest capture-pane -p -t <listpane>
+tmux -L ducktest send-keys -t work "PATH=<scratchdir>:$PATH duck spawn ..." Enter
+tmux -L ducktest list-windows -t work        # spawned agents show up here
+tmux -L ducktest capture-pane -p -t <pane>
 tmux -L ducktest kill-server   # always clean up
 ```
 
-Gotchas: capture-pane shows TEXT only. Keys sent in the first ~2s after
-respawn can be eaten by TUI startup. To run duck against the test server
-from outside a pane: `SOCK=$(tmux -L ducktest display -p '#{socket_path}');
-TMUX="$SOCK,0,0" duck <cmd>`.
+Gotchas: capture-pane shows TEXT only. Keys sent in the first ~2s after a
+pane starts can be eaten by TUI startup. To run duck against the test
+server from outside a pane: `SOCK=$(tmux -L ducktest display -p
+'#{socket_path}'); TMUX="$SOCK,0,0" duck <cmd>`.
 
 ## Release pipeline (fleet ships in ~2 minutes)
 
@@ -83,12 +80,9 @@ duck update                          # hub; retry once — the release API lags 
 ssh andrew.sulistio@loki '~/.local/bin/duck update'   # laptops (or wait for hourly auto-update)
 ```
 
-Prefer shipping releases over hot-patching live sessions (golden rule 1);
-the pipeline is fast enough that there is no excuse.
-
 ## Driving agents programmatically
 
-Sidebar agents are addressable with three primitives — see internal/channel:
+Agents are addressable with three primitives — see internal/channel:
 `tmux send-keys -t <pane> -l -- <text>` (input; `--` guards dash-leading
 text; 250ms gap before Enter or a TUI treats it as a paste), rollout JSONL
 tail (structured output; codex writes ~/.codex/sessions/...), capture-pane

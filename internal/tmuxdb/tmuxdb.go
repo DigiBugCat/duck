@@ -66,6 +66,7 @@ const (
 	SessionOption   = "@duck_session"     // codex session id (durable resume/fork handle)
 	PromptOption    = "@duck_last_prompt" // codex turn id of the last submitted prompt (Send submit-confirm)
 	CmdOption       = "@duck_cmd"         // spawn cmdline (channel pairing eligibility)
+	StateOption     = "@duck_state"       // busy/idle, stamped by the codex hooks (status bar glyphs)
 	anchorOption    = "@duck_anchor"      // legacy: the retired lot's keep-alive pane (skip on reads)
 )
 
@@ -238,12 +239,206 @@ func Spawn(run Runner, outer, name, dir, cmdline, kind string) (paneID string, e
 	} {
 		_, _ = run("set-option", "-p", "-t", paneID, opt[0], opt[1])
 	}
+	// Grow the status bar to show the new agent. Best-effort: a spawn never
+	// fails over cosmetics.
+	SyncStatusHeight(run, outer)
 	return paneID, nil
 }
 
 // Kill terminates an agent pane. A background window dies with its last pane;
-// a split just returns its rows to the manager — nothing needs healing.
+// a split just returns its rows to the manager — nothing needs healing. The
+// pane's session is read first so the status bar can shrink afterwards
+// (best-effort — a kill never fails over cosmetics).
 func Kill(run Runner, paneID string) error {
+	outer, _ := run("display-message", "-p", "-t", paneID, "#{session_name}")
 	_, err := run("kill-pane", "-t", paneID)
+	if err == nil {
+		if outer = strings.TrimSpace(outer); outer != "" {
+			SyncStatusHeight(run, outer)
+		}
+	}
 	return err
+}
+
+// --- dynamic status bar -----------------------------------------------------
+//
+// The workspace session's status bar grows with its agents: the bottom line
+// stays tmux's normal window list, and up to maxStatusAgents lines ABOVE it
+// each show one agent ("◐ name cmd age" busy / "● name age" idle), rendered
+// every status-interval tick by `duck statusline <session> <i>` via a #()
+// format. Nothing is stored: the bar is recomputed from pane stamps on every
+// tick, and SyncStatusHeight just re-asserts the height + format lines after
+// a spawn or kill.
+
+// maxStatusAgents caps the agent lines the status bar grows to. With more
+// agents than fit, the last line aggregates ("◐N ●M +K more — fleet").
+const maxStatusAgents = 4
+
+// statusFmt lists the per-pane fields StatusLine needs, one list-panes call.
+// @duck_name may carry spaces, so it is LAST with a bounded split.
+const statusFmt = "#{pane_id}\t#{window_activity}\t#{" + StateOption + "}\t#{" + SpawnedAtOption + "}\t#{pane_current_command}\t#{" + anchorOption + "}\t#{" + NameOption + "}"
+
+// statusPane is one stamped pane's slice of statusFmt.
+type statusPane struct {
+	name      string
+	state     string // @duck_state: "busy" or anything else (= idle)
+	cmd       string // pane_current_command
+	spawnedAt int64  // unix epoch, 0 when unstamped
+	activity  int64  // window_activity, recency key
+}
+
+// parseStatusPanes filters list-panes output to stamped agent panes, newest
+// activity first (ties: newest spawn).
+func parseStatusPanes(out string) []statusPane {
+	var panes []statusPane
+	// TrimRight newlines ONLY (TrimSpace eats the last line's trailing tab).
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		f := strings.SplitN(line, "\t", 7)
+		if len(f) < 7 || strings.TrimSpace(f[6]) == "" || strings.TrimSpace(f[5]) != "" {
+			continue
+		}
+		p := statusPane{
+			name:  strings.TrimSpace(f[6]),
+			state: strings.TrimSpace(f[2]),
+			cmd:   f[4],
+		}
+		p.activity, _ = strconv.ParseInt(strings.TrimSpace(f[1]), 10, 64)
+		p.spawnedAt, _ = strconv.ParseInt(strings.TrimSpace(f[3]), 10, 64)
+		panes = append(panes, p)
+	}
+	sort.SliceStable(panes, func(i, j int) bool {
+		if panes[i].activity != panes[j].activity {
+			return panes[i].activity > panes[j].activity
+		}
+		return panes[i].spawnedAt > panes[j].spawnedAt
+	})
+	return panes
+}
+
+// statusAge renders a spawn age compactly (12s, 3m, 2h, 5d); "" when unstamped.
+func statusAge(spawnedAt int64, now time.Time) string {
+	if spawnedAt <= 0 {
+		return ""
+	}
+	d := now.Sub(time.Unix(spawnedAt, 0))
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return strconv.Itoa(int(d.Seconds())) + "s"
+	case d < time.Hour:
+		return strconv.Itoa(int(d.Minutes())) + "m"
+	case d < 24*time.Hour:
+		return strconv.Itoa(int(d.Hours())) + "h"
+	}
+	return strconv.Itoa(int(d.Hours()/24)) + "d"
+}
+
+// renderStatusLine formats status line lineNo (0-based, topmost first) from
+// the sorted panes. With more agents than fit, the last agent line becomes
+// the fleet aggregate. "" means the line has nothing to show.
+func renderStatusLine(panes []statusPane, lineNo int, now time.Time) string {
+	shown := len(panes)
+	if shown > maxStatusAgents {
+		shown = maxStatusAgents
+	}
+	if lineNo < 0 || lineNo >= shown {
+		return ""
+	}
+	if len(panes) > maxStatusAgents && lineNo == maxStatusAgents-1 {
+		busy, idle := 0, 0
+		for _, p := range panes {
+			if p.state == "busy" {
+				busy++
+			} else {
+				idle++
+			}
+		}
+		return fmt.Sprintf("◐%d ●%d +%d more — fleet", busy, idle, len(panes)-(maxStatusAgents-1))
+	}
+	p := panes[lineNo]
+	fields := []string{"●", p.name}
+	if p.state == "busy" {
+		fields = []string{"◐", p.name, p.cmd}
+	}
+	if age := statusAge(p.spawnedAt, now); age != "" {
+		fields = append(fields, age)
+	}
+	return strings.Join(fields, " ")
+}
+
+// StatusLine renders one status-bar line for the session — `duck statusline`
+// runs it on every status-interval tick, so it is ONE list-panes call.
+func StatusLine(run Runner, outer string, lineNo int) (string, error) {
+	out, err := run("list-panes", "-s", "-t", outer, "-F", statusFmt)
+	if err != nil {
+		return "", err
+	}
+	return renderStatusLine(parseStatusPanes(out), lineNo, time.Now()), nil
+}
+
+// statusHeight maps an agent count to the `status` option value: the window
+// list plus one line per agent, capped.
+func statusHeight(agents int) int {
+	if agents > maxStatusAgents {
+		agents = maxStatusAgents
+	}
+	return 1 + agents
+}
+
+// duckExe is the binary path baked into the #() status formats, so the tmux
+// server (whose PATH may not carry duck) can exec the statusline verb.
+func duckExe() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		return exe
+	}
+	return "duck"
+}
+
+// SyncStatusHeight converges the session's status bar to its agent count:
+// agent lines at indices 0..L-1 (each a #(duck statusline) refresh), the
+// normal window list on the LAST line (index L — tmux renders status-format
+// indices top to bottom, so last = the familiar bottom position; its content
+// is copied from the untouched GLOBAL status-format[0] default), and stale
+// higher indices unset. All session-scoped and idempotent; errors are
+// swallowed — the bar is cosmetics, never a failure.
+func SyncStatusHeight(run Runner, outer string) {
+	out, err := run("list-panes", "-s", "-t", outer, "-F", statusFmt)
+	if err != nil {
+		return
+	}
+	agents := len(parseStatusPanes(out))
+	lines := statusHeight(agents) - 1
+	_, _ = run("set-option", "-t", outer, "status-interval", "2")
+	// tmux's `status` option accepts off|on|2..5 — "1" is rejected, so a
+	// single line must be spelled "on" or the bar never shrinks back.
+	height := "on"
+	if h := statusHeight(agents); h > 1 {
+		height = strconv.Itoa(h)
+	}
+	_, _ = run("set-option", "-t", outer, "status", height)
+	exe := duckExe()
+	for i := 0; i <= maxStatusAgents; i++ {
+		opt := fmt.Sprintf("status-format[%d]", i)
+		switch {
+		case i < lines:
+			// #() bodies run through /bin/sh, so the exe path and session
+			// name must be sh-quoted or a space/quote/$(…) in either splits
+			// the argv or executes injected text.
+			_, _ = run("set-option", "-t", outer, opt,
+				fmt.Sprintf("#[align=left] #(%s statusline %s %d)",
+					paths.Quote(exe), paths.Quote(outer), i))
+		case i == lines:
+			// The window list rides the last visible line: copy the global
+			// default (session formats above shadowed it at lower indices).
+			if def, derr := run("show-options", "-g", "-v", "status-format[0]"); derr == nil {
+				if def = strings.TrimRight(def, "\n"); def != "" {
+					_, _ = run("set-option", "-t", outer, opt, def)
+				}
+			}
+		default:
+			_, _ = run("set-option", "-u", "-t", outer, opt)
+		}
+	}
 }

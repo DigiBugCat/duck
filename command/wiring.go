@@ -172,7 +172,11 @@ func build() (*wiring, error) {
 		if managerShell {
 			return
 		}
-		if err := sess.Send(tmuxName, managerLine(managerArgs)); err != nil {
+		// ONE batched remote command (send-keys + the @duck_manager pane stamp,
+		// `&&`-chained) — this sits on the bare-`duck` critical path, so each
+		// saved Run is a saved ssh roundtrip. The ledger stamp stays separate
+		// (it is a workspaces-store write, not tmux).
+		if _, err := client.Run(managerLaunchCmd(tmuxName, managerLine(managerArgs))); err != nil {
 			return
 		}
 		stampManagerLaunched(&wiring{client: client, sessions: sess}, tildeDir, tmuxName, managerArgs)

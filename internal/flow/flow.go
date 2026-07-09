@@ -13,6 +13,7 @@ package flow
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/DigiBugCat/duck/internal/claude"
@@ -213,7 +214,20 @@ type Flow struct {
 	// nothing — preserving the old bare-shell behavior for callers that don't wire
 	// it and for `duck --shell`. See SetManagerLauncher.
 	launchManager func(tmuxName, tildeDir string)
+	// bg tracks best-effort bookkeeping (registerDir: the names.json entry +
+	// workspace-ledger dual-write) moved OFF the critical path: on a laptop those
+	// are 3–4 serialized ssh roundtrips the user would otherwise wait behind
+	// before the attach. EnsureSession starts them in a goroutine; WaitBackground
+	// joins them so the writes still land before the process exits (and before
+	// anything else reads/mutates names.json, e.g. the fresh-untouched forgetName).
+	bg sync.WaitGroup
 }
+
+// WaitBackground blocks until every background bookkeeping write started by
+// EnsureSession has finished. Callers that attach via their own loop (the
+// command layer's runAttachLoop, `duck claude`) call it before handing the
+// process off so the best-effort writes still land.
+func (f *Flow) WaitBackground() { f.bg.Wait() }
 
 // SetLocal marks the flow as running ON the hub itself. When set, the bare-`duck`
 // sync-awareness gate is bypassed entirely (decideSync always returns no-sync):
@@ -510,10 +524,23 @@ func (f *Flow) EnsureSession(tildeDir string, forceNew bool) (tmuxName string, c
 	if err := f.sessions.New(id, tildeDir); err != nil {
 		return "", false, err
 	}
-	if err := f.registerDir(id, tildeDir); err != nil {
-		// Naming metadata is best-effort; a failure here must not block attach.
-		_ = err
+	// The durable workspace-ledger record is written SYNCHRONOUSLY: the launch
+	// paths stamp Channels onto this same record file right after launching
+	// (stampManagerLaunched does Load→Save), and Store.Save is a whole-file
+	// overwrite — a backgrounded bare Save landing after the stamp would
+	// silently clobber it. Writing it here guarantees the stamp writes last.
+	if f.workspaces != nil {
+		_ = f.workspaces.Save(workspaces.Record{Name: id, Dir: tildeDir})
 	}
+	// Naming metadata is best-effort and (over ssh) several roundtrips, so it
+	// runs in the background rather than blocking the attach; a failure never
+	// blocks anything. WaitBackground joins it before process exit so the
+	// writes still land — see Flow.bg.
+	f.bg.Add(1)
+	go func() {
+		defer f.bg.Done()
+		_ = f.registerDir(id, tildeDir)
+	}()
 	return id, true, nil
 }
 
@@ -545,16 +572,7 @@ func (f *Flow) registerDir(id, tildeDir string) error {
 		e.CreatedAt = time.Now()
 	}
 	n.Names[id] = e
-	if err := f.names.Save(n); err != nil {
-		return err
-	}
-	// Dual-write the durable workspace ledger (in ADDITION to names.json). Keyed by
-	// the project dir so many workspaces per dir coexist. Best-effort and OFF when
-	// no store is wired — a ledger write must never block session creation.
-	if f.workspaces != nil {
-		_ = f.workspaces.Save(workspaces.Record{Name: id, Dir: tildeDir})
-	}
-	return nil
+	return f.names.Save(n)
 }
 
 // mintID derives a tmux-legal id from tildeDir and appends -<n> until it does
@@ -578,8 +596,11 @@ func mintID(tildeDir string, live []session.Sess) string {
 
 // Attach tears down nothing itself (the caller has no TUI on the bare path) and
 // hands the process off to session.Attach for tmuxName. Returns only on a
-// failure to exec.
+// failure to exec. session.Attach replaces the process image, so any background
+// bookkeeping is joined first — after the exec there is no process left to
+// finish it.
 func (f *Flow) Attach(tmuxName string) error {
+	f.bg.Wait()
 	return f.sessions.Attach(tmuxName)
 }
 
@@ -604,6 +625,10 @@ func (f *Flow) Run(cwd string) error {
 //     else → sessionDir = D if it exists on the hub, else "~".
 //  4. EnsureSession(sessionDir, true) → Attach.
 func (f *Flow) RunWithOverride(cwd string, override Override) error {
+	// Join the background bookkeeping (registerDir/ledger — see Flow.bg) on
+	// every exit so the writes land before the process ends, including the
+	// error paths.
+	defer f.bg.Wait()
 	d := paths.Contract(cwd)
 
 	doSync, err := f.decideSync(cwd, d, override)
@@ -659,6 +684,10 @@ func (f *Flow) RunWithOverride(cwd string, override Override) error {
 	// exited) versus a give-up (^c during a reconnect backoff) or a vanished
 	// session — the bit that gates the fresh-untouched cleanup.
 	cleanLeave, err := f.attachInt(tmuxName, created)
+	// The user is back from the attach: join the background bookkeeping NOW,
+	// before the untouched-cleanup below reads/mutates names.json — forgetName
+	// racing registerDir's save could resurrect the entry it just removed.
+	f.bg.Wait()
 	if err != nil {
 		return err
 	}

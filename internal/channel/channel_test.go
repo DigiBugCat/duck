@@ -361,7 +361,8 @@ func TestHandleNotifyPinsRolloutByThreadID(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range f.calls[n:] {
-		if strings.HasPrefix(c, "set-option") {
+		// The idle-state glyph stamp is expected; only a rollout pin is wrong.
+		if strings.HasPrefix(c, "set-option") && strings.Contains(c, "@duck_rollout") {
 			t.Fatalf("unknown thread id must not pin: %v", f.calls[n:])
 		}
 	}

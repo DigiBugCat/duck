@@ -67,6 +67,44 @@ func TestHubOwnedIsSyncedIgnoresOtherMachines(t *testing.T) {
 	}
 }
 
+// TestHubLedgerIsMemoizedPerInvocation pins the latency fix: one bare `duck`
+// consults the hub ledger 2–3 times (IsSynced for the target dir, the Claude
+// co-sync, sometimes decideSync) and each fetch is an ssh roundtrip, so
+// newRealSyncer memoizes it. Terminate (a ledger write) invalidates the memo
+// so the next read refetches.
+func TestHubLedgerIsMemoizedPerInvocation(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	fetches := 0
+	restore := hub.SetRunner(func(argv []string, stdin io.Reader) (string, error) {
+		cmd := strings.Join(argv, " ")
+		if strings.Contains(cmd, "hubsync list") {
+			fetches++
+		}
+		return "duck-duck-x-y|Watching|/data/p|andrew@laptop:" + home + "/p|spec", nil
+	})
+	t.Cleanup(restore)
+
+	s := hubSyncerForTest()
+	for i := 0; i < 3; i++ {
+		if _, err := s.IsSynced("~/p"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fetches != 1 {
+		t.Fatalf("3 IsSynced calls must fetch the ledger ONCE (memoized), got %d fetches", fetches)
+	}
+	// A ledger write invalidates: the next read refetches.
+	if err := s.Terminate("duck-duck-x-y"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.IsSynced("~/p"); err != nil {
+		t.Fatal(err)
+	}
+	if fetches != 2 {
+		t.Fatalf("a Terminate must invalidate the memo (want 2 fetches), got %d", fetches)
+	}
+}
+
 func TestHubLedgerSkipsMalformedAndLocalBetaLines(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	withHubLedger(t, strings.Join([]string{

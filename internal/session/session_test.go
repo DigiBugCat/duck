@@ -158,28 +158,20 @@ func TestNewSessionUsesHubPathAndStampsDuckDir(t *testing.T) {
 	if err := m.New("foo", "~/dev/foo"); err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if len(f.cmds) != 4 {
-		t.Fatalf("New should issue new-session, @duck_dir, then title passthrough, got %v", f.cmds)
+	// Latency batching: session creation is ONE remote Run (`&&`-chained), not
+	// four — each Run is a full ssh roundtrip on the laptop path.
+	if len(f.cmds) != 1 {
+		t.Fatalf("New should issue ONE batched remote command, got %d: %v", len(f.cmds), f.cmds)
 	}
-	// new-session uses -c with a $HOME-expanded path (tmux -c does NOT expand ~).
-	wantNew := `tmux new-session -d -s 'foo' -c "$HOME"/'dev/foo'`
-	if f.cmds[0] != wantNew {
-		t.Fatalf("new-session =\n  %q\nwant\n  %q", f.cmds[0], wantNew)
-	}
-	// @duck_dir is stamped with the RAW tilde-form dir (the Recent/display key).
-	wantOpt := `tmux set-option -t 'foo' '@duck_dir' '~/dev/foo'`
-	if f.cmds[1] != wantOpt {
-		t.Fatalf("set-option =\n  %q\nwant\n  %q", f.cmds[1], wantOpt)
-	}
-	// Title passthrough: set-titles on + the pane_title-tracking titles-string,
-	// so Claude's in-session title escapes reach the outer terminal tab.
-	wantTitles := `tmux set-option -t 'foo' set-titles on`
-	if f.cmds[2] != wantTitles {
-		t.Fatalf("set-titles =\n  %q\nwant\n  %q", f.cmds[2], wantTitles)
-	}
-	wantTitlesStr := `tmux set-option -t 'foo' set-titles-string '` + titlesString + `'`
-	if f.cmds[3] != wantTitlesStr {
-		t.Fatalf("set-titles-string =\n  %q\nwant\n  %q", f.cmds[3], wantTitlesStr)
+	// new-session uses -c with a $HOME-expanded path (tmux -c does NOT expand ~),
+	// then stamps @duck_dir with the RAW tilde-form dir (the Recent/display key),
+	// then enables title passthrough — all `&&`-chained in order.
+	want := `tmux new-session -d -s 'foo' -c "$HOME"/'dev/foo'` +
+		` && tmux set-option -t 'foo' '@duck_dir' '~/dev/foo'` +
+		` && tmux set-option -t 'foo' set-titles on` +
+		` && tmux set-option -t 'foo' set-titles-string '` + titlesString + `'`
+	if f.cmds[0] != want {
+		t.Fatalf("New batched cmd =\n  %q\nwant\n  %q", f.cmds[0], want)
 	}
 }
 
