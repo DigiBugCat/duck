@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 	"syscall"
 
 	"github.com/DigiBugCat/duck/internal/paths"
@@ -77,6 +78,14 @@ func realRun(argv []string, stdin io.Reader) (string, error) {
 	// or directory". Idempotent and cheap.
 	if err := EnsureControlDir(); err != nil {
 		return "", err
+	}
+	// DUCK_TRACE=1 prints every remote invocation + wall time to stderr — the
+	// ground-truth profiler for "why is duck slow on this machine".
+	if os.Getenv("DUCK_TRACE") != "" {
+		start := time.Now()
+		defer func() {
+			fmt.Fprintf(os.Stderr, "[trace %6.0fms] %s\n", float64(time.Since(start).Microseconds())/1000, strings.Join(argv, " "))
+		}()
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin = stdin

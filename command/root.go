@@ -138,6 +138,13 @@ duck also bundles 'duck sync', a Mutagen-backed multi-machine path sync.`,
 			if err != nil {
 				return err
 			}
+			// The positional must be a REAL local directory. Anything else is
+			// almost certainly a mistyped or retired subcommand (`duck panel`,
+			// `duck version`), and silently minting a workspace for it was how
+			// legacy wrappers fork-bombed the hub with $HOME sessions.
+			if fi, serr := os.Stat(target); serr != nil || !fi.IsDir() {
+				return fmt.Errorf("%q is not a folder (bare duck takes a folder to open; see duck --help for subcommands)", before[0])
+			}
 		}
 		w, err := build()
 		if err != nil {
