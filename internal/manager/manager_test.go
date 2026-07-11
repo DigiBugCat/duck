@@ -5,11 +5,16 @@ import (
 	"testing"
 )
 
+// quotedHookSettings is the --settings tail Line appends (hookSettings has no
+// single quotes, so paths.Quote wraps it in one pair).
+const quotedHookSettings = " --settings '" + hookSettings + "'"
+
 func TestLineAppendsChannelFlags(t *testing.T) {
 	t.Setenv("DUCK_NO_CHANNELS", "")
 	got := Line(nil)
 	want := "claude " +
-		"'--dangerously-load-development-channels' 'server:duck-agents'"
+		"'--dangerously-load-development-channels' 'server:duck-agents'" +
+		quotedHookSettings
 	if got != want {
 		t.Fatalf("Line(nil) =\n  %q\nwant\n  %q", got, want)
 	}
@@ -20,7 +25,8 @@ func TestLineForwardsArgsVerbatimBeforeChannelFlags(t *testing.T) {
 	got := Line([]string{"--ben", "--model", "opus"})
 	// profile/claude args come first, each shell-quoted, then the channel flags.
 	want := "claude '--ben' '--model' 'opus' " +
-		"'--dangerously-load-development-channels' 'server:duck-agents'"
+		"'--dangerously-load-development-channels' 'server:duck-agents'" +
+		quotedHookSettings
 	if got != want {
 		t.Fatalf("Line =\n  %q\nwant\n  %q", got, want)
 	}
@@ -44,8 +50,26 @@ func TestLineNoChannelsWhenEnvSet(t *testing.T) {
 	if strings.Contains(got, "--channels") || strings.Contains(got, "development-channels") {
 		t.Fatalf("DUCK_NO_CHANNELS set but channel flags present: %q", got)
 	}
-	if got != "claude '--ben'" {
+	if got != "claude '--ben'"+quotedHookSettings {
 		t.Fatalf("unexpected line under DUCK_NO_CHANNELS: %q", got)
+	}
+}
+
+func TestLineDedupsExplicitSettings(t *testing.T) {
+	t.Setenv("DUCK_NO_CHANNELS", "")
+	// User already passed --settings: duck must NOT append its hook overlay
+	// (claude takes one --settings; duck must not fight the user's).
+	for _, args := range [][]string{
+		{"--settings", "/tmp/mine.json"},
+		{"--settings={}"},
+	} {
+		got := Line(args)
+		if strings.Count(got, "--settings") != 1 {
+			t.Fatalf("--settings duplicated for %v: %q", args, got)
+		}
+		if strings.Contains(got, "UserPromptSubmit") {
+			t.Fatalf("hook overlay appended despite explicit --settings %v: %q", args, got)
+		}
 	}
 }
 

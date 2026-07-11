@@ -260,8 +260,13 @@ func (m *Manager) AttachAndWait(id string) error {
 
 // untouchedFormat is the single `tmux display-message` template IsUntouched
 // queries: window count | pane count | the pane's current command | the pane's
-// scrollback history size. The order is the contract with IsUntouched's parse.
-const untouchedFormat = "#{session_windows}|#{window_panes}|#{pane_current_command}|#{history_size}"
+// scrollback history size | the pane's id | @duck_manager (the session's
+// duck-launched manager pane, empty if none) | @duck_state (stamped by the
+// manager's UserPromptSubmit hook on the first real prompt — see
+// manager.hookSettings; empty = never prompted). The order is the contract
+// with IsUntouched's parse; the option fields go LAST because they may be
+// empty.
+const untouchedFormat = "#{session_windows}|#{window_panes}|#{pane_current_command}|#{history_size}|#{pane_id}|#{@duck_manager}|#{@duck_state}"
 
 // loginShells are the interactive login shells a FRESH, never-touched session's
 // single pane sits at. A different pane_current_command means the user launched
@@ -269,12 +274,22 @@ const untouchedFormat = "#{session_windows}|#{window_panes}|#{pane_current_comma
 var loginShells = map[string]bool{"zsh": true, "bash": true, "sh": true, "fish": true}
 
 // IsUntouched reports whether session id was created and then LEFT without the
-// user running anything in it: exactly one window, one pane, the pane still at a
-// login shell (zsh/bash/sh/fish), and an empty scrollback (history_size==0, so
-// nothing scrolled and no program launched). It issues a SINGLE tmux
+// user running anything in it: exactly one window and one pane, and EITHER the
+// pane still at a login shell (zsh/bash/sh/fish) with an empty scrollback
+// (history_size==0 — the --shell / bare-shell case), OR the pane is the
+// duck-launched workspace manager (@duck_manager == its pane_id) that was
+// NEVER prompted (@duck_state empty — the UserPromptSubmit hook duck wires
+// into the manager launch line stamps it on the first submit; scrollback is
+// useless here because claude redraws in-viewport and history stays 0 even
+// after a real conversation — verified empirically). It issues a SINGLE tmux
 // display-message query (untouchedFormat). If the session no longer exists (the
 // user exited the shell, so tmux already killed it) there is nothing to clean
 // up: that is folded into (false, nil), mirroring List's no-server handling.
+//
+// The manager branch is only sound for sessions whose manager was launched by
+// a duck that wires the hook — which callers guarantee by only consulting
+// IsUntouched on sessions THIS invocation created (flow's fresh-path cleanup).
+// A pre-hook manager would read as never-prompted forever.
 func (m *Manager) IsUntouched(id string) (bool, error) {
 	out, err := m.run.Run(fmt.Sprintf("tmux display-message -p -t %s %s", paths.Quote(id), paths.Quote(untouchedFormat)))
 	if err != nil {
@@ -286,14 +301,22 @@ func (m *Manager) IsUntouched(id string) (bool, error) {
 		return false, err
 	}
 	fields := strings.Split(strings.TrimRight(out, "\r\n"), "|")
-	if len(fields) != 4 {
+	if len(fields) != 7 {
 		return false, nil
 	}
 	windows := strings.TrimSpace(fields[0])
 	panes := strings.TrimSpace(fields[1])
 	cmd := filepath.Base(strings.TrimSpace(fields[2]))
 	history := strings.TrimSpace(fields[3])
-	return windows == "1" && panes == "1" && loginShells[cmd] && history == "0", nil
+	paneID := strings.TrimSpace(fields[4])
+	managerPane := strings.TrimSpace(fields[5])
+	state := strings.TrimSpace(fields[6])
+	if windows != "1" || panes != "1" {
+		return false, nil
+	}
+	freshShell := loginShells[cmd] && history == "0"
+	unpromptedManager := managerPane != "" && managerPane == paneID && state == ""
+	return freshShell || unpromptedManager, nil
 }
 
 // isNoSession reports whether s carries tmux's "can't find session" signature,

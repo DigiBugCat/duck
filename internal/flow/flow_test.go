@@ -660,7 +660,7 @@ func sawNewSessionIn(r *fakeRunner, hubCExpr string) bool {
 // id, so the cleanup tests can seed its canned output (mirrors the session
 // package's own format string without importing the private const).
 func untouchedQueryFor(id string) string {
-	return "tmux display-message -p -t '" + id + "' '#{session_windows}|#{window_panes}|#{pane_current_command}|#{history_size}'"
+	return "tmux display-message -p -t '" + id + "' '#{session_windows}|#{window_panes}|#{pane_current_command}|#{history_size}|#{pane_id}|#{@duck_manager}|#{@duck_state}'"
 }
 
 // namesLoadCmd is the exact remote command names.Store.Load issues, so a test
@@ -693,7 +693,7 @@ func TestRunCleansUpFreshUntouchedSession(t *testing.T) {
 	// Load reads an empty doc and the delete branch never runs — a vacuous test).
 	r := &fakeRunner{out: map[string]string{
 		listCmd():                "", // empty hub → mints "foo"
-		untouchedQueryFor("foo"): "1|1|zsh|0\n",
+		untouchedQueryFor("foo"): "1|1|zsh|0|%0||\n",
 		namesLoadCmd():           `{"names":{"foo":{"dir":"~/dev/foo"}}}`,
 	}}
 	a := &fakeAttacher{}
@@ -738,7 +738,7 @@ func TestRunCleansUpFreshUntouchedSession(t *testing.T) {
 func TestRunDoesNotCleanFreshTouchedSession(t *testing.T) {
 	r := &fakeRunner{out: map[string]string{
 		listCmd():                "",
-		untouchedQueryFor("foo"): "1|1|claude|3\n", // a program ran, scrollback grew
+		untouchedQueryFor("foo"): "1|1|vim|3|%0||\n", // a program ran, scrollback grew
 	}}
 	a := &fakeAttacher{}
 	f := newFlowDeps(r, a, &fakeSyncer{synced: true}, newFakePolicy(map[string]string{"~/dev/foo": "sync"}), fakeClassifier{}, &fakePrompter{})
@@ -791,7 +791,7 @@ func TestRunNeverCleansReattachedSession(t *testing.T) {
 func TestRunKeepsFreshSessionOnGiveUp(t *testing.T) {
 	r := &fakeRunner{out: map[string]string{
 		listCmd():                "", // empty hub → mints "foo"
-		untouchedQueryFor("foo"): "1|1|zsh|0\n",
+		untouchedQueryFor("foo"): "1|1|zsh|0|%0||\n",
 	}}
 	a := &fakeAttacher{}
 	f := newFlowDeps(r, a, &fakeSyncer{synced: true}, newFakePolicy(map[string]string{"~/dev/foo": "sync"}), fakeClassifier{}, &fakePrompter{})
@@ -813,7 +813,7 @@ func TestRunKeepsFreshSessionOnGiveUp(t *testing.T) {
 func TestRunCleansFreshSessionOnCleanLeave(t *testing.T) {
 	r := &fakeRunner{out: map[string]string{
 		listCmd():                "",
-		untouchedQueryFor("foo"): "1|1|zsh|0\n",
+		untouchedQueryFor("foo"): "1|1|zsh|0|%0||\n",
 		namesLoadCmd():           `{"names":{"foo":{"dir":"~/dev/foo"}}}`,
 	}}
 	f := newFlowDeps(r, &fakeAttacher{}, &fakeSyncer{synced: true}, newFakePolicy(map[string]string{"~/dev/foo": "sync"}), fakeClassifier{}, &fakePrompter{})

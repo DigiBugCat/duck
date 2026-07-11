@@ -54,9 +54,10 @@ func ChannelsWired(extraArgs []string) bool {
 // Line is the single in-pane launch line for the workspace manager: bare
 // `claude` with each extraArg shell-quoted so the pane's shell re-parses them
 // exactly as given, then the channel flags UNLESS already wired
-// (ChannelsWired). There is no sidebar to arm — agents are ordinary panes/
-// windows of the session, so the launch line is just claude + channel flags.
-// MCP registration rides the hub-side PersistentPreRun hook.
+// (ChannelsWired), then the prompt-hook settings UNLESS the caller passed
+// their own --settings. There is no sidebar to arm — agents are ordinary
+// panes/windows of the session, so the launch line is just claude + channel
+// flags. MCP registration rides the hub-side PersistentPreRun hook.
 func Line(extraArgs []string) string {
 	line := "claude"
 	for _, a := range extraArgs {
@@ -67,5 +68,30 @@ func Line(extraArgs []string) string {
 			line += " " + paths.Quote(f)
 		}
 	}
+	if !settingsWired(extraArgs) {
+		line += " --settings " + paths.Quote(hookSettings)
+	}
 	return line
+}
+
+// hookSettings is the inline Claude Code settings JSON the launch line carries:
+// a UserPromptSubmit hook targeting `duck channel hook` (payload on stdin, same
+// contract as the codex agent hooks). The FIRST real prompt stamps @duck_state
+// on the manager pane, which is what lets session.IsUntouched tell an
+// accidentally-started workspace (manager launched, never prompted) from a
+// worked-in one. Bare word `duck` on purpose: the line runs in the HUB pane's
+// shell, so the hub's PATH resolves it — a laptop-side absolute path would be
+// wrong there. No single quotes in the JSON, so paths.Quote wraps it safely.
+const hookSettings = `{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"duck channel hook"}]}]}}`
+
+// settingsWired reports whether extraArgs already carry a --settings flag, in
+// which case duck's hook overlay stays out of the way (claude takes one
+// --settings; duck must not fight the user's).
+func settingsWired(extraArgs []string) bool {
+	for _, a := range extraArgs {
+		if a == "--settings" || strings.HasPrefix(a, "--settings=") {
+			return true
+		}
+	}
+	return false
 }
