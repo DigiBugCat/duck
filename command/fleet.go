@@ -9,6 +9,7 @@ package command
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/DigiBugCat/duck/internal/picker"
 	"github.com/DigiBugCat/duck/internal/tmuxdb"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // stateGlyph maps the channel's status classification to the roster glyphs.
@@ -144,7 +146,15 @@ func runFleet(run tmuxdb.Runner, outer string) error {
 			return err
 		}
 		if len(rows) == 0 {
+			// Inside a display-popup an instant exit reads as a flash of
+			// nothing — show the empty state until any key is pressed.
 			fmt.Println("no agents in " + outer + " — spawn some (duck spawn codex)")
+			fmt.Println("(press any key to close)")
+			if st, rerr := term.MakeRaw(int(os.Stdin.Fd())); rerr == nil {
+				buf := make([]byte, 1)
+				_, _ = os.Stdin.Read(buf)
+				_ = term.Restore(int(os.Stdin.Fd()), st)
+			}
 			return nil
 		}
 		items := make([]picker.Item, len(rows))
