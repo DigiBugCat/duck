@@ -25,7 +25,7 @@ func TestEncodeDirMatchesClaudeSlug(t *testing.T) {
 	// EncodeDir must equal Claude Code's own slug for the same dir: the tilde is
 	// expanded to abs first, then every "/" and "." becomes "-". Assert against
 	// claude.Slug(abs) rather than a hardcoded home so the test is home-agnostic.
-	for _, in := range []string{"~/Obsidian/aviary/duck", "~", "/abs/path", "~/a.b_c-d"} {
+	for _, in := range []string{"~/aviary/products/duck", "~", "/abs/path", "~/a.b_c-d"} {
 		abs, err := paths.Expand(in)
 		if err != nil {
 			t.Fatal(err)
@@ -36,7 +36,7 @@ func TestEncodeDirMatchesClaudeSlug(t *testing.T) {
 		}
 	}
 	// A concrete example (abs path shape depends on $HOME so only assert the tail).
-	if got := EncodeDir("/home/andrew/Obsidian/aviary/duck"); got != "-home-andrew-Obsidian-aviary-duck" {
+	if got := EncodeDir("/home/andrew/aviary/products/duck"); got != "-home-andrew-aviary-products-duck" {
 		t.Errorf("EncodeDir abs example = %q", got)
 	}
 	// Determinism: same input, same output, twice.
@@ -244,16 +244,16 @@ func TestStorePathExpandsTildeWithHubHome(t *testing.T) {
 	c := &captureRunner{home: "/home/andrew\n"}
 	s := NewStore(c)
 
-	fromTilde := s.encodeDir("~/Obsidian/aviary/duck")
-	fromHubAbs := s.encodeDir("/home/andrew/Obsidian/aviary/duck")
+	fromTilde := s.encodeDir("~/aviary/products/duck")
+	fromHubAbs := s.encodeDir("/home/andrew/aviary/products/duck")
 
-	if fromTilde != "-home-andrew-Obsidian-aviary-duck" {
+	if fromTilde != "-home-andrew-aviary-products-duck" {
 		t.Fatalf("Store encodeDir used local home: got %q", fromTilde)
 	}
 	if fromTilde != fromHubAbs {
 		t.Fatalf("tilde dir and hub-absolute dir must share the hub slug: %q vs %q", fromTilde, fromHubAbs)
 	}
-	if local := EncodeDir("~/Obsidian/aviary/duck"); local == fromTilde {
+	if local := EncodeDir("~/aviary/products/duck"); local == fromTilde {
 		t.Fatalf("test setup failed: stateless EncodeDir should still reflect local HOME, got %q", local)
 	}
 	homeCalls := 0

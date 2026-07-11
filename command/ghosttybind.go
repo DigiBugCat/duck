@@ -19,11 +19,13 @@ const (
 	ghosttyEndMark   = "# <<< duck keybinds <<<"
 )
 
-// ghosttyKeybinds is the managed block body. \x02 is the tmux prefix (Ctrl-b);
-// \x20 is an explicit space — a literal trailing space is stripped by
-// Ghostty's config parser and the palette silently never opens.
+// ghosttyKeybinds is the managed block body. \x02 is the tmux prefix (Ctrl-b).
+// The palette rides prefix+k here (bound alongside prefix+Space) because
+// Ghostty trims trailing whitespace from the DECODED text — even an explicit
+// \x20 is dropped (verified via +show-config). Never end a text: value in
+// whitespace.
 const ghosttyKeybinds = ghosttyBeginMark + `
-keybind = cmd+k=text:\x02\x20
+keybind = cmd+k=text:\x02k
 keybind = cmd+shift+f=text:\x02f
 ` + ghosttyEndMark + "\n"
 

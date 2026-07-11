@@ -11,7 +11,7 @@ func TestSlugAndProjectDir(t *testing.T) {
 		{"/Users/jane.doe/dev", "-Users-jane-doe-dev"},
 		{"/Users/jane.doe/dev/foo", "-Users-jane-doe-dev-foo"},
 		{"/Users/me/Cassandra-Finance", "-Users-me-Cassandra-Finance"},
-		{"/home/andrew/Obsidian/aviary", "-home-andrew-Obsidian-aviary"},
+		{"/home/andrew/aviary", "-home-andrew-aviary"},
 		{"/private/tmp", "-private-tmp"},
 	}
 	for _, tc := range cases {

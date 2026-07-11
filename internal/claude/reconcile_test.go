@@ -33,7 +33,7 @@ func TestReconcileMapsForeignHubSessionOntoLocalMac(t *testing.T) {
 	root := t.TempDir()
 	macHome := "/Users/andrew.sulistio"
 	hubHome := "/home/andrew"
-	// A hub-origin session for ~/Obsidian/aviary/duck.
+	// A hub-origin session for ~/aviary/products/duck.
 	seedSession(t, root, "-home-andrew-Obsidian-aviary-duck", "sess-1", hubHome+"/Obsidian/aviary/duck")
 
 	var registered []string

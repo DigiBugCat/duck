@@ -97,8 +97,8 @@ func (s *Store) SetBase(base string) {
 // EncodeDir is the deterministic directory-group key: Claude Code's own project
 // slug for the given dir. dir is tilde-form (Record.Dir's form); it is expanded
 // to an absolute path first because claude.Slug is defined on the ABSOLUTE path
-// (the slug embeds it — see claude/paths.go). So `~/Obsidian/aviary/duck` →
-// `-home-andrew-Obsidian-aviary-duck`. This is intentionally NOT reversible;
+// (the slug embeds it — see claude/paths.go). So `~/aviary/products/duck` →
+// `-home-andrew-aviary-products-duck`. This is intentionally NOT reversible;
 // collisions (should any exist) are harmless because the real Dir is stored
 // inside every record and is the authority. EncodeDir is a thin wrapper over
 // claude.Slug so callers have one exported name for the group key.
