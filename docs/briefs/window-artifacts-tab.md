@@ -1,6 +1,6 @@
 # Brief: window artifacts appear in the roster artifacts tab
 
-Repo: ~/Obsidian/aviary/duck, branch off main (now v0.32.0, includes the
+Repo: ~/aviary/products/duck, branch off main (now v0.32.0, includes the
 per-session DUCK_WINDOW_SOCK discovery and the `window` MCP tool). Keep
 `go build ./... && go test ./...` green. Read docs/WINDOW.md ("routing
 model" + "artifacts tab" sections), internal/panel/ (roster, lot,

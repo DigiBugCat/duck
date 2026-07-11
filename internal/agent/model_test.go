@@ -24,7 +24,9 @@ func TestWithModel(t *testing.T) {
 		want   string
 	}{
 		{"default empty", []string{"codex"}, "", "", "codex"},
-		{"gpt-5.5 is the default → no inject", []string{"codex"}, "gpt-5.5", "", "codex"},
+		{"gpt-5.6-sol is the default → no inject", []string{"codex"}, "gpt-5.6-sol", "", "codex"},
+		{"gpt-5.5 is now an explicit override", []string{"codex"}, "gpt-5.5", "",
+			`codex -c model="gpt-5.5"`},
 		{"cross-provider → profile + catalog model", []string{"codex"}, "test-remote", "",
 			`codex --profile remote -c model="remote-pro"`},
 		{"same-provider variant → model override only", []string{"codex"}, "gpt-5.4", "",

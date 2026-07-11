@@ -1,6 +1,6 @@
 # Brief: window follows the attached client + `window` MCP tool
 
-Repo: ~/Obsidian/aviary/duck (Go CLI). Work on a branch off main, e.g.
+Repo: ~/aviary/products/duck (Go CLI). Work on a branch off main, e.g.
 `window-follows-client`. Keep `go build ./... && go test ./...` green.
 Read docs/WINDOW.md, command/window.go, command/openfwd.go,
 internal/openfwd/, internal/sshx/sshx.go, internal/channel/serve.go,

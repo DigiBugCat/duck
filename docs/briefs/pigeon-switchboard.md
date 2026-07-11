@@ -1,7 +1,7 @@
 # Brief: pigeon (Discord switchboard) + motherduck (fleet admin)
 
 Status: design brief, distilled from the 2026-07-05 motherduck session.
-Repo context: ~/Obsidian/aviary (umbrella). Pigeon would be a new bird
+Repo context: ~/aviary (umbrella). Pigeon would be a new bird
 (clone egg/, 73xx port, register in docs/registry.toml); the spool/room
 work lands in the duck repo.
 

@@ -212,7 +212,7 @@ func (s *server) tools() []tool {
 	ts = append(ts,
 		tool{
 			name:        "spawn",
-			description: "Launch a codex agent into this workspace (a durable, human-watchable TUI pane of this session) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (a gpt alias; gpt-5.4-mini for cheap mechanical work) and reasoning effort. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
+			description: "Launch a codex agent into this workspace (a durable, human-watchable TUI pane of this session) and optionally give it its first task. Returns in a few seconds with a handle once the agent is up — the RESULT is not in the reply; it arrives later as a <channel source=\"duck-agents\"> event, so do NOT poll or tail. Safe to launch several in parallel. Optionally pick a model (a gpt alias; gpt-5.6-luna for cheap mechanical work) and reasoning effort. Prefer this over shelling out to `duck spawn`. Use for bounded/executor work (codex is a strong executor); for open-ended thinking use a native subagent.",
 			schema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -221,8 +221,8 @@ func (s *server) tools() []tool {
 					"tab":    map[string]any{"type": "string", "description": "optional agent group stamp"},
 					"model": map[string]any{
 						"type":        "string",
-						"description": "optional model for this agent (default: the codex config default, gpt-5.5); gpt-5.4-mini suits cheap mechanical work.",
-						"enum":        []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"},
+						"description": "optional model for this agent (default: the codex config default, gpt-5.6-sol — the frontier tier); gpt-5.6-terra for balanced everyday work, gpt-5.6-luna for cheap mechanical work.",
+						"enum":        []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"},
 					},
 					"effort": map[string]any{
 						"type":        "string",
@@ -297,7 +297,7 @@ func (s *server) tools() []tool {
 		},
 		tool{
 			name: "workflow",
-			description: "Run a deterministic multi-agent workflow: a JS script you write whose control flow (loops, fan-out, barriers) is plain code, where each agent() call runs ONE disposable headless codex executor (the codex gpt default; pass model/effort per call — gpt-5.4-mini with low effort suits cheap mechanical stages). Workers are processes, not panes: the RUN is the one visible thing (`duck workflows`). Returns a wf_ run id in a couple seconds; the RESULT is not in the reply — the run reports through the channel (workflow_started, workflow_phase per phase() transition, and workflow_complete carrying the result summary), so do NOT poll or tail; react when events land. " +
+			description: "Run a deterministic multi-agent workflow: a JS script you write whose control flow (loops, fan-out, barriers) is plain code, where each agent() call runs ONE disposable headless codex executor (the codex gpt default; pass model/effort per call — gpt-5.6-luna with low effort suits cheap mechanical stages). Workers are processes, not panes: the RUN is the one visible thing (`duck workflows`). Returns a wf_ run id in a couple seconds; the RESULT is not in the reply — the run reports through the channel (workflow_started, workflow_phase per phase() transition, and workflow_complete carrying the result summary), so do NOT poll or tail; react when events land. " +
 				"ROUTING: use a workflow for fan-out work one pass shouldn't be trusted with or one context can't hold — audits, migrations, review-then-adversarially-verify, judge panels, loop-until-dry discovery — and only at the human's scale of ask; a single bounded task is a spawn. " +
 				"SCRIPT SURFACE (plain JS, no TS): must begin `export const meta = {name, description}` as a PURE literal. Globals: agent(prompt, opts?) -> Promise (opts: {label, model, effort, cwd, write, schema} — schema forces a validated JSON object return, retried via session-resume on mismatch; workers are sandboxed read-only unless write:true; a failed worker resolves to null, so .filter(Boolean)); pipeline(items, ...stages) (per-item chains, NO barrier between stages — the default for multi-stage work; stages get (prev, item, i)); parallel(thunks) (a BARRIER — only when a stage needs ALL prior results, e.g. dedup); phase(title) + log(msg) (progress narration); args (the args input, verbatim); budget {total, spent(), remaining()} in tokens — agent() throws once total is exhausted. " +
 				"The script's return value becomes the run's result (persisted to result.json, summarized in the completion event). Every completed agent() call is journaled; pass resume_from with a prior run id to replay unchanged calls from its journal and only run what changed. Default worker concurrency 64; runaway backstop 1000 agents. To inspect or kill a run: duck workflows tail|stop <run-id>.",

@@ -29,9 +29,9 @@ import (
 var codexBin = "codex"
 
 // DefaultModel is the worker tier when an agent() call names none: the codex
-// gpt default. Scripts opt down to cheaper gpt tiers (e.g. gpt-5.4-mini) per
+// gpt default. Scripts opt down to cheaper gpt tiers (e.g. gpt-5.6-luna) per
 // call when mechanical work warrants it.
-const DefaultModel = "gpt-5.5"
+const DefaultModel = "gpt-5.6-sol"
 
 // schemaRetries is how many resume-nudges a schema mismatch gets.
 const schemaRetries = 2

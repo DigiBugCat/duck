@@ -11,7 +11,7 @@
 //   - same-provider (a different model on the default OpenAI provider):
 //     just `-c model="<id>"`; no profile.
 //
-// The default (empty alias, or "gpt-5.5") injects nothing — the agent inherits
+// The default (empty alias, or "gpt-5.6-sol") injects nothing — the agent inherits
 // ~/.codex/config.toml, so the existing fleet is untouched.
 package agent
 
@@ -34,10 +34,15 @@ type modelSpec struct {
 // a row here with Profile set.
 var models = map[string]modelSpec{
 	// Default OpenAI provider — variant models via a plain model override.
-	// "gpt-5.5" is the config default → no override (empty modelSpec).
-	"gpt-5.5":            {},
-	"gpt-5.4":            {Model: "gpt-5.4"},
-	"gpt-5.4-mini":       {Model: "gpt-5.4-mini"},
+	// "gpt-5.6-sol" is the config default → no override (empty modelSpec).
+	// 5.6 tiers: sol = frontier flagship, terra = balanced everyday,
+	// luna = fast/affordable.
+	"gpt-5.6-sol":         {},
+	"gpt-5.6-terra":       {Model: "gpt-5.6-terra"},
+	"gpt-5.6-luna":        {Model: "gpt-5.6-luna"},
+	"gpt-5.5":             {Model: "gpt-5.5"},
+	"gpt-5.4":             {Model: "gpt-5.4"},
+	"gpt-5.4-mini":        {Model: "gpt-5.4-mini"},
 	"gpt-5.3-codex-spark": {Model: "gpt-5.3-codex-spark"},
 }
 

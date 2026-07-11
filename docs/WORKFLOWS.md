@@ -21,7 +21,7 @@ Deltas from the original design, discovered while building:
     by default and works even in the read-only sandbox — validated live).
     DeepSeek workers CANNOT: the Moon Bridge proxy doesn't map the tool, and
     the model's attempt leaks raw DSML tool-call markup into its reply. A
-    research stage that needs the web must set {model: 'gpt-5.4-mini'} (or
+    research stage that needs the web must set {model: 'gpt-5.6-luna'} (or
     higher) on that agent() call. Live agent lines show searches as 🔎.
   - Channel lifecycle: a run publishes workflow_started, workflow_phase (one
     per phase() transition), and workflow_complete (with the result summary)
@@ -106,8 +106,9 @@ codex exec --json -o <dir>/last-message.json \
 - `--output-schema` gives native StructuredOutput. Fallback for tiers that
   fumble it: validate, then `codex exec resume <id>` with a "return ONLY
   valid JSON for this schema" nudge, twice, then `null`.
-- Default model tier: **gpt-5.5** (the codex config default). Per-call
-  `model`/`effort` opt-down to gpt-5.4-mini low-effort for finders,
+- Default model tier: **gpt-5.6-sol** (the codex config default; the
+  frontier tier — terra = balanced, luna = fast/cheap). Per-call
+  `model`/`effort` opt-down to gpt-5.6-luna low-effort for finders,
   transforms, and mechanical stages. Same alias resolution as spawn
   (`internal/agent/model.go`).
 - Sandbox: `-s read-only` unless the script marks a stage `write: true`
