@@ -78,6 +78,9 @@ func effectiveTsshAttach(transport string, lookPath func(string) (string, error)
 // build assembles the wiring from the configured hub, warming the SSH
 // control-master so the subsequent calls reuse it.
 func build() (*wiring, error) {
+	// Keep this laptop's Ghostty keybinds (⌘K palette / ⌘⇧F fleet) installed —
+	// best-effort, no-op where Ghostty isn't present.
+	ensureGhosttyKeybinds()
 	// Hub-local mode first: when THIS machine is the hub (explicit is_hub, or
 	// the names.json probe — see config.LocalHub), no hub address is needed and
 	// every call runs against the local tmux server. Checked BEFORE RequireHub so
