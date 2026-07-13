@@ -317,8 +317,9 @@ func (m model) window() (int, int) {
 	return start, end
 }
 
-// Confirm shows a one-line y/N prompt as its own tiny program (the palette's
-// kill-workspace guard). Only an explicit y/Y confirms; everything else is no.
+// Confirm shows a one-line Y/n prompt as its own tiny program (the palette's
+// kill-workspace guard). Enter accepts the default; an explicit n/N or escape
+// cancels.
 func Confirm(prompt string) (bool, error) {
 	final, err := tea.NewProgram(confirmModel{prompt: prompt}).Run()
 	if err != nil {
@@ -337,14 +338,17 @@ func (c confirmModel) Init() tea.Cmd { return nil }
 
 func (c confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok {
-		if s := k.String(); s == "y" || s == "Y" {
+		switch k.String() {
+		case "enter", "y", "Y":
 			c.yes = true
+			return c, tea.Quit
+		case "esc", "n", "N":
+			return c, tea.Quit
 		}
-		return c, tea.Quit
 	}
 	return c, nil
 }
 
 func (c confirmModel) View() string {
-	return c.prompt + " " + keyStyle.Render("y") + helpStyle.Render("/N ")
+	return c.prompt + " " + keyStyle.Render("Y") + helpStyle.Render("/n ")
 }

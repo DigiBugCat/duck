@@ -14,7 +14,7 @@ func TestMatch(t *testing.T) {
 	}{
 		{"", "anything", true},
 		{"abc", "abc", true},
-		{"abc", "a-b-c", true},       // subsequence, not substring
+		{"abc", "a-b-c", true},         // subsequence, not substring
 		{"KW", "kill workspace", true}, // case-insensitive
 		{"jmp", "jump: main", true},
 		{"abc", "acb", false}, // order matters
@@ -62,6 +62,35 @@ func key(m model, k tea.KeyMsg) model {
 }
 
 func runes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+
+func TestConfirmDefaultsYes(t *testing.T) {
+	cases := []struct {
+		name string
+		key  tea.KeyMsg
+		yes  bool
+		quit bool
+	}{
+		{"enter accepts default", tea.KeyMsg{Type: tea.KeyEnter}, true, true},
+		{"y confirms", runes("y"), true, true},
+		{"n cancels", runes("n"), false, true},
+		{"escape cancels", tea.KeyMsg{Type: tea.KeyEsc}, false, true},
+		{"unrelated key waits", runes("x"), false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, cmd := (confirmModel{prompt: "kill?"}).Update(tc.key)
+			if got := m.(confirmModel).yes; got != tc.yes {
+				t.Fatalf("yes = %v, want %v", got, tc.yes)
+			}
+			if got := cmd != nil; got != tc.quit {
+				t.Fatalf("quit command present = %v, want %v", got, tc.quit)
+			}
+		})
+	}
+	if got := (confirmModel{prompt: "kill?"}).View(); got != "kill? "+keyStyle.Render("Y")+helpStyle.Render("/n ") {
+		t.Fatalf("view = %q", got)
+	}
+}
 
 func TestModelNavigationAndCommit(t *testing.T) {
 	items := []Item{{Label: "alpha"}, {Label: "beta"}, {Label: "gamma"}}
