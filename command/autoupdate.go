@@ -147,7 +147,6 @@ func init() {
 		if home, err := os.UserHomeDir(); err == nil {
 			ensureAgentNotes(home)
 			ensureExecutorNotes(home)
-			cleanupDuckAgentsRegistration(home)
 		}
 	}
 }

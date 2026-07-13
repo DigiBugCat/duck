@@ -101,8 +101,7 @@ const DefaultConcurrency = 64
 // maxAgents is the runaway-loop backstop, far above any real workflow.
 const maxAgents = 1000
 
-// home resolves the duck home dir ($DUCK_HOME test seam, else ~/.duck) —
-// mirrors the channel spool.
+// home resolves the duck home dir ($DUCK_HOME test seam, else ~/.duck).
 func home() (string, error) {
 	if d := os.Getenv("DUCK_HOME"); d != "" {
 		return d, nil

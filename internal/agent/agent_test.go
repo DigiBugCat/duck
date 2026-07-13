@@ -54,7 +54,7 @@ func TestWire(t *testing.T) {
 	if !strings.Contains(line, "--dangerously-bypass-approvals-and-sandbox") {
 		t.Fatalf("Wire(codex) = %q", line)
 	}
-	for _, stale := range []string{"notify=", "hooks=", "channel", "hook-trust"} {
+	for _, stale := range []string{"notify=", "hooks=", "hook-trust"} {
 		if strings.Contains(line, stale) {
 			t.Fatalf("Wire retained %q in %q", stale, line)
 		}
