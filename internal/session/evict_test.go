@@ -99,7 +99,7 @@ func TestReviveRecreatesAndResumesClaude(t *testing.T) {
 			t.Fatalf("missing command %q in:\n%s", want, joined)
 		}
 	}
-	for _, want := range []string{"tmux send-keys -t 'foo'", "claude", "--resume", "abc-123", "--model", "opus", "--dangerously-skip-permissions", "--dangerously-load-development-channels", "server:duck-agents"} {
+	for _, want := range []string{"tmux send-keys -t 'foo'", "claude", "--resume", "abc-123", "--model", "opus", "--dangerously-skip-permissions", "@duck_manager_active"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("revive send line missing %q in:\n%s", want, joined)
 		}

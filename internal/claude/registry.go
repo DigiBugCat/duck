@@ -227,6 +227,56 @@ func (r *Registry) EnsureMCPServer(name string, server map[string]any) (added bo
 	return false, fmt.Errorf("~/.claude.json kept changing under us; skipped registering mcpServer %q (will retry next launch)", name)
 }
 
+// RemoveMCPServer deletes one named top-level MCP registration while preserving
+// every unrelated server and registry key. Missing files, maps, and names are
+// successful no-ops. This generic primitive supports narrow product migrations.
+func (r *Registry) RemoveMCPServer(name string) (removed bool, err error) {
+	unlock := r.lock()
+	defer unlock()
+
+	const maxAttempts = 5
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		before := r.modTime()
+		top, _, err := r.load()
+		if err != nil {
+			return false, err
+		}
+		servers := map[string]json.RawMessage{}
+		raw, ok := top["mcpServers"]
+		if !ok || len(bytes.TrimSpace(raw)) == 0 {
+			return false, nil
+		}
+		if err := json.Unmarshal(raw, &servers); err != nil {
+			return false, fmt.Errorf("~/.claude.json mcpServers is not an object: %w", err)
+		}
+		if _, ok := servers[name]; !ok {
+			return false, nil
+		}
+		delete(servers, name)
+		if len(servers) == 0 {
+			delete(top, "mcpServers")
+		} else {
+			serversRaw, err := json.Marshal(servers)
+			if err != nil {
+				return false, err
+			}
+			top["mcpServers"] = serversRaw
+		}
+		out, err := json.MarshalIndent(top, "", "  ")
+		if err != nil {
+			return false, err
+		}
+		if !r.modTime().Equal(before) {
+			continue
+		}
+		if err := r.atomicWrite(out); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("~/.claude.json kept changing under us; skipped removing mcpServer %q (will retry next launch)", name)
+}
+
 // atomicWrite streams to a temp sibling then renames over the target, so a
 // reader never sees a partial file. Mode 0600 matches Claude's own (the file
 // holds auth material).

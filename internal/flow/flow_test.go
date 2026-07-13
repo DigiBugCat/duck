@@ -660,7 +660,7 @@ func sawNewSessionIn(r *fakeRunner, hubCExpr string) bool {
 // id, so the cleanup tests can seed its canned output (mirrors the session
 // package's own format string without importing the private const).
 func untouchedQueryFor(id string) string {
-	return "tmux display-message -p -t '" + id + "' '#{session_windows}|#{window_panes}|#{pane_current_command}|#{history_size}|#{pane_id}|#{@duck_manager}|#{@duck_state}'"
+	return "tmux display-message -p -t '" + id + "' '#{session_windows}|#{window_panes}|#{pane_current_command}|#{history_size}|#{pane_id}|#{@duck_manager}|#{@duck_manager_active}'"
 }
 
 // namesLoadCmd is the exact remote command names.Store.Load issues, so a test

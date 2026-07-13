@@ -48,19 +48,18 @@ func TestCodexInsertAt(t *testing.T) {
 	}
 }
 
-// TestWire applies all injectors; a codex spawn gets full-access, notify,
-// SessionStart hook, and hook-trust; non-codex is untouched.
+// TestWire keeps codex launch defaults transport-neutral.
 func TestWire(t *testing.T) {
 	line := strings.Join(Wire([]string{"codex"}), " ")
-	for _, want := range []string{
-		"--dangerously-bypass-approvals-and-sandbox", "notify=",
-		"hooks={SessionStart", "UserPromptSubmit", "--dangerously-bypass-hook-trust", "channel hook",
-	} {
-		if !strings.Contains(line, want) {
-			t.Errorf("Wire(codex) missing %q in %q", want, line)
+	if !strings.Contains(line, "--dangerously-bypass-approvals-and-sandbox") {
+		t.Fatalf("Wire(codex) = %q", line)
+	}
+	for _, stale := range []string{"notify=", "hooks=", "channel", "hook-trust"} {
+		if strings.Contains(line, stale) {
+			t.Fatalf("Wire retained %q in %q", stale, line)
 		}
 	}
 	if got := strings.Join(Wire([]string{"cargo", "watch"}), " "); got != "cargo watch" {
-		t.Errorf("Wire(non-codex) = %q, want untouched", got)
+		t.Fatalf("Wire(non-codex) = %q", got)
 	}
 }

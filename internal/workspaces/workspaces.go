@@ -57,7 +57,6 @@ type Record struct {
 	Dir        string    `json:"dir"`                  // tilde-form project dir (the grouping key)
 	Title      string    `json:"title,omitempty"`      // role/title, the workspace's report line
 	Persistent bool      `json:"persistent,omitempty"` // heal me back into existence after reboot
-	Channels   bool      `json:"channels,omitempty"`   // manager pane launched channel-enabled
 	Created    time.Time `json:"created"`
 	Updated    time.Time `json:"updated"`
 }

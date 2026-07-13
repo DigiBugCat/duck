@@ -130,9 +130,8 @@ func (m *Manager) List() ([]Sess, error) {
 // first session. Matched as substrings so the socket path is ignored. The second
 // form is anchored on "error connecting to" so it can't be confused with an
 // unrelated ENOENT from a real transport failure.
-// IsNoServer is the exported form of isNoServer for other packages that read
-// tmux directly (internal/channel drives the LOCAL server) and must treat an
-// empty/never-started server as a quiet no-op rather than an error.
+// IsNoServer is the exported form of isNoServer for packages that query tmux
+// directly and must treat an empty or never-started server as a quiet no-op.
 func IsNoServer(s string) bool { return isNoServer(s) }
 
 func isNoServer(s string) bool {
@@ -261,12 +260,12 @@ func (m *Manager) AttachAndWait(id string) error {
 // untouchedFormat is the single `tmux display-message` template IsUntouched
 // queries: window count | pane count | the pane's current command | the pane's
 // scrollback history size | the pane's id | @duck_manager (the session's
-// duck-launched manager pane, empty if none) | @duck_state (stamped by the
+// duck-launched manager pane, empty if none) | @duck_manager_active (stamped by the
 // manager's UserPromptSubmit hook on the first real prompt — see
 // manager.hookSettings; empty = never prompted). The order is the contract
 // with IsUntouched's parse; the option fields go LAST because they may be
 // empty.
-const untouchedFormat = "#{session_windows}|#{window_panes}|#{pane_current_command}|#{history_size}|#{pane_id}|#{@duck_manager}|#{@duck_state}"
+const untouchedFormat = "#{session_windows}|#{window_panes}|#{pane_current_command}|#{history_size}|#{pane_id}|#{@duck_manager}|#{@duck_manager_active}"
 
 // loginShells are the interactive login shells a FRESH, never-touched session's
 // single pane sits at. A different pane_current_command means the user launched
@@ -278,7 +277,7 @@ var loginShells = map[string]bool{"zsh": true, "bash": true, "sh": true, "fish":
 // pane still at a login shell (zsh/bash/sh/fish) with an empty scrollback
 // (history_size==0 — the --shell / bare-shell case), OR the pane is the
 // duck-launched workspace manager (@duck_manager == its pane_id) that was
-// NEVER prompted (@duck_state empty — the UserPromptSubmit hook duck wires
+// NEVER prompted (@duck_manager_active empty — the UserPromptSubmit hook duck wires
 // into the manager launch line stamps it on the first submit; scrollback is
 // useless here because claude redraws in-viewport and history stays 0 even
 // after a real conversation — verified empirically). It issues a SINGLE tmux
@@ -310,12 +309,12 @@ func (m *Manager) IsUntouched(id string) (bool, error) {
 	history := strings.TrimSpace(fields[3])
 	paneID := strings.TrimSpace(fields[4])
 	managerPane := strings.TrimSpace(fields[5])
-	state := strings.TrimSpace(fields[6])
+	activity := strings.TrimSpace(fields[6])
 	if windows != "1" || panes != "1" {
 		return false, nil
 	}
 	freshShell := loginShells[cmd] && history == "0"
-	unpromptedManager := managerPane != "" && managerPane == paneID && state == ""
+	unpromptedManager := managerPane != "" && managerPane == paneID && activity == ""
 	return freshShell || unpromptedManager, nil
 }
 

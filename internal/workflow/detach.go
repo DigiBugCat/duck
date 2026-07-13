@@ -1,10 +1,10 @@
 //go:build unix
 
-// detach.go launches a prepared run's engine as its own detached process —
-// how the MCP tool (and `duck workflows run` without --fg) returns a handle
-// in milliseconds while the run continues without a parent. The child is the
-// hidden `duck workflows exec <run-id>` verb in its own session (Setsid), so
-// it survives the spawning sidecar/CLI and Stop can address its group.
+// detach.go launches a prepared run's engine as its own detached process.
+// `duck workflows run` returns a handle while the run continues without a
+// parent. The child is the hidden `duck workflows exec <run-id>` verb in its
+// own session (Setsid), so it survives the spawning CLI and Stop can address
+// its process group.
 package workflow
 
 import (

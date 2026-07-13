@@ -1,33 +1,16 @@
-// Package agent is duck's shared codex-agent spawn pipeline: the argv injectors
-// that wire a codex launch (full access, notify + SessionStart hooks, hook
-// trust) and the Spawn/Resume/Fork orchestration over tmuxdb + channel.
-//
-// It exists so the CLI (command/spawn.go) and the MCP tool surface
-// (internal/channel serve) share ONE pipeline — a codex agent spawned either way
-// gets the exact same wiring, so it is bound + attributed identically. Neither
-// caller may reimplement the injectors; that divergence is what let an MCP spawn
-// skip the notify hook in the original design.
+// Package agent owns duck's transport-neutral spawn pipeline: Codex launch
+// defaults plus Spawn, Resume, and Fork orchestration over tmuxdb.
 package agent
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
-	"github.com/DigiBugCat/duck/internal/channel"
-	"github.com/DigiBugCat/duck/internal/tmuxdb"
 	"github.com/DigiBugCat/duck/internal/paths"
+	"github.com/DigiBugCat/duck/internal/tmuxdb"
 )
-
-// selfBin resolves this duck binary for wiring hooks/notify back to it. Falls
-// back to "duck" on PATH — best-effort, never blocks a spawn.
-func selfBin() string {
-	if p, err := os.Executable(); err == nil {
-		return p
-	}
-	return "duck"
-}
 
 // isCodex reports whether argv launches codex (the injectors only touch codex).
 func isCodex(args []string) bool {
@@ -47,10 +30,10 @@ func codexInsertAt(args []string) int {
 	return 1
 }
 
-// WithFullAccess injects --dangerously-bypass-approvals-and-sandbox for codex
-// spawns unless the user stated their own approval/sandbox preference. Sidebar
-// agents run autonomously under supervision (channel + a visible pane are the
-// oversight); per-command approval prompts just stall them.
+// WithFullAccess injects --dangerously-bypass-approvals-and-sandbox for Codex
+// spawns unless the user stated their own approval or sandbox preference.
+// Spawned processes are operator-visible tmux panes; interactive approval
+// prompts would otherwise leave unattended jobs stalled.
 func WithFullAccess(args []string) []string {
 	if !isCodex(args) {
 		return args
@@ -69,79 +52,8 @@ func WithFullAccess(args []string) []string {
 	return append(out, args[at:]...)
 }
 
-// WithNotify wires codex's end-of-turn notify hook to `duck channel notify` —
-// the stable attribution floor (pins the rollout from the turn payload's thread
-// id). Skipped when the user set their own notify.
-func WithNotify(args []string) []string {
-	if !isCodex(args) {
-		return args
-	}
-	for _, a := range args {
-		if strings.HasPrefix(a, "notify=") {
-			return args
-		}
-	}
-	at := codexInsertAt(args)
-	out := append([]string{}, args[:at]...)
-	out = append(out, "-c", fmt.Sprintf(`notify=[%q,"channel","notify"]`, selfBin()))
-	return append(out, args[at:]...)
-}
-
-// WithSessionHook wires codex's SessionStart AND UserPromptSubmit hooks to `duck
-// channel hook`. Two events, two jobs:
-//   - SessionStart binds the pane's exact session id + rollout at the first turn
-//     (race-free even under fan-out).
-//   - UserPromptSubmit stamps @duck_last_prompt on EVERY submit (turn_id) — the
-//     ground-truth "the prompt actually submitted" signal Send confirms against
-//     (SessionStart fires only once; UserPromptSubmit fires per turn).
-//
-// Both go in one inline `-c hooks=...` TOML table. Requires WithHookTrust or
-// codex silently skips them. Skipped when the user wired their own hooks.
-func WithSessionHook(args []string) []string {
-	if !isCodex(args) {
-		return args
-	}
-	for _, a := range args {
-		if strings.HasPrefix(a, "hooks.") || strings.HasPrefix(a, "hooks=") {
-			return args
-		}
-	}
-	at := codexInsertAt(args)
-	out := append([]string{}, args[:at]...)
-	self := selfBin() + " channel hook"
-	hook := fmt.Sprintf(
-		`hooks={SessionStart=[{hooks=[{type="command",command=%[1]q}]}],UserPromptSubmit=[{hooks=[{type="command",command=%[1]q}]}]}`,
-		self)
-	out = append(out, "-c", hook)
-	return append(out, args[at:]...)
-}
-
-// WithHookTrust injects --dangerously-bypass-hook-trust (a GLOBAL flag, before
-// any subcommand). VERIFIED load-bearing: without it codex SILENTLY skips duck's
-// SessionStart hook. duck vets its own hook, so the bypass is safe here.
-func WithHookTrust(args []string) []string {
-	if !isCodex(args) {
-		return args
-	}
-	for _, a := range args {
-		if a == "--dangerously-bypass-hook-trust" {
-			return args
-		}
-	}
-	out := append([]string{}, args[:1]...)
-	out = append(out, "--dangerously-bypass-hook-trust")
-	return append(out, args[1:]...)
-}
-
-// Wire applies every codex injector in order. This is THE pipeline both callers
-// use — a codex agent spawned via the CLI or an MCP tool is wired identically.
-func Wire(args []string) []string {
-	args = WithFullAccess(args)
-	args = WithNotify(args)
-	args = WithSessionHook(args)
-	args = WithHookTrust(args)
-	return args
-}
+// Wire applies transport-neutral codex launch defaults.
+func Wire(args []string) []string { return WithFullAccess(args) }
 
 // UniqueName returns base if no agent in outer already carries it, else the
 // first free base-2, base-3, … so bare `spawn codex` × N don't all become
@@ -176,19 +88,14 @@ type Spec struct {
 	Effort string   // optional reasoning effort (low|medium|high); "" → codex default
 }
 
-// Result is the receipt of a launch: the pane id (instant, stable handle) and,
-// when known, the codex session id (bound at first turn by the SessionStart
-// hook — nil until then).
+// Result is the receipt of a launch.
 type Result struct {
-	Name      string // the resolved agent label (after unique-name derivation)
-	PaneID    string
-	SessionID string // "" until the SessionStart hook has fired (first turn)
+	Name   string // the resolved agent label (after unique-name derivation)
+	PaneID string // instant, stable tmux handle
 }
 
-// Launch runs the full spawn pipeline: wire the codex argv, spawn the pane
-// into the workspace session itself, optionally deliver the first turn, and
-// read back the session id the hook stamped (best-effort — may be "" if the
-// agent hasn't taken its first turn yet). Shared by the CLI and the MCP tool.
+// Launch applies launch defaults, spawns the pane in the workspace session,
+// and optionally delivers its first prompt.
 func Launch(run tmuxdb.Runner, outer, dir string, spec Spec) (Result, error) {
 	// Model/effort are codex-only concepts (see defaultArgs): setting one with no
 	// command means "a codex agent on this model", not a bare shell. Runs before
@@ -229,16 +136,40 @@ func Launch(run tmuxdb.Runner, outer, dir string, spec Spec) (Result, error) {
 	}
 	res := Result{Name: name, PaneID: paneID}
 	if spec.Prompt != "" {
-		ref := channel.AgentRef{Session: outer, Name: name, WindowID: paneID}
-		// Best-effort: a send failure never unspawns the agent.
-		_ = channel.SendWhenReady(run, ref, spec.Prompt)
-	}
-	// Read back the session id the SessionStart hook stamped (present once the
-	// first turn fired — e.g. after a delivered Prompt). Best-effort.
-	if out, err := run("show-options", "-p", "-t", paneID, "-v", tmuxdb.SessionOption); err == nil {
-		res.SessionID = strings.TrimSpace(out)
+		if isCodex(args) {
+			awaitComposer(run, paneID, 15*time.Second)
+		}
+		// Best-effort: a prompt delivery failure never destroys the spawned pane.
+		_ = SendPrompt(run, paneID, spec.Prompt)
 	}
 	return res, nil
+}
+
+// awaitComposer waits until Codex displays its input prompt. Timeout is
+// best-effort: a slow or differently themed client still receives the text.
+func awaitComposer(run tmuxdb.Runner, paneID string, timeout time.Duration) {
+	const every = 500 * time.Millisecond
+	for elapsed := time.Duration(0); elapsed <= timeout; elapsed += every {
+		if out, err := run("capture-pane", "-p", "-t", paneID); err == nil && strings.Contains(out, "›") {
+			return
+		}
+		time.Sleep(every)
+	}
+}
+
+// SendPrompt delivers text to a pane without rollout or session hooks.
+// The short delay separates the literal paste from Enter for terminal UIs.
+func SendPrompt(run tmuxdb.Runner, paneID, prompt string) error {
+	if _, err := run("send-keys", "-t", paneID, "-l", "--", prompt); err != nil {
+		return err
+	}
+	beat := 250 * time.Millisecond
+	if len(prompt) > 256 {
+		beat = 750 * time.Millisecond
+	}
+	time.Sleep(beat)
+	_, err := run("send-keys", "-t", paneID, "Enter")
+	return err
 }
 
 // ResumeArgs / ForkArgs build the codex argv for continuing or branching a

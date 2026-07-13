@@ -524,11 +524,9 @@ func (f *Flow) EnsureSession(tildeDir string, forceNew bool) (tmuxName string, c
 	if err := f.sessions.New(id, tildeDir); err != nil {
 		return "", false, err
 	}
-	// The durable workspace-ledger record is written SYNCHRONOUSLY: the launch
-	// paths stamp Channels onto this same record file right after launching
-	// (stampManagerLaunched does Load→Save), and Store.Save is a whole-file
-	// overwrite — a backgrounded bare Save landing after the stamp would
-	// silently clobber it. Writing it here guarantees the stamp writes last.
+	// Write the durable workspace-ledger record synchronously before background
+	// naming work starts. Store.Save is a whole-file overwrite, so launch-time
+	// metadata must have one clear serialization point.
 	if f.workspaces != nil {
 		_ = f.workspaces.Save(workspaces.Record{Name: id, Dir: tildeDir})
 	}
@@ -670,9 +668,9 @@ func (f *Flow) RunWithOverride(cwd string, override Override) error {
 	if err != nil {
 		return err
 	}
-	// A duck workspace is an EMPLOYEE whose manager is claude in the main pane, so
-	// on a FRESHLY minted session duck launches the manager itself (channel flags
-	// included) rather than dropping the human into a bare shell. Only for a
+	// A duck workspace has Claude as the manager in its main pane, so on a
+	// freshly minted session duck launches the manager rather than dropping the
+	// human into a bare shell. Only for a
 	// created session — a reused/reattached one must NOT be sent anything. Nil
 	// launcher (`duck --shell`, or callers that don't wire it) keeps the old
 	// bare-shell behavior.

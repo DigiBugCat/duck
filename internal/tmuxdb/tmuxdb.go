@@ -59,15 +59,11 @@ const PanelOfOption = "@duck_panel_of"
 // Pane user options carrying each agent's identity (they travel with the
 // pane wherever it sits):
 const (
-	NameOption      = "@duck_name"        // agent label
-	kindOption      = "@duck_kind"        // agent grouping (see Kinds)
-	SpawnedAtOption = "@duck_spawned_at"  // unix epoch of spawn (channel pairing)
-	RolloutOption   = "@duck_rollout"     // cached codex rollout path
-	SessionOption   = "@duck_session"     // codex session id (durable resume/fork handle)
-	PromptOption    = "@duck_last_prompt" // codex turn id of the last submitted prompt (Send submit-confirm)
-	CmdOption       = "@duck_cmd"         // spawn cmdline (channel pairing eligibility)
-	StateOption     = "@duck_state"       // busy/idle, stamped by the codex hooks (status bar glyphs)
-	anchorOption    = "@duck_anchor"      // legacy: the retired lot's keep-alive pane (skip on reads)
+	NameOption      = "@duck_name"       // agent label
+	kindOption      = "@duck_kind"       // agent grouping (see Kinds)
+	SpawnedAtOption = "@duck_spawned_at" // unix epoch of spawn (age and ordering)
+	CmdOption       = "@duck_cmd"        // original spawn command for fleet display
+	anchorOption    = "@duck_anchor"     // legacy: the retired lot's keep-alive pane (skip on reads)
 )
 
 // Kinds group agents, stored per pane in kindOption.
@@ -276,12 +272,12 @@ const maxStatusAgents = 4
 
 // statusFmt lists the per-pane fields StatusLine needs, one list-panes call.
 // @duck_name may carry spaces, so it is LAST with a bounded split.
-const statusFmt = "#{pane_id}\t#{window_activity}\t#{" + StateOption + "}\t#{" + SpawnedAtOption + "}\t#{pane_current_command}\t#{" + anchorOption + "}\t#{" + NameOption + "}"
+const statusFmt = "#{pane_id}\t#{window_activity}\t#{pane_dead}\t#{" + SpawnedAtOption + "}\t#{pane_current_command}\t#{" + anchorOption + "}\t#{" + NameOption + "}"
 
 // statusPane is one stamped pane's slice of statusFmt.
 type statusPane struct {
 	name      string
-	state     string // @duck_state: "busy" or anything else (= idle)
+	dead      bool
 	cmd       string // pane_current_command
 	spawnedAt int64  // unix epoch, 0 when unstamped
 	activity  int64  // window_activity, recency key
@@ -298,9 +294,9 @@ func parseStatusPanes(out string) []statusPane {
 			continue
 		}
 		p := statusPane{
-			name:  strings.TrimSpace(f[6]),
-			state: strings.TrimSpace(f[2]),
-			cmd:   f[4],
+			name: strings.TrimSpace(f[6]),
+			dead: strings.TrimSpace(f[2]) == "1",
+			cmd:  f[4],
 		}
 		p.activity, _ = strconv.ParseInt(strings.TrimSpace(f[1]), 10, 64)
 		p.spawnedAt, _ = strconv.ParseInt(strings.TrimSpace(f[3]), 10, 64)
@@ -349,7 +345,7 @@ func renderStatusLine(panes []statusPane, lineNo int, now time.Time) string {
 	if len(panes) > maxStatusAgents && lineNo == maxStatusAgents-1 {
 		busy, idle := 0, 0
 		for _, p := range panes {
-			if p.state == "busy" {
+			if !p.dead {
 				busy++
 			} else {
 				idle++
@@ -359,7 +355,7 @@ func renderStatusLine(panes []statusPane, lineNo int, now time.Time) string {
 	}
 	p := panes[lineNo]
 	fields := []string{"●", p.name}
-	if p.state == "busy" {
+	if !p.dead {
 		fields = []string{"◐", p.name, p.cmd}
 	}
 	if age := statusAge(p.spawnedAt, now); age != "" {

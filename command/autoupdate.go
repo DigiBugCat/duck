@@ -147,10 +147,7 @@ func init() {
 		if home, err := os.UserHomeDir(); err == nil {
 			ensureAgentNotes(home)
 			ensureExecutorNotes(home)
-			// Register the duck-agents channel MCP server where Claude reads it.
-			// The manager line runs `duck panel` hub-side, so this self-installs on
-			// the hub (where the config files that matter live) on every run.
-			ensureChannelRegistration(home)
+			cleanupDuckAgentsRegistration(home)
 		}
 	}
 }

@@ -19,13 +19,11 @@ database (`internal/tmuxdb`), there is no daemon and no state file beyond
 dies with its pane, a split returns its rows to the manager — the layout
 takes care of itself.
 
-Landing in this same release (built in parallel; treat as in-flight until
-tagged): `duck palette` and `duck fleet` — one-shot pickers in tmux
+`duck palette` and `duck fleet` are one-shot pickers in tmux
 `display-popup -E` (palette = session-manager verbs: jump/kill/detach;
-fleet = live read-mostly roster of all agents) — and a dynamic multi-line
-status bar (`duck statusline` rendered via `status-format[i]`) with
-busy/idle glyphs driven by the existing notify/UserPromptSubmit hooks
-setting `@duck_state`.
+fleet = a live tmux roster). The dynamic multi-line status bar (`duck
+statusline` rendered via `status-format[i]`) reports pane liveness directly;
+duck does not infer model activity from transcript hooks.
 
 Legacy note: pre-teardown workspaces parked agents in a hidden
 `<session>-agents` companion session. `tmuxdb.Agents` still reads those so
@@ -80,10 +78,10 @@ duck update                          # hub; retry once — the release API lags 
 ssh andrew.sulistio@loki '~/.local/bin/duck update'   # laptops (or wait for hourly auto-update)
 ```
 
-## Driving agents programmatically
+## Driving durable panes
 
-Agents are addressable with three primitives — see internal/channel:
-`tmux send-keys -t <pane> -l -- <text>` (input; `--` guards dash-leading
-text; 250ms gap before Enter or a TUI treats it as a paste), rollout JSONL
-tail (structured output; codex writes ~/.codex/sessions/...), capture-pane
-(screen). `duck channel ls|tail|send|serve` wraps these.
+`duck spawn` creates an operator-visible process and prints its tmux pane ID.
+Use tmux directly for later interaction: `send-keys -t <pane> -l -- <text>`
+(`--` guards dash-leading text), pause before Enter so a TUI does not treat
+both as one paste, and `capture-pane -p -t <pane>` for screen text. Model
+delegation belongs to Claude Code's native Agent and Workflow facilities.

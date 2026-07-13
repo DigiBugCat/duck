@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// fakeRunner mirrors internal/channel's test fake: scripted argv → output.
+// fakeRunner maps scripted tmux argv to canned output.
 type fakeRunner struct {
 	calls []string
 	out   map[string]string
@@ -33,7 +33,7 @@ func TestPaletteEntries(t *testing.T) {
 	f := &fakeRunner{out: map[string]string{
 		// Window names are free text; the last one exercises a name with tabs'
 		// worth of trouble (spaces + colon) and the trailing-field tolerance.
-		"list-windows -t work -F #{window_index}\t#{window_name}": "0\tmain\n1\tcodex-1\n2\tbuild: watch\n",
+		"list-windows -t work -F #{window_index}\t#{window_name}":                                                                         "0\tmain\n1\tcodex-1\n2\tbuild: watch\n",
 		"list-panes -s -t work -F " + "#{pane_id}\t#{@duck_name}\t#{@duck_kind}\t#{@duck_anchor}\t#{pane_current_command}\t#{pane_title}": agentsLine("%3", "codex-1", "codex") + "\n" + agentsLine("%5", "build", "cargo"),
 	}}
 	entries, err := paletteEntries(f.run, "work")

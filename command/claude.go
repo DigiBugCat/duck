@@ -50,17 +50,13 @@ duck session inside another.`,
 		// pane's interactive shell defines a `claude` FUNCTION that owns profile
 		// flags (--ben/--will → CLAUDE_CONFIG_DIR + token) and otherwise forwards to
 		// `command claude`. Inside a tmux/duck pane that function never routes back
-		// to `duck claude`, so there is no alias loop. Channel flags are appended by
-		// managerLine unless already wired. The duck-agents MCP registration
-		// self-installs via the hub-side PersistentPreRun hook (duck panel runs it).
+		// to `duck claude`, so there is no alias loop. managerLine adds only the
+		// workspace-activity hook unless the caller supplied its own settings.
 		// One batched remote command: the launch line + the @duck_manager pane
 		// stamp (see managerLaunchCmd) — a single ssh roundtrip.
 		if _, err := w.client.Run(managerLaunchCmd(id, managerLine(args))); err != nil {
 			return err
 		}
-		// Stamp the durable record so the workspace is channel-aware. Best-effort:
-		// a ledger write must never block launching claude.
-		stampManagerLaunched(w, tildeDir, id, args)
 		// Join the background name/ledger bookkeeping EnsureSession started before
 		// handing the terminal over — the writes must land before duck exits.
 		w.flow.WaitBackground()

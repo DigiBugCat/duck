@@ -43,14 +43,13 @@ var spawnCmd = &cobra.Command{
 command, spawns an interactive shell. The first agent splits the active
 window; later ones get background windows (see the status bar's window list).
 
-Prints "spawned <name>\t<pane-id>"; the pane id is the stable handle for
-channel send/tail/reply (it never collides, even when agents share a cwd or
-label). With --prompt, delivers the first turn in the same call.
+Prints "spawned <name>\t<pane-id>"; the pane id is the stable tmux handle
+(it never collides, even when processes share a cwd or label). With --prompt,
+delivers the first turn in the same call.
 
-A codex agent's session id (printed on its channel events, stamped @duck_session)
-is a durable handle: --resume <id> continues that exact conversation; --fork <id>
-branches a NEW session that inherits its context (cheap fan-out — prime one, fork
-many). Both bind + attribute like any spawn.
+For Codex, --resume <id> continues an explicitly supplied session and --fork <id>
+branches a new session that inherits its context. Duck no longer discovers or
+stamps Codex session IDs; obtain the ID from Codex when you need either operation.
 
 Examples:
   duck spawn codex                          # codex TUI as an agent
@@ -69,8 +68,7 @@ Examples:
 		// --resume/--fork are shorthands that BUILD the codex argv: resume a codex
 		// session by id (same conversation, same session id — a durable handle) or
 		// fork it (a new session that inherits the parent's context, the cheap
-		// fan-out primitive). Both flow through the shared agent.Launch pipeline,
-		// so a resumed/forked agent is wired + bound + attributed like any spawn.
+		// fan-out primitive). Both flow through the shared agent.Launch pipeline.
 		if spawnResume != "" && spawnFork != "" {
 			return fmt.Errorf("--resume and --fork are mutually exclusive")
 		}
@@ -86,14 +84,9 @@ Examples:
 		if err != nil {
 			return err
 		}
-		// The pane id is the HANDLE — the true identity (tmux-as-db), stable
-		// through swaps and unambiguous when several agents share a cwd or label.
-		// Print it; add the session id once the hook has bound it (first turn).
-		if res.SessionID != "" {
-			fmt.Printf("spawned %s\t%s\t%s\n", res.Name, res.PaneID, res.SessionID)
-		} else {
-			fmt.Printf("spawned %s\t%s\n", res.Name, res.PaneID)
-		}
+		// The pane id is the stable tmux handle, unambiguous even when several
+		// processes share a cwd or label.
+		fmt.Printf("spawned %s\t%s\n", res.Name, res.PaneID)
 		return nil
 	},
 }

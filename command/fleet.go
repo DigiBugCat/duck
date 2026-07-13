@@ -1,9 +1,8 @@
 // `duck fleet` — the every-agent popup (bound to prefix-f via duck.tmux.conf,
 // run inside `display-popup -E`). One scrollable row per agent of the current
-// session: state glyph, name, running command, age, window — with the spawn
-// cmdline and the agent's last rollout activity as the detail line. Everything
-// is read live at open (tmux stamps + the channel's rollout parsing); the only
-// writes are the chosen verb: ⏎ jumps to the agent's window, x kills it and
+// session: liveness glyph, name, running command, age, and window, with the
+// spawn command as the detail line. Everything is read live from tmux; the
+// only writes are the chosen verb: ⏎ jumps to the agent's window, x kills it and
 // the list rebuilds. One-shot, nothing standing, nothing to heal.
 package command
 
@@ -14,23 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/DigiBugCat/duck/internal/channel"
 	"github.com/DigiBugCat/duck/internal/picker"
 	"github.com/DigiBugCat/duck/internal/tmuxdb"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
-
-// stateGlyph maps the channel's status classification to the roster glyphs.
-func stateGlyph(status string) string {
-	switch status {
-	case "working":
-		return "◐"
-	case "done":
-		return "●"
-	}
-	return "○"
-}
 
 // paneMeta is the per-pane detail the fleet needs beyond tmuxdb.Agent:
 // where the pane sits and the spawn stamps.
@@ -97,9 +84,7 @@ type fleetRow struct {
 	windowIndex string
 }
 
-// fleetRows assembles the live rows: identity from tmuxdb, placement/stamps
-// from paneMetas, state + last activity from the channel's rollout parsing
-// (Resolve + StatusByWindow + LastMessage — never reimplemented here).
+// fleetRows assembles live identity, placement, and spawn metadata from tmux.
 func fleetRows(run tmuxdb.Runner, outer string) ([]fleetRow, error) {
 	agents, err := tmuxdb.Agents(run, outer)
 	if err != nil {
@@ -113,20 +98,13 @@ func fleetRows(run tmuxdb.Runner, outer string) ([]fleetRow, error) {
 	rows := make([]fleetRow, 0, len(agents))
 	for _, a := range agents {
 		m := metas[a.PaneID]
-		label := fmt.Sprintf("%s %s · %s · %s · win %s",
-			stateGlyph(channel.StatusByWindow(run, a.PaneID)),
+		label := fmt.Sprintf("● %s · %s · %s · win %s",
 			a.Name, a.Command, fmtAge(m.spawnedAt, now), m.windowIndex)
 		task := m.cmd
 		if task == "" {
 			task = "(shell)"
 		}
 		detail := "task: " + task
-		ref := channel.AgentRef{Session: outer, Name: a.Name, WindowID: a.PaneID}
-		if last := channel.LastMessage(run, &ref); last != "" {
-			if line, _, _ := strings.Cut(last, "\n"); line != "" {
-				detail += " · " + line
-			}
-		}
 		rows = append(rows, fleetRow{
 			item:        picker.Item{Label: label, Detail: detail},
 			paneID:      a.PaneID,
@@ -192,7 +170,7 @@ func runFleet(run tmuxdb.Runner, outer string) error {
 
 var fleetCmd = &cobra.Command{
 	Use:   "fleet",
-	Short: "Every agent of this workspace: state, task, last activity (bind: prefix-f)",
+	Short: "Every process of this workspace: command, task, age, window (bind: prefix-f)",
 	Args:  cobra.NoArgs,
 	RunE: func(c *cobra.Command, args []string) error {
 		run := tmuxdb.ExecRunner

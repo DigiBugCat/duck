@@ -8,24 +8,24 @@ import (
 )
 
 // statusOut builds list-panes output in statusFmt order:
-// pane_id, window_activity, @duck_state, @duck_spawned_at, cmd, anchor, name.
+// pane_id, window_activity, pane_dead, @duck_spawned_at, cmd, anchor, name.
 func statusOut(rows ...string) string { return strings.Join(rows, "\n") + "\n" }
 
 func TestRenderStatusLine(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	out := statusOut(
-		"%1\t9000\tbusy\t9700\tcodex\t\talpha",   // 5m old, busy
-		"%2\t9500\t\t9940\tzsh\t\tbeta",          // 60s old, idle (unset state)
-		"%0\t9999\t\t\t\t\t",                     // unstamped manager: skipped
-		"%3\t9400\tidle\t9990\tnode\t1\tanchor",  // legacy anchor: skipped
+		"%1\t9000\tbusy\t9700\tcodex\t\talpha",  // 5m old, busy
+		"%2\t9500\t\t9940\tzsh\t\tbeta",         // 60s old, idle (unset state)
+		"%0\t9999\t\t\t\t\t",                    // unstamped manager: skipped
+		"%3\t9400\tidle\t9990\tnode\t1\tanchor", // legacy anchor: skipped
 	)
 	panes := parseStatusPanes(out)
 	if len(panes) != 2 {
 		t.Fatalf("parsed %d panes, want 2", len(panes))
 	}
 	// Sorted by window_activity desc: beta (9500) before alpha (9000).
-	if got := renderStatusLine(panes, 0, now); got != "● beta 1m" {
-		t.Errorf("line 0 = %q, want %q", got, "● beta 1m")
+	if got := renderStatusLine(panes, 0, now); got != "◐ beta zsh 1m" {
+		t.Errorf("line 0 = %q, want %q", got, "◐ beta zsh 1m")
 	}
 	if got := renderStatusLine(panes, 1, now); got != "◐ alpha codex 5m" {
 		t.Errorf("line 1 = %q, want %q", got, "◐ alpha codex 5m")
@@ -43,9 +43,9 @@ func TestRenderStatusLineAggregate(t *testing.T) {
 	now := time.Unix(10_000, 0)
 	var rows []string
 	for i := 0; i < 6; i++ {
-		state := "busy"
+		state := "0"
 		if i%2 == 1 {
-			state = ""
+			state = "1"
 		}
 		rows = append(rows, fmt.Sprintf("%%%d\t%d\t%s\t9990\tcodex\t\tagent-%d", i, 9000-i, state, i))
 	}

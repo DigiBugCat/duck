@@ -141,7 +141,6 @@ func mergeRecord(a, b workspaces.Record) workspaces.Record {
 	out.Dir = pickString(a.Dir, b.Dir, a.Updated, b.Updated)
 	out.Title = pickString(a.Title, b.Title, a.Updated, b.Updated)
 	out.Persistent = a.Persistent || b.Persistent
-	out.Channels = a.Channels || b.Channels
 	out.Created = pickTime(a.Created, b.Created, a.Updated, b.Updated)
 	if b.Updated.After(a.Updated) {
 		out.Updated = b.Updated

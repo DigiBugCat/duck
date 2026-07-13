@@ -17,8 +17,6 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
-
-	"github.com/DigiBugCat/duck/internal/channel"
 )
 
 // prelude defines the script-side orchestration helpers on top of the
@@ -39,10 +37,6 @@ globalThis.pipeline = (items, ...stages) => Promise.all(items.map(async (item, i
 	return r;
 }));
 `
-
-// digestMax caps the result summary in the completion digest (the full value
-// is in result.json).
-const digestMax = 1500
 
 // Run is one prepared workflow run: everything the engine needs, all on disk
 // so a detached executor process can Load and Execute it.
@@ -132,11 +126,11 @@ func Load(runID string) (*Run, error) {
 type engine struct {
 	run    *Run
 	vm     *goja.Runtime
-	done   chan func()   // worker completions → VM-thread closures
-	inWork atomic.Int64  // outstanding completions the loop still owes the VM
-	tokens atomic.Int64  // live usage across workers
-	seq    atomic.Int64  // agent counter (file names, journal seq, maxAgents)
-	cache  *replayCache  // nil unless resuming
+	done   chan func()  // worker completions → VM-thread closures
+	inWork atomic.Int64 // outstanding completions the loop still owes the VM
+	tokens atomic.Int64 // live usage across workers
+	seq    atomic.Int64 // agent counter (file names, journal seq, maxAgents)
+	cache  *replayCache // nil unless resuming
 	jr     *journal
 	logf   *os.File
 	ctx    context.Context
@@ -188,8 +182,6 @@ func (r *Run) Execute(ctx context.Context) error {
 	e.st.State = StateRunning
 	e.st.PID = os.Getpid()
 	e.flushStatus()
-	e.publishEvent("workflow_started",
-		fmt.Sprintf("[workflow %s] started (%s): %s — progress: duck workflows tail %s", e.st.Name, r.ID, r.Meta.Description, r.ID))
 
 	value, runErr := e.runScript()
 	switch {
@@ -202,11 +194,9 @@ func (r *Run) Execute(ctx context.Context) error {
 			return e.fail(werr)
 		}
 		e.setState(StateDone, "")
-		e.publish("done", string(b))
 		return nil
 	case e.ctx.Err() != nil && ctx.Err() != nil:
 		e.setState(StateStopped, "stopped")
-		e.publish("stopped", "")
 		return e.ctx.Err()
 	default:
 		return e.fail(runErr)
@@ -216,7 +206,6 @@ func (r *Run) Execute(ctx context.Context) error {
 func (e *engine) fail(err error) error {
 	e.logline("FATAL: %v", err)
 	e.setState(StateError, err.Error())
-	e.publish("failed", err.Error())
 	return err
 }
 
@@ -279,12 +268,8 @@ func (e *engine) bind() error {
 	}))
 	must(vm.Set("phase", func(title string) {
 		e.logline("phase: %s", title)
-		var done, total int
-		e.mutate(func(s *Status) { s.Phase = title; done, total = s.AgentsDone, s.AgentsTotal })
+		e.mutate(func(s *Status) { s.Phase = title })
 		e.flushStatus()
-		e.publishEvent("workflow_phase",
-			fmt.Sprintf("[workflow %s] phase: %s (%d/%d agents so far, %s tokens)",
-				e.run.Meta.Name, title, done, total, HumanTokens(e.tokens.Load())))
 	}))
 	must(vm.Set("__scriptError", func(msg string) {
 		e.logline("stage error: %s", msg)
@@ -481,54 +466,6 @@ func (e *engine) setState(state, errMsg string) {
 // logline appends a timestamped line to run.log.
 func (e *engine) logline(format string, a ...any) {
 	fmt.Fprintf(e.logf, "%s %s\n", time.Now().Format("15:04:05"), fmt.Sprintf(format, a...))
-}
-
-// publishEvent drops one lifecycle event on the workspace's channel spool —
-// the manager hears it as a <channel source="duck-agents"> event of the given
-// type. Lifecycle only (started / phase / complete): per-agent progress stays
-// in status.json and the tail view, where it doesn't interrupt anyone. No
-// workspace (a bare CLI run) = no channel.
-func (e *engine) publishEvent(typ, content string) {
-	ws := e.run.Opts.Workspace
-	if ws == "" {
-		return
-	}
-	e.stMu.lock()
-	name := e.st.Name
-	e.stMu.unlock()
-	_ = channel.Publish(ws, content, map[string]string{
-		"type":     typ,
-		"workflow": name,
-		"run":      e.run.ID,
-		"agent":    "workflow:" + name,
-	})
-}
-
-// publish drops the completion digest on the workspace's channel spool — the
-// manager hears it as a <channel source="duck-agents" type="workflow_complete">
-// event. No workspace (a bare CLI run) = no digest.
-func (e *engine) publish(outcome, detail string) {
-	ws := e.run.Opts.Workspace
-	if ws == "" {
-		return
-	}
-	e.stMu.lock()
-	s := e.st
-	e.stMu.unlock()
-	content := fmt.Sprintf("[workflow %s] %s — %d agents (%d failed), %s tokens, %s. Full result: %s",
-		s.Name, outcome, s.AgentsDone, s.AgentsFailed, HumanTokens(s.Tokens), s.Elapsed(), filepath.Join(e.run.Dir, "result.json"))
-	if detail != "" {
-		if len(detail) > digestMax {
-			detail = strings.ToValidUTF8(detail[:digestMax], "") + " …[truncated]"
-		}
-		content += "\n" + detail
-	}
-	_ = channel.Publish(ws, content, map[string]string{
-		"type":     "workflow_complete",
-		"workflow": s.Name,
-		"run":      e.run.ID,
-		"agent":    "workflow:" + s.Name,
-	})
 }
 
 func stringify(v goja.Value) string {

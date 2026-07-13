@@ -299,8 +299,8 @@ func (m *Manager) Revive(e Evicted) error {
 		if e.ClaudeID != "" {
 			// Replay the allowlisted launch flags the hook captured (--model,
 			// --permission-mode, --dangerously-skip-permissions) so the revived
-			// session runs the way it was originally launched. manager.Line appends
-			// duck's channel flags unless the captured flags already opted in/out.
+			// session runs the way it was originally launched. manager.Line also
+			// installs the workspace-activity hook unless settings were supplied.
 			args := append([]string{"--resume", e.ClaudeID}, strings.Fields(e.ResumeArgs)...)
 			resume := manager.Line(args)
 			cmd := fmt.Sprintf("tmux send-keys -t %s %s Enter",

@@ -325,7 +325,7 @@ func TestIsUntouchedBuildsQueryAndIsTrueForFreshShell(t *testing.T) {
 // TestIsUntouchedFalseWhenTouched covers every "the user worked in it" signal:
 // a 2nd window, a 2nd pane, a non-shell current command that is NOT the
 // duck-launched manager, a non-empty scrollback, or a manager that has been
-// PROMPTED (@duck_state stamped by its UserPromptSubmit hook). Any one makes
+// PROMPTED (@duck_manager_active stamped by its UserPromptSubmit hook). Any one makes
 // the session NOT untouched.
 func TestIsUntouchedFalseWhenTouched(t *testing.T) {
 	cases := []struct {
@@ -336,7 +336,7 @@ func TestIsUntouchedFalseWhenTouched(t *testing.T) {
 		{name: "two panes", out: "1|2|zsh|0|%0||\n"},
 		{name: "program launched (non-shell, not the manager)", out: "1|1|vim|0|%0||\n"},
 		{name: "scrolled / ran something (history>0)", out: "1|1|zsh|5|%0||\n"},
-		{name: "manager prompted (@duck_state stamped)", out: "1|1|claude|0|%0|%0|busy\n"},
+		{name: "manager prompted (@duck_manager_active stamped)", out: "1|1|claude|0|%0|%0|busy\n"},
 		{name: "manager prompted and back to idle", out: "1|1|claude|0|%0|%0|idle\n"},
 		{name: "claude launched by hand (no @duck_manager)", out: "1|1|claude|0|%0||\n"},
 		{name: "manager stamp for a DIFFERENT pane", out: "1|1|claude|0|%1|%0|\n"},
@@ -359,7 +359,7 @@ func TestIsUntouchedFalseWhenTouched(t *testing.T) {
 
 // TestIsUntouchedTrueForUnpromptedManager pins the accidental-start case: a
 // 1-window/1-pane session whose only pane IS the duck-launched manager
-// (@duck_manager == pane_id) with no @duck_state stamp — claude launched,
+// (@duck_manager == pane_id) with no @duck_manager_active stamp — claude launched,
 // never prompted. history_size is IGNORED on this branch (claude redraws
 // in-viewport, so history stays 0 whether or not a conversation happened;
 // the hook stamp is the signal).

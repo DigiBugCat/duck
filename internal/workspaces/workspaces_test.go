@@ -47,7 +47,7 @@ func TestEncodeDirMatchesClaudeSlug(t *testing.T) {
 
 func TestSaveLoadRoundtrip(t *testing.T) {
 	s := realStore(t)
-	in := Record{Name: "duck-2", Dir: "~/repo", Title: "builder", Persistent: true, Channels: true}
+	in := Record{Name: "duck-2", Dir: "~/repo", Title: "builder", Persistent: true}
 	if err := s.Save(in); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		t.Fatalf("Load: ok=%v err=%v", ok, err)
 	}
 	if got.Name != in.Name || got.Dir != in.Dir ||
-		got.Title != in.Title || !got.Persistent || !got.Channels {
+		got.Title != in.Title || !got.Persistent {
 		t.Fatalf("roundtrip mismatch: %+v", got)
 	}
 	if got.Created.IsZero() || got.Updated.IsZero() {

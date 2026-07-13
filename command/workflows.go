@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -235,30 +234,6 @@ var workflowsStopCmd = &cobra.Command{
 		fmt.Fprintf(c.OutOrStdout(), "stopped %s\n", args[0])
 		return nil
 	},
-}
-
-// StartWorkflowRun is the shared start path for the sidecar's `workflow` MCP
-// tool: prepare from an inline script + start detached, returning the run id.
-// Lives here (not internal/workflow) so the workspace/binary resolution stays
-// with the command layer.
-func StartWorkflowRun(workspace, script, argsJSON, resumeFrom string, budget int64) (string, error) {
-	cwd, _ := os.Getwd()
-	o := workflow.Opts{Workspace: workspace, Dir: cwd, ResumeFrom: resumeFrom, Budget: budget}
-	if strings.TrimSpace(argsJSON) != "" {
-		o.Args = []byte(argsJSON)
-	}
-	r, err := workflow.Prepare(script, o)
-	if err != nil {
-		return "", err
-	}
-	bin, err := os.Executable()
-	if err != nil {
-		bin = "duck"
-	}
-	if _, err := workflow.StartDetached(bin, r.ID); err != nil {
-		return "", err
-	}
-	return r.ID, nil
 }
 
 func init() {
