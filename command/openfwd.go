@@ -7,6 +7,8 @@
 package command
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,17 +29,21 @@ import (
 // open-interceptor is a convenience, never a reason an attach fails.
 var startOpenForwarding func(session string) (stop func())
 
-// hubOpenSock is the hub-side unix socket a given session's opens rendezvous on:
-// an ABSOLUTE path under the hub's home. hubHome must already be resolved to a
-// real path (no "$HOME"/"~") — a literal absolute path is the only form that
-// survives unchanged through all three consumers (the ssh -R socket spec, the
-// tmux set-environment value, and the shim's curl --unix-socket), none of which
-// reliably expand shell variables. Per-session (not a shared port) is the whole
-// point: the shim in that session's panes reads this exact path from the tmux
-// session env (DUCK_OPEN_SOCK), so no two sessions ever contend for one bind.
-// Session names are duck-generated (safe for a path segment).
-func hubOpenSock(hubHome, session string) string {
-	return fmt.Sprintf("%s/.duck/run/open-%s.sock", strings.TrimRight(hubHome, "/"), session)
+// hubOpenSock is the hub-side unix socket for one local attach instance. The
+// random owner suffix matters even though the tmux session name is unique: two
+// terminals can attach the same workspace, and an old attach must never rebind
+// or remove the newer attach's socket. hubHome is already absolute; session is a
+// duck-generated tmux-safe slug.
+func hubOpenSock(hubHome, session, owner string) string {
+	return fmt.Sprintf("%s/.duck/run/open-%s-%s.sock", strings.TrimRight(hubHome, "/"), session, owner)
+}
+
+func openForwardOwner() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // newOpenForwarding builds the production starter for the given client. On start
@@ -61,12 +67,17 @@ func newOpenForwarding(client *sshx.Client) func(session string) (stop func()) {
 			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (hub home: %v); hub opens will run on the hub\n", err)
 			return noop
 		}
+		owner, err := openForwardOwner()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (owner id: %v); hub opens will run on the hub\n", err)
+			return noop
+		}
 		ln, err := openfwd.Start(productionOpenDeps(client))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "duck: open-interceptor disabled (listener: %v); hub opens will run on the hub\n", err)
 			return noop
 		}
-		sock := hubOpenSock(hubHome, session)
+		sock := hubOpenSock(hubHome, session, owner)
 		// Ensure the socket's parent dir exists (hub setup makes it, but a hub set
 		// up before this feature would not have it). Best-effort.
 		_, _ = client.Run("mkdir -p -- " + shquote(strings.TrimRight(hubHome, "/")+"/.duck/run"))
@@ -80,7 +91,7 @@ func newOpenForwarding(client *sshx.Client) func(session string) (stop func()) {
 		// if tmux is unavailable the forward is still up, opens just can't find it.
 		stampOpenSock(client, session, sock)
 		return func() {
-			unstampOpenSock(client, session)
+			unstampOpenSock(client, session, sock)
 			_ = client.CancelRemoteForwardSocket(sock, ln.LocalPort())
 			// Remove the hub socket file so it never lingers as a stale path (belt
 			// and braces alongside StreamLocalBindUnlink on the next bind).
@@ -99,12 +110,14 @@ func stampOpenSock(client *sshx.Client, session, sock string) {
 		shquote(session), shquote(sock)))
 }
 
-// unstampOpenSock clears the session's opener socket from the tmux session
-// environment on teardown, so a pane opened after detach falls through to the
-// hub opener rather than a dead socket. Best-effort.
-func unstampOpenSock(client *sshx.Client, session string) {
+// unstampOpenSock clears the session's opener socket only when this attach still
+// owns it. A newer terminal may have stamped its own socket while this one was
+// attached; the older teardown must not erase that handoff.
+func unstampOpenSock(client *sshx.Client, session, sock string) {
+	expected := "DUCK_OPEN_SOCK=" + sock
 	_, _ = client.Run(fmt.Sprintf(
-		"tmux set-environment -u -t %s DUCK_OPEN_SOCK", shquote(session)))
+		"[ \"$(tmux show-environment -t %s DUCK_OPEN_SOCK 2>/dev/null)\" = %s ] && tmux set-environment -u -t %s DUCK_OPEN_SOCK || true",
+		shquote(session), shquote(expected), shquote(session)))
 }
 
 // shquote single-quotes a value for safe embedding in the hub shell command.

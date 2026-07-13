@@ -184,8 +184,11 @@ func TestAttachArgvBuildsInteractiveAttach(t *testing.T) {
 		t.Errorf("AttachArgv[1] = %q, want -t (force PTY)", argv[1])
 	}
 	joined := strings.Join(argv, " ")
-	if !strings.Contains(joined, "ControlPath=") {
-		t.Errorf("AttachArgv missing ControlPath (must reuse the master socket): %v", argv)
+	if !strings.Contains(joined, "ControlMaster=no") || !strings.Contains(joined, "ControlPath=none") {
+		t.Errorf("AttachArgv must use a dedicated connection, not the shared master: %v", argv)
+	}
+	if strings.Contains(joined, "/.duck/cm/") {
+		t.Errorf("AttachArgv leaked the control-plane mux path: %v", argv)
 	}
 	// The tail is the login-shell-wrapped tmux attach to the named session
 	// (wrapped so tmux resolves on the hub's Homebrew PATH).

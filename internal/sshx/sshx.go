@@ -10,9 +10,10 @@
 //
 // The ControlPath uses the Go-expanded $HOME (never a literal "~"), and the
 // <HOME>/.duck/cm directory is MkdirAll 0700 at startup (design fix c2). The
-// warmed master socket is reused by every subsequent call — including the
-// ported internal/hub package, which carries the same Control* flags (gap#6) —
-// and by the interactive attach via ExecAttach.
+// warmed master socket is reused by control-plane calls, including the ported
+// internal/hub package, which carries the same Control* flags (gap#6).
+// Interactive attaches use dedicated connections so one mux failure cannot drop
+// every live workspace.
 //
 // This package is NEW for duck (flok had no multiplexing layer).
 package sshx
@@ -25,8 +26,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 	"syscall"
+	"time"
 
 	"github.com/DigiBugCat/duck/internal/paths"
 )
@@ -42,9 +43,8 @@ const tsshBinary = "tssh"
 
 // execAttachPath resolves the ssh binary to an absolute path for syscall.Exec,
 // which (unlike exec.Command) does not search $PATH. It prefers the same ssh
-// that run/exec.Command would pick via PATH, so the attach reuses the warmed
-// ControlMaster socket even on Homebrew-OpenSSH setups; falls back to the
-// conventional macOS location.
+// that run/exec.Command would pick via PATH, including Homebrew OpenSSH, and
+// falls back to the conventional macOS location.
 func execAttachPath() string {
 	if p, err := exec.LookPath(sshBinary); err == nil {
 		return p
@@ -473,9 +473,11 @@ func terminfoStamp(addr, term string) string {
 	return filepath.Join(home, ".duck", "terminfo-"+clean(addr)+"-"+clean(term))
 }
 
-// AttachArgv builds the argv for an interactive `tmux attach-session` over the
-// SAME multiplexed control path. Pure (no side effects) so it is unit-testable;
-// ExecAttach wraps it with the actual syscall.Exec.
+// AttachArgv builds the argv for an interactive `tmux attach-session`. Plain
+// SSH attaches deliberately use a dedicated connection rather than duck's
+// shared control-plane master: a master loss must not drop every live workspace.
+// Pure (no side effects) so it is unit-testable; ExecAttach wraps it with the
+// actual syscall.Exec.
 func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
 	if c.Local {
 		// On the hub itself: attach to the local tmux directly under a login shell
@@ -486,9 +488,16 @@ func (c *Client) AttachArgv(tmuxSession string) ([]string, error) {
 	if c.Tssh {
 		return c.tsshAttachArgv(tmuxSession)
 	}
-	opts, err := Options()
-	if err != nil {
-		return nil, err
+	// The interactive transport owns its connection. ControlMaster=no prevents
+	// OpenSSH from attaching it to (or replacing) duck's host-global mux socket.
+	// The short-lived control plane still uses Options() and its warmed master.
+	opts := []string{
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
+		"-o", "ControlMaster=no",
+		"-o", "ControlPath=none",
 	}
 	// -t forces PTY allocation so tmux/ssh own a real TTY after the bubbletea
 	// teardown. The remote command is the literal tmux attach, prefixed with a
@@ -549,8 +558,8 @@ func (c *Client) tsshAttachArgv(tmuxSession string) ([]string, error) {
 	return argv, nil
 }
 
-// ExecAttach replaces the current process with an interactive ssh -t attach to
-// the named tmux session, reusing the warmed control-master socket. It returns
+// ExecAttach replaces the current process with a dedicated interactive ssh -t
+// attach to the named tmux session. It returns
 // only on failure to exec (on success the process image is replaced). Callers
 // must fully tear down bubbletea first so ssh/tmux own a clean TTY; TERM passes
 // through via the inherited environment.
@@ -571,9 +580,9 @@ func (c *Client) ExecAttach(tmuxSession string) error {
 // or exits, returning nil on a normal interactive exit. Unlike ExecAttach
 // (which replaces the process image and never returns) it hands control BACK to
 // the caller, so the fresh-untouched-session cleanup can run after the user
-// leaves. The argv — including the -t PTY and the multiplexing Control* flags —
-// is the same AttachArgv ExecAttach uses, so the interactive session/picker
-// works identically.
+// leaves. The argv — including the -t PTY and dedicated-connection flags — is
+// the same AttachArgv ExecAttach uses, so the interactive session/picker works
+// identically.
 func (c *Client) RunAttach(tmuxSession string) error {
 	if err := EnsureControlDir(); err != nil {
 		return err
