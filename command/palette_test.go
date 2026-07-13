@@ -64,6 +64,34 @@ func TestPaletteEntries(t *testing.T) {
 	}
 }
 
+func TestPaletteInvokingClientUsesCapturedClient(t *testing.T) {
+	t.Setenv("DUCK_TMUX_CLIENT", "/dev/pts/7")
+	called := false
+	client, err := paletteInvokingClient(func(args ...string) (string, error) {
+		called = true
+		return "", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client != "/dev/pts/7" {
+		t.Fatalf("client = %q, want /dev/pts/7", client)
+	}
+	if called {
+		t.Fatal("captured client must not fall back to a tmux context lookup")
+	}
+}
+
+func TestDetachPaletteClientTargetsOneClient(t *testing.T) {
+	f := &fakeRunner{}
+	if err := detachPaletteClient(f.run, "/dev/pts/7"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(f.calls, "\n"), "detach-client -t /dev/pts/7"; got != want {
+		t.Fatalf("calls = %q, want %q", got, want)
+	}
+}
+
 func TestPaletteEntriesNoAgents(t *testing.T) {
 	// A fresh workspace: one window, zero agents — only jump + session verbs.
 	f := &fakeRunner{out: map[string]string{

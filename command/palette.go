@@ -8,6 +8,7 @@ package command
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/DigiBugCat/duck/internal/picker"
@@ -21,6 +22,18 @@ type paletteEntry struct {
 	label string
 	kind  string // jump | kill | killws | detach | fleet
 	arg   string // jump: window index; kill: pane id
+}
+
+func paletteInvokingClient(run tmuxdb.Runner) (string, error) {
+	if client := os.Getenv("DUCK_TMUX_CLIENT"); client != "" {
+		return client, nil
+	}
+	return tmuxdb.CurrentClient(run)
+}
+
+func detachPaletteClient(run tmuxdb.Runner, client string) error {
+	_, err := run("detach-client", "-t", client)
+	return err
 }
 
 // paletteEntries builds the candidate list fresh at open: one jump per window
@@ -81,6 +94,10 @@ var paletteCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		client, err := paletteInvokingClient(run)
+		if err != nil {
+			return err
+		}
 		entries, err := paletteEntries(run, outer)
 		if err != nil {
 			return err
@@ -108,8 +125,7 @@ var paletteCmd = &cobra.Command{
 			_, err = run("kill-session", "-t", outer)
 			return err
 		case "detach":
-			_, err = run("detach-client", "-s", outer)
-			return err
+			return detachPaletteClient(run, client)
 		case "fleet":
 			// The fleet is its own picker loop — run it in-process rather than
 			// re-execing through another popup.

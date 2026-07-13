@@ -63,18 +63,17 @@ func key(m model, k tea.KeyMsg) model {
 
 func runes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 
-func TestConfirmDefaultsYes(t *testing.T) {
+func TestConfirmDefaultsNo(t *testing.T) {
 	cases := []struct {
 		name string
 		key  tea.KeyMsg
 		yes  bool
-		quit bool
 	}{
-		{"enter accepts default", tea.KeyMsg{Type: tea.KeyEnter}, true, true},
-		{"y confirms", runes("y"), true, true},
-		{"n cancels", runes("n"), false, true},
-		{"escape cancels", tea.KeyMsg{Type: tea.KeyEsc}, false, true},
-		{"unrelated key waits", runes("x"), false, false},
+		{"enter rejects", tea.KeyMsg{Type: tea.KeyEnter}, false},
+		{"y confirms", runes("y"), true},
+		{"n rejects", runes("n"), false},
+		{"escape rejects", tea.KeyMsg{Type: tea.KeyEsc}, false},
+		{"unrelated key rejects", runes("x"), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -82,12 +81,12 @@ func TestConfirmDefaultsYes(t *testing.T) {
 			if got := m.(confirmModel).yes; got != tc.yes {
 				t.Fatalf("yes = %v, want %v", got, tc.yes)
 			}
-			if got := cmd != nil; got != tc.quit {
-				t.Fatalf("quit command present = %v, want %v", got, tc.quit)
+			if cmd == nil {
+				t.Fatal("every key must close the confirmation")
 			}
 		})
 	}
-	if got := (confirmModel{prompt: "kill?"}).View(); got != "kill? "+keyStyle.Render("Y")+helpStyle.Render("/n ") {
+	if got := (confirmModel{prompt: "kill?"}).View(); got != "kill? "+keyStyle.Render("y")+helpStyle.Render("/N ") {
 		t.Fatalf("view = %q", got)
 	}
 }

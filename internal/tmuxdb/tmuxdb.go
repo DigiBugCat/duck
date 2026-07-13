@@ -108,6 +108,21 @@ func CurrentPanePath(run Runner) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// CurrentClient returns the tmux client displaying this process's pane. Like
+// CurrentSession, it anchors the lookup to $TMUX_PANE: an unqualified client
+// lookup can resolve whichever terminal the human touched most recently.
+func CurrentClient(run Runner) (string, error) {
+	out, err := run(displayArgs("#{client_name}")...)
+	if err != nil {
+		return "", err
+	}
+	client := strings.TrimSpace(out)
+	if client == "" {
+		return "", fmt.Errorf("current tmux client is unavailable")
+	}
+	return client, nil
+}
+
 // displayArgs targets display-message at THIS process's pane when known.
 // Without -t, tmux answers for the most recent CLIENT's context — which is
 // whatever terminal the human last touched, not necessarily where this
